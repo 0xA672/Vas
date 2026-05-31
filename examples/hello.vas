@@ -1,0 +1,34 @@
+; hello.vas — simple CLI tool written with VAS assembler
+; full build process:
+;   vas hello.vas -o hello.s
+;   nasm -f elf64 hello.s -o hello.o
+;   ld -no-pie hello.o -o hello
+;   ./hello
+
+default rel                         ; use RIP-relative addressing (passed to NASM)
+
+section .data
+    msg db 'Hello, World from VAS!', 10
+    msglen equ $ - msg
+
+section .text
+    global _start
+
+_start:
+    ; sys_write(1, msg, msglen)
+    ; Linux x86-64 syscall ABI:
+    ;   rax = syscall number
+    ;   rdi = arg1 (fd)
+    ;   rsi = arg2 (buf)
+    ;   rdx = arg3 (count)
+
+    MOVI    v5, 1           ; rdi = 1 (stdout)
+    LEA     v4, [msg]       ; rsi = msg address (LEA supported via passthrough)
+    MOVI    v3, msglen      ; rdx = message length
+    MOVI    v0, 1           ; rax = 1 (sys_write)
+    SYSCALL
+
+    ; sys_exit(0)
+    MOVI    v5, 0           ; rdi = exit code 0
+    MOVI    v0, 60          ; rax = 60 (sys_exit)
+    SYSCALL

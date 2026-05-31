@@ -1,0 +1,36 @@
+; demo.vas - simple addition program (pseudo-instructions)
+
+.section .data
+msg:    dq 0
+
+.section .text
+.global _start
+
+_start:
+    ; v0 = 10, v1 = 20, v0 = v0 + v1
+    MOVI v0, 10
+    MOVI v1, 20
+    ADD  v0, v0, v1
+    STORE v0, [result]
+
+    ; conditional branch
+    MOVI v2, 100
+    CMP  v0, v2
+    JG   greater
+    MOVI v3, 0
+    JMP  done
+
+greater:
+    MOVI v3, 1
+
+done:
+    STORE v3, [flag]
+
+    ; syscall exit
+    MOVI v0, 60
+    MOVI v1, 0
+    SYSCALL
+
+.section .data
+result: dq 0
+flag:   dq 0
