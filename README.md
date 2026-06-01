@@ -164,11 +164,11 @@ ADD  v1, v0   # This is also a comment
 Lines ending with a colon that are not recognized instructions are passed through unchanged, except for virtual register substitution. Example:
 
 ```asm
-section .data:
+section .data
 result: dq 0
 
-section .text:
-global _start:
+section .text
+global _start
 _start:
 ```
 
