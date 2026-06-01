@@ -1,0 +1,4 @@
+MOVI v0, 10  
+MOVI v1, 20  
+ADD v2, v0, v1  
+STORE v2, [result]  

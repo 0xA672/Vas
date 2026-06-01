@@ -1,22 +1,33 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"vas/vas"
 )
 
 func main() {
-	outFile := flag.String("o", "", "output file (default: stdout)")
-	flag.Parse()
+	var inputFile, outFile string
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-o" && i+1 < len(args) {
+			outFile = args[i+1]
+			i++
+		} else if !strings.HasPrefix(args[i], "-") {
+			inputFile = args[i]
+		} else {
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			os.Exit(1)
+		}
+	}
 
 	var input string
 
-	if args := flag.Args(); len(args) > 0 {
-		data, err := os.ReadFile(args[0])
+	if inputFile != "" {
+		data, err := os.ReadFile(inputFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "read file: %v\n", err)
 			os.Exit(1)
@@ -42,8 +53,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if *outFile != "" {
-		if err := os.WriteFile(*outFile, []byte(output), 0644); err != nil {
+	if outFile != "" {
+		if err := os.WriteFile(outFile, []byte(output), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "write file: %v\n", err)
 			os.Exit(1)
 		}
