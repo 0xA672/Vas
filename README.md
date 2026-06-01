@@ -4,8 +4,8 @@
 .vas pseudocode  ->  VAS  ->  x86-64 NASM assembly (.s)  ->  nasm + ld / gcc  ->  executable
 ```
 
-**VAS** (Virtual ASseMbler) is a lightweight, text‑replacement translation tool that reads pseudo‑instructions with **virtual registers** (v0–v7) and emits standard **x86-64 NASM** assembly.  
-It is not a compiler backend — it performs **no register allocation, no optimization, and no linking**. Its sole purpose is to turn teaching or prototyping pseudocode into NASM‑compatible assembly.
+**VAS** (Virtual Assembler) is a lightweight, text-replacement translation tool that reads pseudo-instructions with **virtual registers** (v0-v7) and emits standard **x86-64 NASM** assembly.
+It is not a compiler backend — it performs **no register allocation, no optimization, and no linking**. Its sole purpose is to turn teaching or prototyping pseudocode into NASM-compatible assembly.
 
 ---
 
@@ -56,7 +56,7 @@ ld -o hello hello.o
 
 ## Virtual Register Mapping
 
-The eight virtual registers `v0`–`v7` are mapped to physical x86-64 registers as follows. No explicit declaration is required — they can be used immediately.
+The eight virtual registers `v0`-`v7` are mapped to physical x86-64 registers as follows. No explicit declaration is required — they can be used immediately.
 
 | Virtual Register | Physical Register |
 |------------------|-------------------|
@@ -79,21 +79,21 @@ Virtual registers may appear in any operand position, including memory addressin
 
 | Pseudo-instruction | Operands | Expansion | Notes |
 |--------------------|----------|-----------|-------|
-| `ADD`              | `dst, src1, src2` | `mov dst, src1` then `add dst, src2` | Three‑operand addition |
-| `ADD`              | `dst, src`        | `add dst, src`                       | Two‑operand addition |
-| `SUB`              | `dst, src1, src2` | `mov dst, src1` then `sub dst, src2` | Three‑operand subtraction |
-| `SUB`              | `dst, src`        | `sub dst, src`                       | Two‑operand subtraction |
-| `MUL`              | `dst, src1, src2` | `mov dst, src1` then `imul dst, src2`| Three‑operand multiplication |
-| `MUL`              | `dst, src`        | `imul dst, src`                      | Two‑operand multiplication |
+| `ADD` | `dst, src1, src2` | `mov dst, src1` then `add dst, src2` | Three-operand addition |
+| `ADD` | `dst, src` | `add dst, src` | Two-operand addition |
+| `SUB` | `dst, src1, src2` | `mov dst, src1` then `sub dst, src2` | Three-operand subtraction |
+| `SUB` | `dst, src` | `sub dst, src` | Two-operand subtraction |
+| `MUL` | `dst, src1, src2` | `mov dst, src1` then `imul dst, src2` | Three-operand multiplication |
+| `MUL` | `dst, src` | `imul dst, src` | Two-operand multiplication |
 
 ### Memory Access
 
-| Pseudo-instruction | Operands         | Expansion            | Notes                  |
-|--------------------|------------------|----------------------|------------------------|
-| `MOVI`             | `dst, imm`       | `mov dst, imm`       | Load immediate         |
-| `MOV`              | `dst, src`       | `mov dst, src`       | Register‑to‑register   |
-| `LOAD`             | `dst, [addr]`    | `mov dst, [addr]`    | Load from memory       |
-| `STORE`            | `src, [addr]`    | `mov [addr], src`    | Store to memory        |
+| Pseudo-instruction | Operands | Expansion | Notes |
+|--------------------|----------|-----------|-------|
+| `MOVI` | `dst, imm` | `mov dst, imm` | Load immediate |
+| `MOV` | `dst, src` | `mov dst, src` | Register-to-register |
+| `LOAD` | `dst, [addr]` | `mov dst, [addr]` | Load from memory |
+| `STORE` | `src, [addr]` | `mov [addr], src` | Store to memory |
 
 Address expressions (e.g., `[v1]`, `[rax*4]`, `[v0+8]`, `[label]`) are passed through, with virtual registers replaced.
 
@@ -101,36 +101,36 @@ Address expressions (e.g., `[v1]`, `[rax*4]`, `[v0+8]`, `[label]`) are passed th
 
 | Pseudo-instruction | Operands | Expansion |
 |--------------------|----------|-----------|
-| `CMP`              | `a, b`   | `cmp a, b`|
-| `JMP`              | `label`  | `jmp label`|
-| `JE`               | `label`  | `je label`|
-| `JNE`              | `label`  | `jne label`|
-| `JG`               | `label`  | `jg label`|
-| `JL`               | `label`  | `jl label`|
-| `JGE`              | `label`  | `jge label`|
-| `JLE`              | `label`  | `jle label`|
-| `CALL`             | `label`  | `call label`|
-| `RET`              | —        | `ret`|
+| `CMP` | `a, b` | `cmp a, b` |
+| `JMP` | `label` | `jmp label` |
+| `JE` | `label` | `je label` |
+| `JNE` | `label` | `jne label` |
+| `JG` | `label` | `jg label` |
+| `JL` | `label` | `jl label` |
+| `JGE` | `label` | `jge label` |
+| `JLE` | `label` | `jle label` |
+| `CALL` | `label` | `call label` |
+| `RET` | — | `ret` |
 
 ### Stack Operations
 
 | Pseudo-instruction | Operands | Expansion |
 |--------------------|----------|-----------|
-| `PUSH`             | `src`    | `push src`|
-| `POP`              | `dst`    | `pop dst` |
+| `PUSH` | `src` | `push src` |
+| `POP` | `dst` | `pop dst` |
 
 ### System Calls / Interrupts
 
 | Pseudo-instruction | Operands | Expansion |
 |--------------------|----------|-----------|
-| `SYSCALL`          | —        | `syscall` |
-| `INT`              | `n`      | `int n`   |
+| `SYSCALL` | — | `syscall` |
+| `INT` | `n` | `int n` |
 
 ### Miscellaneous
 
 | Pseudo-instruction | Expansion |
 |--------------------|-----------|
-| `NOP`              | `nop`     |
+| `NOP` | `nop` |
 
 ---
 
@@ -173,8 +173,8 @@ _start:
 ```
 
 ### Passthrough
-Any line that is not a known pseudo‑instruction (data definitions, section directives, alignment, etc.) is emitted verbatim with only virtual registers replaced.  
-Recognized data/section keywords (e.g., `SECTION`, `GLOBAL`, `EXTERN`, `DQ`, `DB`) are token‑checked; malformed constructs still trigger errors.
+Any line that is not a known pseudo-instruction (data definitions, section directives, alignment, etc.) is emitted verbatim with only virtual registers replaced.
+Recognized data/section keywords (e.g., `SECTION`, `GLOBAL`, `EXTERN`, `DQ`, `DB`, `resb`, `equ`) are token-checked; malformed constructs still trigger errors.
 
 ---
 
@@ -188,7 +188,7 @@ Recognized data/section keywords (e.g., `SECTION`, `GLOBAL`, `EXTERN`, `DQ`, `DB
 
 ## Installation and Build
 
-**Prerequisites**: Go 1.21 or later, no third‑party dependencies.
+**Prerequisites**: Go 1.21 or later, no third-party dependencies.
 
 ```bash
 # Clone the repository
@@ -209,9 +209,16 @@ go install
 ```
 vas/
 ├── main.go         # CLI entry point, argument parsing
+├── go.mod          # Go module definition
 ├── vas/
 │   └── core.go     # Core translation logic, register substitution, tokenisation
-├── hello.vas       # Example input
+├── test/
+│   └── assembler_test.go  # Unit tests
+├── examples/
+│   ├── calc.vas    # Summation example
+│   ├── demo.vas    # Basic demo
+│   └── greet.vas   # CLI greeting example
+├── hello.vas       # Minimal example
 ├── .gitignore
 └── README.md
 ```

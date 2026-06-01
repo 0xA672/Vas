@@ -1,0 +1,123 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "VAS",
+  "scopeName": "source.vas",
+  "fileTypes": ["vas"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#labels" },
+    { "include": "#directives" },
+    { "include": "#pseudo-instructions" },
+    { "include": "#native-instructions" },
+    { "include": "#registers" },
+    { "include": "#numbers" },
+    { "include": "#memory-brackets" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "match": "(?:;|#).*$",
+          "name": "comment.line.vas"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "begin": "'",
+          "end": "'",
+          "name": "string.quoted.single.vas"
+        },
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.vas"
+        }
+      ]
+    },
+    "labels": {
+      "patterns": [
+        {
+          "match": "^\\s*([A-Za-z_.][A-Za-z0-9_.]*):",
+          "captures": {
+            "1": { "name": "entity.name.function.vas" }
+          }
+        },
+        {
+          "match": "(\\.[A-Za-z_][A-Za-z0-9_]*):",
+          "captures": {
+            "1": { "name": "entity.name.function.vas" }
+          }
+        }
+      ]
+    },
+    "directives": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(?:section|global|extern|data|text|bss|align|byte|word|dword|qword|dd|dq|db|resb|resw|resd|resq|equ|times|incbin|default|bits|org|group|import|export|common|comm|lcomm|struc|endstruc|istruc|at|iend|macro|endm|endmacro|include|define|undef|if\\b|ifn\\b|ifdef\\b|ifndef\\b|elif\\b|else\\b|endif\\b|endrep|rep|endrep|rept|endr|irp|irpc|indrep|rotate|stack|args|locals|end\\b|type|size|length|start)\\b",
+          "name": "keyword.directive.vas"
+        }
+      ]
+    },
+    "pseudo-instructions": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(?:ADD|SUB|MUL|LOAD|STORE|MOV|MOVI|CMP|JMP|JE|JNE|JG|JL|JGE|JLE|CALL|RET|NOP|PUSH|POP|INT|SYSCALL)\\b",
+          "name": "support.function.vas"
+        }
+      ]
+    },
+    "native-instructions": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(?:mov|add|sub|imul|idiv|div|mul|neg|not|and|or|xor|shl|shr|inc|dec|xchg|cmpxchg|test|nop|hlt|cli|sti|cld|std|cdq|cwd|cqo|cbw|cwde|cdqe|lea|push|pop|pushf|popf|call|ret|retf|jmp|je|jne|jz|jnz|jg|jl|jge|jle|ja|jb|jae|jbe|jo|jno|js|jns|jp|jnp|jcxz|jecxz|jrcxz|loop|loope|loopne|cmp|syscall|sysenter|sysexit|int|into|iret|rdtsc|cpuid|rdmsr|wrmsr|in|out)\\b",
+          "name": "keyword.instruction.vas"
+        }
+      ]
+    },
+    "registers": {
+      "patterns": [
+        {
+          "match": "\\bv[0-7]\\b",
+          "name": "variable.language.vas"
+        },
+        {
+          "match": "\\b(?:rax|rbx|rcx|rdx|rsi|rdi|rbp|rsp|r8|r9|r10|r11|r12|r13|r14|r15|eax|ebx|ecx|edx|esi|edi|ebp|esp|ax|bx|cx|dx|si|di|bp|sp|al|bl|cl|dl|sil|dil|bpl|spl|r8b|r9b|r10b|r11b|r12b|r13b|r14b|r15b|ah|bh|ch|dh)\\b",
+          "name": "variable.language.register.vas"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "match": "\\b(?:0[xX][0-9a-fA-F]+|[0-9]+)\\b",
+          "name": "constant.numeric.vas"
+        }
+      ]
+    },
+    "memory-brackets": {
+      "patterns": [
+        {
+          "begin": "\\[",
+          "end": "\\]",
+          "name": "meta.brackets.memory.vas",
+          "patterns": [
+            { "include": "#registers" },
+            { "include": "#numbers" },
+            {
+              "match": "[+\\-*/]",
+              "name": "keyword.operator.arithmetic.vas"
+            },
+            {
+              "match": "\\*",
+              "name": "keyword.operator.arithmetic.vas"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "uuid": "f8c5b3a0-1a3a-4b8e-9c5d-7e2f1a0b3c4d"
+}
