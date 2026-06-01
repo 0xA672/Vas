@@ -2,13 +2,12 @@ package vas_test
 
 import (
 	"testing"
-
 	"vas/vas"
 )
 
 func TestBasicAdd(t *testing.T) {
 	input := `ADD v0, v1, v2`
-	expected := "\tmov\trax, rdi\n\tadd\trax, rsi"
+	expected := "\tmov\trax, rbx\n\tadd\trax, rcx"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -20,7 +19,7 @@ func TestBasicAdd(t *testing.T) {
 
 func TestSub(t *testing.T) {
 	input := `SUB v3, v4, v5`
-	expected := "\tmov\trdx, rcx\n\tsub\trdx, r8"
+	expected := "\tmov\trdx, rsi\n\tsub\trdx, rdi"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -32,7 +31,7 @@ func TestSub(t *testing.T) {
 
 func TestMul(t *testing.T) {
 	input := `MUL v1, v2, v3`
-	expected := "\tmov\trdi, rsi\n\timul\trdi, rdx"
+	expected := "\tmov\trbx, rcx\n\timul\trbx, rdx"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -44,7 +43,7 @@ func TestMul(t *testing.T) {
 
 func TestMul2Op(t *testing.T) {
 	input := `MUL v0, v1`
-	expected := "\timul\trax, rdi"
+	expected := "\timul\trax, rbx"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -56,7 +55,7 @@ func TestMul2Op(t *testing.T) {
 
 func TestLoadReg(t *testing.T) {
 	input := `LOAD v0, [v1+8]`
-	expected := "\tmov\trax, [rdi+8]"
+	expected := "\tmov\trax, [rbx+8]"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -68,7 +67,7 @@ func TestLoadReg(t *testing.T) {
 
 func TestLoadLabel(t *testing.T) {
 	input := `LOAD v2, [myvar]`
-	expected := "\tmov\trsi, [myvar]"
+	expected := "\tmov\trcx, [myvar]"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -80,7 +79,7 @@ func TestLoadLabel(t *testing.T) {
 
 func TestLoadLabelOffset(t *testing.T) {
 	input := `LOAD v2, [myvar+4]`
-	expected := "\tmov\trsi, [myvar+4]"
+	expected := "\tmov\trcx, [myvar+4]"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -92,7 +91,7 @@ func TestLoadLabelOffset(t *testing.T) {
 
 func TestStoreReg(t *testing.T) {
 	input := `STORE v0, [v1+4]`
-	expected := "\tmov\t[rdi+4], rax"
+	expected := "\tmov\t[rbx+4], rax"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -128,7 +127,7 @@ func TestMovi(t *testing.T) {
 
 func TestMov(t *testing.T) {
 	input := `MOV v1, v2`
-	expected := "\tmov\trdi, rsi"
+	expected := "\tmov\trbx, rcx"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -140,7 +139,7 @@ func TestMov(t *testing.T) {
 
 func TestCmp(t *testing.T) {
 	input := `CMP v0, v1`
-	expected := "\tcmp\trax, rdi"
+	expected := "\tcmp\trax, rbx"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -189,7 +188,7 @@ func TestCallRet(t *testing.T) {
 
 func TestPushPop(t *testing.T) {
 	input := "PUSH v0\nPOP v1"
-	expected := "\tpush\trax\n\tpop\trdi"
+	expected := "\tpush\trax\n\tpop\trbx"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -201,7 +200,7 @@ func TestPushPop(t *testing.T) {
 
 func TestLabel(t *testing.T) {
 	input := "loop:\nADD v0, v1, v2"
-	expected := "loop:\n\tmov\trax, rdi\n\tadd\trax, rsi"
+	expected := "loop:\n\tmov\trax, rbx\n\tadd\trax, rcx"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -213,7 +212,7 @@ func TestLabel(t *testing.T) {
 
 func TestComments(t *testing.T) {
 	input := "; This is a comment\nADD v0, v1, v2 ; inline comment"
-	expected := "; This is a comment\n\tmov\trax, rdi\n\tadd\trax, rsi"
+	expected := "; This is a comment\n\tmov\trax, rbx\n\tadd\trax, rcx"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -237,7 +236,7 @@ func TestHashComments(t *testing.T) {
 
 func TestEmptyLines(t *testing.T) {
 	input := "ADD v0, v1, v2\n\nSUB v0, v3"
-	expected := "\tmov\trax, rdi\n\tadd\trax, rsi\n\n\tsub\trax, rdx"
+	expected := "\tmov\trax, rbx\n\tadd\trax, rcx\n\n\tsub\trax, rdx"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -249,7 +248,7 @@ func TestEmptyLines(t *testing.T) {
 
 func Test2OpForm(t *testing.T) {
 	input := "ADD v0, v1\nSUB v2, v3\nMUL v4, v5"
-	expected := "\tadd\trax, rdi\n\tsub\trsi, rdx\n\timul\trcx, r8"
+	expected := "\tadd\trax, rbx\n\tsub\trcx, rdx\n\timul\trsi, rdi"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -261,7 +260,7 @@ func Test2OpForm(t *testing.T) {
 
 func TestComplexMemory(t *testing.T) {
 	input := `LOAD v1, [v2+v3*4+8]`
-	expected := "\tmov\trdi, [rsi+rdx*4+8]"
+	expected := "\tmov\trbx, [rcx+rdx*4+8]"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -292,7 +291,7 @@ _start:
     MOVI v1, 0        ; exit code 0
     SYSCALL
 `
-	expected := "\tsection .text\n\tglobal _start\n\n_start:\n\tmov\trax, 60\n\tmov\trdi, 0\n\tsyscall\n"
+	expected := "\tsection .text\n\tglobal _start\n\n_start:\n\tmov\trax, 60\n\tmov\trbx, 0\n\tsyscall\n"
 	got, err := vas.Assemble(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

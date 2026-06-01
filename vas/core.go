@@ -8,13 +8,13 @@ import (
 
 var regMap = map[string]string{
 	"v0": "rax",
-	"v1": "rdi",
-	"v2": "rsi",
+	"v1": "rbx",
+	"v2": "rcx",
 	"v3": "rdx",
-	"v4": "rcx",
-	"v5": "r8",
-	"v6": "r9",
-	"v7": "r10",
+	"v4": "rsi",
+	"v5": "rdi",
+	"v6": "r8",
+	"v7": "r9",
 }
 
 func mapReg(s string) string {
@@ -185,10 +185,12 @@ func expand2op(mnemonic string, args []string) ([]string, error) {
 	if len(args) == 3 {
 		src1 := mapReg(args[1])
 		src2 := mapReg(args[2])
-		return []string{
-			fmt.Sprintf("\tmov\t%s, %s", dst, src1),
-			fmt.Sprintf("\t%s\t%s, %s", mnemonic, dst, src2),
-		}, nil
+		var lines []string
+		if dst != src1 {
+			lines = append(lines, fmt.Sprintf("\tmov\t%s, %s", dst, src1))
+		}
+		lines = append(lines, fmt.Sprintf("\t%s\t%s, %s", mnemonic, dst, src2))
+		return lines, nil
 	}
 	src := mapReg(args[1])
 	return []string{fmt.Sprintf("\t%s\t%s, %s", mnemonic, dst, src)}, nil
@@ -202,10 +204,12 @@ func expandMul(args []string) ([]string, error) {
 	if len(args) == 3 {
 		src1 := mapReg(args[1])
 		src2 := mapReg(args[2])
-		return []string{
-			fmt.Sprintf("\tmov\t%s, %s", dst, src1),
-			fmt.Sprintf("\timul\t%s, %s", dst, src2),
-		}, nil
+		var lines []string
+		if dst != src1 {
+			lines = append(lines, fmt.Sprintf("\tmov\t%s, %s", dst, src1))
+		}
+		lines = append(lines, fmt.Sprintf("\timul\t%s, %s", dst, src2))
+		return lines, nil
 	}
 	src := mapReg(args[1])
 	return []string{fmt.Sprintf("\timul\t%s, %s", dst, src)}, nil
