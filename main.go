@@ -16,6 +16,9 @@ func main() {
 		if args[i] == "-o" && i+1 < len(args) {
 			outFile = args[i+1]
 			i++
+		} else if args[i] == "-h" || args[i] == "--help" {
+			fmt.Print(helpText)
+			return
 		} else if !strings.HasPrefix(args[i], "-") {
 			inputFile = args[i]
 		} else {
@@ -62,3 +65,21 @@ func main() {
 		fmt.Print(output)
 	}
 }
+
+const helpText = `VAS — Virtual ASseMbler
+
+Usage:
+  vas [options] <input file>
+  cat <input> | vas [options]
+
+Options:
+  -o <file>     Write output to file instead of stdout
+  -h, --help    Show this help message
+
+Input format: .vas or .asm files with virtual registers v0-v7.
+Output: x86-64 NASM assembly.
+
+Virtual register mapping:
+  v0 → rax   v1 → rdi   v2 → rsi   v3 → rdx
+  v4 → rcx   v5 → r8    v6 → r9    v7 → r10
+`
