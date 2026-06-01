@@ -1,2 +1,1 @@
-*.vas linguist-language=VAS
-*.vas linguist-vendored=false
+*.vas linguist-language=Assembly linguist-vendored=false
