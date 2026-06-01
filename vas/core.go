@@ -298,6 +298,10 @@ func expandLea(args []string) ([]string, error) {
 // AssembleStandalone assembles VAS and wraps with a minimal ELF64 skeleton
 // if the input contains no section/global/extern boilerplate.
 func AssembleStandalone(input string) (string, error) {
+	return AssembleStandaloneTarget(input, "elf64")
+}
+
+func AssembleStandaloneTarget(input, target string) (string, error) {
 	asm, err := Assemble(input)
 	if err != nil {
 		return "", err
@@ -305,7 +309,12 @@ func AssembleStandalone(input string) (string, error) {
 	if hasBoilerplate(asm) {
 		return asm, nil
 	}
-	return wrapStandalone(input, asm), nil
+	switch target {
+	case "win64":
+		return wrapStandaloneWin64(input, asm), nil
+	default:
+		return wrapStandalone(input, asm), nil
+	}
 }
 
 func hasBoilerplate(s string) bool {
@@ -332,6 +341,34 @@ func wrapStandalone(vasInput, asmOutput string) string {
 		sb.WriteString("\txor\tedi, edi\n")
 		sb.WriteString("\tmov\teax, 60\n")
 		sb.WriteString("\tsyscall\n")
+	}
+
+	if len(memRefs) > 0 {
+		sb.WriteString("\n\tsection .data\n")
+		for _, ref := range memRefs {
+			sb.WriteString(fmt.Sprintf("%s:\tdq 0\n", ref))
+		}
+	}
+
+	return sb.String()
+}
+
+func wrapStandaloneWin64(vasInput, asmOutput string) string {
+	memRefs := collectMemRefs(vasInput)
+
+	var sb strings.Builder
+	sb.WriteString("\tdefault rel\n\n")
+	sb.WriteString("\tsection .text\n")
+	sb.WriteString("\tglobal main\n")
+	sb.WriteString("main:\n")
+	sb.WriteString(asmOutput)
+	sb.WriteString("\n")
+
+	// On Windows, exit via ret (rax = 0)
+	trimmed := strings.TrimSpace(asmOutput)
+	if !strings.HasSuffix(trimmed, "ret") {
+		sb.WriteString("\txor\teax, eax\n")
+		sb.WriteString("\tret\n")
 	}
 
 	if len(memRefs) > 0 {
