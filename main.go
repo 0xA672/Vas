@@ -50,7 +50,7 @@ func main() {
 		}
 	}
 
-	output, err := vas.Assemble(input)
+	output, err := vas.AssembleStandalone(input)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
 		os.Exit(1)

@@ -1,8 +1,9 @@
 package vas
 
 import (
-	"fmt"
-	"strings"
+ "fmt"
+ "strconv"
+ "strings"
 )
 
 var regMap = map[string]string{
@@ -78,7 +79,7 @@ func isInstruction(s string) bool {
 	upper := strings.ToUpper(strings.Fields(s)[0])
 	upper = strings.TrimLeft(upper, ".")
 	switch upper {
-	case "ADD", "SUB", "MUL", "LOAD", "STORE", "MOV", "MOVI",
+	case "ADD", "SUB", "MUL", "LOAD", "STORE", "LEA", "MOV", "MOVI",
 		"CMP", "JMP", "JE", "JNE", "JG", "JL", "JGE", "JLE",
 		"CALL", "RET", "NOP", "PUSH", "POP", "INT", "SYSCALL",
 		"SECTION", "GLOBAL", "EXTERN", "DATA", "TEXT", "BSS",
@@ -109,6 +110,8 @@ func processInstruction(line string) ([]string, error) {
 		return expandLoad(args)
 	case "STORE":
 		return expandStore(args)
+	case "LEA":
+		return expandLea(args)
 	case "MOVI":
 		return expandMovi(args)
 	case "MOV":
@@ -281,4 +284,123 @@ func expandInt(args []string) ([]string, error) {
 		return nil, fmt.Errorf("INT expects 1 operand, got %d", len(args))
 	}
 	return []string{fmt.Sprintf("\tint\t%s", args[0])}, nil
+}
+
+func expandLea(args []string) ([]string, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("LEA expects 2 operands, got %d", len(args))
+	}
+	dst := mapReg(args[0])
+	mem := mapReg(args[1])
+	return []string{fmt.Sprintf("\tlea\t%s, %s", dst, mem)}, nil
+}
+
+// AssembleStandalone assembles VAS and wraps with a minimal ELF64 skeleton
+// if the input contains no section/global/extern boilerplate.
+func AssembleStandalone(input string) (string, error) {
+	asm, err := Assemble(input)
+	if err != nil {
+		return "", err
+	}
+	if hasBoilerplate(asm) {
+		return asm, nil
+	}
+	return wrapStandalone(input, asm), nil
+}
+
+func hasBoilerplate(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "\tsection ") ||
+		strings.Contains(lower, "\tglobal ") ||
+		strings.Contains(lower, "\textern ")
+}
+
+func wrapStandalone(vasInput, asmOutput string) string {
+	memRefs := collectMemRefs(vasInput)
+
+	var sb strings.Builder
+	sb.WriteString("\tdefault rel\n\n")
+	sb.WriteString("\tsection .text\n")
+	sb.WriteString("\tglobal _start\n")
+	sb.WriteString("_start:\n")
+	sb.WriteString(asmOutput)
+	sb.WriteString("\n")
+
+	// Only append exit if the last instruction isn't already a syscall
+	trimmed := strings.TrimSpace(asmOutput)
+	if !strings.HasSuffix(trimmed, "syscall") {
+		sb.WriteString("\txor\tedi, edi\n")
+		sb.WriteString("\tmov\teax, 60\n")
+		sb.WriteString("\tsyscall\n")
+	}
+
+	if len(memRefs) > 0 {
+		sb.WriteString("\n\tsection .data\n")
+		for _, ref := range memRefs {
+			sb.WriteString(fmt.Sprintf("%s:\tdq 0\n", ref))
+		}
+	}
+
+	return sb.String()
+}
+
+func collectMemRefs(input string) []string {
+	var refs []string
+	seen := map[string]bool{}
+
+	for _, line := range strings.Split(input, "\n") {
+		trimmed := strings.TrimSpace(stripComment(line))
+		if trimmed == "" {
+			continue
+		}
+		// Find all [...] patterns
+		for {
+			start := strings.Index(trimmed, "[")
+			if start == -1 {
+				break
+			}
+			end := strings.Index(trimmed[start:], "]")
+			if end == -1 {
+				break
+			}
+			inner := strings.TrimSpace(trimmed[start+1 : start+end])
+			trimmed = trimmed[start+end+1:]
+
+			// Extract the base symbol (before + - or *)
+			sym := inner
+			for _, sep := range []string{"+", "-", "*"} {
+				if idx := strings.Index(sym, sep); idx > 0 {
+					sym = strings.TrimSpace(sym[:idx])
+					break
+				}
+			}
+			if sym == "" || seen[sym] {
+				continue
+			}
+			if isRegister(sym) {
+				continue
+			}
+			seen[sym] = true
+			refs = append(refs, sym)
+		}
+	}
+	return refs
+}
+
+func isRegister(s string) bool {
+	if strings.HasPrefix(s, "v") {
+		_, err := strconv.Atoi(s[1:])
+		return err == nil
+	}
+	phys := []string{"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+		"r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+		"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
+		"ax", "bx", "cx", "dx", "si", "di", "bp", "sp",
+		"al", "bl", "cl", "dl", "ah", "bh", "ch", "dh"}
+	for _, r := range phys {
+		if s == r {
+			return true
+		}
+	}
+	return false
 }

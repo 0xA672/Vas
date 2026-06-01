@@ -1,4 +1,16 @@
-MOVI v0, 10  
-MOVI v1, 20  
-ADD v2, v0, v1  
-STORE v2, [result]  
+default rel
+
+section .data
+msg: db "hello world", 10
+
+section .text
+global _start
+_start:
+    MOVI v0, 1       ; rax = 1 (write syscall)
+    MOVI v1, 1       ; rdi = 1 (stdout fd)
+    LEA v2, [msg]    ; rsi = address of msg
+    MOVI v3, 12      ; rdx = length ("hello world\n" = 12 chars)
+    SYSCALL
+    MOVI v0, 60      ; rax = 60 (exit syscall)
+    MOVI v1, 0       ; rdi = 0 (exit code)
+    SYSCALL

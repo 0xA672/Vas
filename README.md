@@ -14,10 +14,22 @@ It is not a compiler backend — it performs **no register allocation, no optimi
 ### 1. Minimal Example (`hello.vas`)
 
 ```asm
-MOVI v0, 10
-MOVI v1, 20
-ADD  v2, v0, v1
-STORE v2, [result]
+default rel
+
+section .data
+msg: db "hello world", 10
+
+section .text
+global _start
+_start:
+    MOVI v0, 1       ; rax = 1 (write syscall)
+    MOVI v1, 1       ; rdi = 1 (stdout fd)
+    LEA  v2, [msg]   ; rsi = address of msg
+    MOVI v3, 12      ; rdx = length
+    SYSCALL
+    MOVI v0, 60      ; rax = 60 (exit syscall)
+    MOVI v1, 0       ; rdi = 0 (exit code)
+    SYSCALL
 ```
 
 ### 2. Translate to NASM Assembly
@@ -29,11 +41,22 @@ vas -o hello.s hello.vas
 Generated `hello.s`:
 
 ```asm
-mov     rax, 10
-mov     rdi, 20
-mov     rsi, rax
-add     rsi, rdi
-mov     [result], rsi
+default rel
+
+	section .data
+	msg: db "hello world", 10
+
+	section .text
+	global _start
+_start:
+	mov	rax, 1
+	mov	rdi, 1
+	lea	rsi, [msg]
+	mov	rdx, 12
+	syscall
+	mov	rax, 60
+	mov	rdi, 0
+	syscall
 ```
 
 ### 3. Build an Executable
@@ -94,6 +117,7 @@ Virtual registers may appear in any operand position, including memory addressin
 | `MOV` | `dst, src` | `mov dst, src` | Register-to-register |
 | `LOAD` | `dst, [addr]` | `mov dst, [addr]` | Load from memory |
 | `STORE` | `src, [addr]` | `mov [addr], src` | Store to memory |
+| `LEA` | `dst, [addr]` | `lea dst, [addr]` | Load effective address |
 
 Address expressions (e.g., `[v1]`, `[rax*4]`, `[v0+8]`, `[label]`) are passed through, with virtual registers replaced.
 
@@ -150,6 +174,41 @@ vas -h                      # Display help
 
 ---
 
+## Standalone Mode
+
+When the input does **not** contain any section/global/extern boilerplate (i.e. it is pure pseudocode with virtual registers), `vas` automatically wraps the output in a minimal ELF64 skeleton so you can assemble and run it immediately:
+
+```bash
+echo "MOVI v0, 42" | vas
+```
+
+translates to:
+
+```asm
+default rel
+
+	section .text
+	global _start
+_start:
+	mov	rax, 42
+
+	xor	edi, edi
+	mov	eax, 60
+	syscall
+
+	section .data
+	result:	dq 0
+```
+
+The skeleton includes:
+- `default rel`, `section .text`, `global _start`, `_start:` header
+- An automatic `exit(0)` syscall (unless the last instruction is already `SYSCALL`)
+- A `.data` section with zero-initialised `dq` entries for any memory references found in `[...]`
+
+If your input already contains `section`, `global`, or `extern` directives, the standalone wrapping is skipped and the output is emitted verbatim.
+
+---
+
 ## Syntax Details
 
 ### Comments
@@ -175,6 +234,24 @@ _start:
 ### Passthrough
 Any line that is not a known pseudo-instruction (data definitions, section directives, alignment, etc.) is emitted verbatim with only virtual registers replaced.
 Recognized data/section keywords (e.g., `SECTION`, `GLOBAL`, `EXTERN`, `DQ`, `DB`, `resb`, `equ`) are token-checked; malformed constructs still trigger errors.
+
+**GAS → NASM dot prefix stripping**: Directive keywords prefixed with `.` (e.g., `.section`, `.global`, `.text`, `.data`) have the leading dot stripped automatically, so GAS-style source files translate smoothly to NASM output:
+
+```asm
+; Input (GAS style):
+.section .data
+msg: .asciz "hello"
+
+.section .text
+.global _start
+
+; Output (NASM style):
+section .data
+msg: db "hello", 0
+
+section .text
+global _start
+```
 
 ---
 
@@ -211,14 +288,14 @@ vas/
 ├── main.go         # CLI entry point, argument parsing
 ├── go.mod          # Go module definition
 ├── vas/
-│   └── core.go     # Core translation logic, register substitution, tokenisation
+│   ├── core.go     # Core translation logic, register substitution, tokenisation
+│   └── vas         # Pre-built Linux (WSL) binary
+├── bin/            # Pre-built Windows executables and intermediate NASM files
 ├── test/
 │   └── assembler_test.go  # Unit tests
-├── examples/
-│   ├── calc.vas    # Summation example
-│   ├── demo.vas    # Basic demo
-│   └── greet.vas   # CLI greeting example
-├── hello.vas       # Minimal example
+├── examples/       # Additional .vas example files
+├── syntaxes/       # VSCode syntax highlighting extension (vas.tmLanguage)
+├── hello.vas       # Hello world (syscall) example
 ├── .gitignore
 └── README.md
 ```
