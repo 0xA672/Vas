@@ -76,6 +76,7 @@ func Assemble(input string) (string, error) {
 
 func isInstruction(s string) bool {
 	upper := strings.ToUpper(strings.Fields(s)[0])
+	upper = strings.TrimLeft(upper, ".")
 	switch upper {
 	case "ADD", "SUB", "MUL", "LOAD", "STORE", "MOV", "MOVI",
 		"CMP", "JMP", "JE", "JNE", "JG", "JL", "JGE", "JLE",
@@ -129,7 +130,16 @@ func processInstruction(line string) ([]string, error) {
 	case "INT":
 		return expandInt(args)
 	default:
-		return []string{"\t" + mapReg(line)}, nil
+		out := mapReg(line)
+		t := strings.TrimLeft(out, " \t")
+		if strings.HasPrefix(t, ".") {
+			// GAS → NASM: strip leading dot from directive keyword
+			// .section → section, .global → global
+			t = t[1:]
+			ws := out[:len(out)-len(strings.TrimLeft(out, " \t"))]
+			out = ws + t
+		}
+		return []string{"\t" + out}, nil
 	}
 }
 
