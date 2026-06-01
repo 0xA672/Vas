@@ -288,9 +288,8 @@ vas/
 ├── main.go         # CLI entry point, argument parsing
 ├── go.mod          # Go module definition
 ├── vas/
-│   ├── core.go     # Core translation logic, register substitution, tokenisation
-│   └── vas         # Pre-built Linux (WSL) binary
-├── bin/            # Pre-built Windows executables and intermediate NASM files
+│   └── core.go     # Core translation logic, register substitution, tokenisation
+├── bin/            # Build output directory (gitignored)
 ├── test/
 │   └── assembler_test.go  # Unit tests
 ├── examples/       # Additional .vas example files
