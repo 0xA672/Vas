@@ -1,4 +1,3 @@
-vas.exe
-vas/vas
-*.s
-bin/
+*.exe
+*.obj
+*.o

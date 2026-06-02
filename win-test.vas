@@ -1,0 +1,3 @@
+main:
+    MOV v0, 0     ; rax = 0, return code
+    RET

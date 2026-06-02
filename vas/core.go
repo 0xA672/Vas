@@ -339,9 +339,9 @@ func wrapStandalone(vasInput, asmOutput string) string {
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 
-	// Only append exit if the last instruction isn't already a syscall
+	// Only append exit if the last instruction isn't already a syscall or ret
 	trimmed := strings.TrimSpace(asmOutput)
-	if !strings.HasSuffix(trimmed, "syscall") {
+	if !strings.HasSuffix(trimmed, "syscall") && !strings.HasSuffix(trimmed, "ret") {
 		sb.WriteString("\txor\tedi, edi\n")
 		sb.WriteString("\tmov\teax, 60\n")
 		sb.WriteString("\tsyscall\n")
@@ -363,8 +363,17 @@ func wrapStandaloneWin64(vasInput, asmOutput string) string {
 	var sb strings.Builder
 	sb.WriteString("\tdefault rel\n\n")
 	sb.WriteString("\tsection .text\n")
-	sb.WriteString("\tglobal main\n")
-	sb.WriteString("main:\n")
+	// Only add global/label if the source doesn't already define main
+	hasEntry := strings.Contains(asmOutput, "main:") || strings.Contains(asmOutput, "_start:")
+	if hasEntry {
+		// User supplies their own entry point; just ensure it's public
+		if strings.Contains(asmOutput, "main:") {
+			sb.WriteString("\tglobal main\n")
+		}
+	} else {
+		sb.WriteString("\tglobal main\n")
+		sb.WriteString("main:\n")
+	}
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 

@@ -72,7 +72,7 @@ For Windows, write a `.vas` file with a `main:` entry point instead of `_start:`
 ```bash
 vas -target win64 hello-win.vas -o hello.asm
 nasm -f win64 -o hello.obj hello.asm
-gcc -nostartfiles -o hello.exe hello.obj
+ld -e main -o hello.exe hello.obj
 hello.exe
 ```
 
