@@ -4,9 +4,9 @@
 .vas pseudocode  ->  VAS  ->  x86-64 NASM assembly (.s / .asm)  ->  nasm + ld / gcc  ->  executable
 ```
 
-**VAS** (Virtual Assembler) 是一个轻量级文本替换翻译工具。它读取使用**虚拟寄存器** (v0–v7) 的伪指令，输出标准的 **x86-64 NASM** 汇编。
+**VAS** (Virtual Assembler) is a lightweight text‑substitution translation tool. It reads pseudo‑instructions that use **virtual registers** (v0–v7) and outputs standard **x86-64 NASM** assembly.
 
-它不进行寄存器分配、指令调度或链接——其唯一目的是将教学/原型伪代码转化为 NASM 可汇编的源代码。
+It performs no register allocation, instruction scheduling, or linking—its sole purpose is to convert teaching/prototype pseudocode into NASM‑assemblable source code.
 
 ---
 
@@ -94,7 +94,7 @@ hello.exe
 | v6               | `r8`              |
 | v7               | `r9`              |
 
-虚拟寄存器可在任何操作数位置使用，包括内存寻址（如 `[v0+8]`），翻译时自动替换。
+Virtual registers can be used in any operand position, including memory addressing (e.g., `[v0+8]`), and are automatically replaced during translation.
 
 ---
 
@@ -104,24 +104,24 @@ hello.exe
 
 | Pseudo-instruction | Operands | Expansion | Notes |
 |--------------------|----------|-----------|-------|
-| `ADD` | `dst, src1, src2` | `mov dst, src1` then `add dst, src2` | 三操作数加法 |
-| `ADD` | `dst, src` | `add dst, src` | 二操作数加法 |
-| `SUB` | `dst, src1, src2` | `mov dst, src1` then `sub dst, src2` | 三操作数减法 |
-| `SUB` | `dst, src` | `sub dst, src` | 二操作数减法 |
-| `MUL` | `dst, src1, src2` | `mov dst, src1` then `imul dst, src2` | 三操作数乘法 |
-| `MUL` | `dst, src` | `imul dst, src` | 二操作数乘法 |
+| `ADD` | `dst, src1, src2` | `mov dst, src1` then `add dst, src2` | Three‑operand addition |
+| `ADD` | `dst, src` | `add dst, src` | Two‑operand addition |
+| `SUB` | `dst, src1, src2` | `mov dst, src1` then `sub dst, src2` | Three‑operand subtraction |
+| `SUB` | `dst, src` | `sub dst, src` | Two‑operand subtraction |
+| `MUL` | `dst, src1, src2` | `mov dst, src1` then `imul dst, src2` | Three‑operand multiplication |
+| `MUL` | `dst, src` | `imul dst, src` | Two‑operand multiplication |
 
 ### Memory Access
 
 | Pseudo-instruction | Operands | Expansion | Notes |
 |--------------------|----------|-----------|-------|
-| `MOVI` | `dst, imm` | `mov dst, imm` | 加载立即数 |
-| `MOV` | `dst, src` | `mov dst, src` | 寄存器间传送 |
-| `LOAD` | `dst, [addr]` | `mov dst, [addr]` | 从内存加载 |
-| `STORE` | `src, [addr]` | `mov [addr], src` | 存入内存 |
-| `LEA` | `dst, [addr]` | `lea dst, [addr]` | 取有效地址 |
+| `MOVI` | `dst, imm` | `mov dst, imm` | Load immediate |
+| `MOV` | `dst, src` | `mov dst, src` | Register‑to‑register move |
+| `LOAD` | `dst, [addr]` | `mov dst, [addr]` | Load from memory |
+| `STORE` | `src, [addr]` | `mov [addr], src` | Store to memory |
+| `LEA` | `dst, [addr]` | `lea dst, [addr]` | Load effective address |
 
-地址表达式（如 `[v1]`、`[v0+8]`、`[label]`）透传，仅替换虚拟寄存器。
+Address expressions (such as `[v1]`, `[v0+8]`, `[label]`) are passed through, with only virtual registers replaced.
 
 ### Control Flow
 
@@ -163,32 +163,32 @@ hello.exe
 ## Command Line Usage
 
 ```bash
-vas                         # 从 stdin 读取，输出到 stdout
-vas input.vas               # 翻译 input.vas，输出到 stdout
-vas -o output.s input.vas   # 写入文件（-o 可在输入前后）
-vas input.vas -o output.s   # 同上
-vas -target win64 input.vas # 输出 Windows x64 骨架取代默认 ELF64
-vas -O1 input.vas           # 启用优化（死代码消除 + 常量折叠）
-vas -h / --help             # 显示帮助
+vas                         # read from stdin, output to stdout
+vas input.vas               # translate input.vas, output to stdout
+vas -o output.s input.vas   # write to file (-o can be before or after input)
+vas input.vas -o output.s   # same as above
+vas -target win64 input.vas # output Windows x64 skeleton instead of default ELF64
+vas -O1 input.vas           # enable optimizations (dead code elimination + constant folding)
+vas -h / --help             # show help
 ```
 
-- **管道输入**: `echo "MOVI v0, 42" | vas`
-- 输入文件不存在时报错退出
-- 无输入且 stdin 为空时打印帮助信息并退出
+- **Pipe input**: `echo "MOVI v0, 42" | vas`
+- Exits with an error if the input file does not exist
+- When there is no input and stdin is empty, prints help and exits
 
 ---
 
-## Standalone Mode (独立模式)
+## Standalone Mode
 
-当输入**不包含**任何 `section` / `global` / `extern` 样板代码时（即纯虚拟寄存器伪代码），VAS 自动包裹输出为可独立汇编运行的最小骨架。
+When the input does **not** contain any `section` / `global` / `extern` boilerplate (i.e., pure virtual‑register pseudocode), VAS automatically wraps the output in a minimal skeleton that can be assembled and run independently.
 
-### ELF64（Linux / WSL，默认）
+### ELF64 (Linux / WSL, default)
 
 ```bash
 echo "MOVI v0, 42" | vas
 ```
 
-输出：
+Output:
 
 ```asm
 default rel
@@ -208,48 +208,48 @@ vas_main:
 	result:	dq 0
 ```
 
-骨架包含：
+The skeleton contains:
 - `default rel` + `section .text` + `global _start` / `_start:` → `call vas_main` → syscall exit
-- 用户代码以 `vas_main:` 包裹，末尾 `ret` 返回后自动执行 `exit(eax)` syscall
-- 自动添加 `.data` 段（含用户数据定义则跳过）
+- User code is wrapped in `vas_main:`, and after returning via `ret`, an `exit(eax)` syscall is automatically executed
+- A `.data` section is automatically added (skipped if user data definitions already exist)
 
-### Win64（Windows）
+### Win64 (Windows)
 
 ```bash
 echo "MOVI v0, 42" | vas -target win64
 ```
 
-骨架使用 `main:` 入口点，末尾 `xor eax, eax; ret` 退出（除非用户最后一条指令已是 `RET`）。
+The skeleton uses a `main:` entry point and exits via `xor eax, eax; ret` (unless the user’s last instruction is already `RET`).
 
-### 跳过独立模式
+### Skipping Standalone Mode
 
-如果输入已包含 `section`、`global` 或 `extern`，则按原样输出，不添加任何骨架（`-target` 仍有效用于寄存器映射风格）。
+If the input already contains `section`, `global`, or `extern`, the output is passed through as‑is, with no skeleton added (`-target` still applies for register mapping style).
 
 ---
 
-## 优化 (-O1)
+## Optimization (-O1)
 
-`-O1` 启用两级优化：
+`-O1` enables two levels of optimization:
 
-1. **死代码消除 (DCE)**：删除对后续无影响的寄存器赋值（例如 `MOV v1, v0` 后 v1 被覆盖前从未使用）
-2. **常量折叠**：字面量运算在编译期计算（如 `MOVI v1, 3; ADD v0, v1, 7` → `mov rax, 10`）
+1. **Dead code elimination (DCE)**: removes register assignments that have no effect on subsequent code (e.g., after `MOV v1, v0`, `v1` is never used before being overwritten)
+2. **Constant folding**: literal arithmetic is computed at compile time (e.g., `MOVI v1, 3; ADD v0, v1, 7` → `mov rax, 10`)
 
-DCE 正确保留有副作用的指令（PUSH、POP、CALL、STORE、LOAD、SYSCALL、INT、RET 等）。
+DCE correctly preserves instructions with side effects (PUSH, POP, CALL, STORE, LOAD, SYSCALL, INT, RET, etc.).
 
 ---
 
 ## Syntax Details
 
-### 注释
-`;` 和 `#` 均可开始行内注释（不会与字符串字面量内的分隔符混淆）：
+### Comments
+Both `;` and `#` can start inline comments (they will not be confused with delimiters inside string literals):
 
 ```asm
-MOVI v0, 42   ; 这是一条注释
-ADD  v1, v0   # 这也是注释
+MOVI v0, 42   ; this is a comment
+ADD  v1, v0   # this is also a comment
 ```
 
-### 标签和定义
-以冒号结尾且非已知指令的行透传输出，仅替换虚拟寄存器：
+### Labels and Definitions
+Lines that end with a colon and are not recognized instructions are passed through, with only virtual registers replaced:
 
 ```asm
 section .data
@@ -260,21 +260,21 @@ global _start
 _start:
 ```
 
-### 透传 (Passthrough)
-任何非已知伪指令的行（数据定义、段指令、对齐等）原样输出，仅替换虚拟寄存器。
-可识别数据/段关键字：`SECTION`、`GLOBAL`、`EXTERN`、`DQ`、`DB`、`resb`、`equ` 等。
+### Passthrough
+Any line that is not a known pseudo‑instruction (data definitions, section directives, alignment, etc.) is output as‑is, with only virtual registers replaced.  
+Recognized data/section keywords: `SECTION`, `GLOBAL`, `EXTERN`, `DQ`, `DB`, `resb`, `equ`, etc.
 
-**GAS → NASM 点前缀剥离**：`.section` → `section`，`.global` → `global`，`.text` → `text`，`.globl` → `global`：
+**GAS → NASM dot‑prefix stripping**: `.section` → `section`, `.global` → `global`, `.text` → `text`, `.globl` → `global`:
 
 ```asm
-; 输入 (GAS 风格):
+; Input (GAS style):
 .section .data
 msg: .asciz "hello"
 
 .section .text
 .globl _start
 
-; 输出 (NASM 风格):
+; Output (NASM style):
 section .data
 msg: db "hello", 0
 
@@ -286,34 +286,34 @@ global _start
 
 ## Error Handling
 
-- **已知指令操作数数量不匹配**：报错显示行号和原文，退出
-- **输入文件不存在**：立即报错退出
-- **未知指令**：透传（仅替换虚拟寄存器），不报错
+- Known instruction with operand count mismatch: error with line number and source text, then exit
+- Input file does not exist: error and exit immediately
+- Unknown instruction: passed through (only virtual registers replaced), no error
 
 ---
 
 ## Examples
 
-项目自带多个实战示例，涵盖各种功能场景：
+The project includes several practical examples covering various functional scenarios:
 
-| 文件 | 功能 | 测试指令 |
-|------|------|----------|
-| `hello.vas` | Linux write syscall 打印 | MOVI, LEA, SYSCALL |
-| `calc.vas` | 算术运算链 | ADD, SUB, MUL |
-| `fib.vas` | 迭代斐波那契 F(20) | CMP, JLE, JMP, LOOP |
-| `fact.vas` | 递归阶乘 fact(5) | CALL, RET, PUSH, POP |
-| `sort.vas` | 冒泡排序 8 元素 | LOAD, STORE, 嵌套循环, LEA |
-| `greet.vas` | Linux syscall 字符串输出 | .data 段, SYSCALL |
-| `win-ret42.vas` | Win64 返回 42 | MOVI, RET |
-| `win-ops.vas` | Win64 运算流水线 | ADD, MUL, SUB, Win64 |
-| `win-edge.vas` | Win64 边界测试 | PUSH/POP/STORE/LOAD/CMP/JE, .data |
+| File | Feature | Test Instructions |
+|------|---------|-------------------|
+| `hello.vas` | Linux write syscall print | MOVI, LEA, SYSCALL |
+| `calc.vas` | Arithmetic operation chain | ADD, SUB, MUL |
+| `fib.vas` | Iterative Fibonacci F(20) | CMP, JLE, JMP, LOOP |
+| `fact.vas` | Recursive factorial fact(5) | CALL, RET, PUSH, POP |
+| `sort.vas` | Bubble sort 8 elements | LOAD, STORE, nested loops, LEA |
+| `greet.vas` | Linux syscall string output | .data section, SYSCALL |
+| `win-ret42.vas` | Win64 return 42 | MOVI, RET |
+| `win-ops.vas` | Win64 operation pipeline | ADD, MUL, SUB, Win64 |
+| `win-edge.vas` | Win64 edge‑case test | PUSH/POP/STORE/LOAD/CMP/JE, .data |
 
-在 Linux/WSL 上运行 ELF 示例：
+Run ELF examples on Linux/WSL:
 ```bash
 vas fib.vas -o fib.s && nasm -f elf64 fib.s -o fib.o && ld fib.o -o fib && ./fib; echo $?
 ```
 
-在 Windows 上运行 Win64 示例：
+Run Win64 examples on Windows:
 ```bash
 vas -target win64 win-ops.vas -o win-ops.asm
 nasm -f win64 win-ops.asm -o win-ops.obj
@@ -325,17 +325,17 @@ win-ops.exe
 
 ## Installation and Build
 
-**Prerequisites**: Go 1.21+, 无第三方依赖。
+**Prerequisites**: Go 1.21+, no third‑party dependencies.
 
 ```bash
-# 克隆
+# Clone
 git clone https://github.com/0xA672/Vas.git
 cd vas
 
-# 构建
+# Build
 go build -o bin\vas.exe main.go
 
-# 或安装到 $GOPATH/bin
+# Or install to $GOPATH/bin
 go install
 ```
 
@@ -345,26 +345,26 @@ go install
 
 ```
 vas/
-├── main.go                  # CLI 入口，参数解析
+├── main.go                  # CLI entry point, argument parsing
 ├── go.mod                   # Go module
 ├── vas/
-│   ├── core.go              # 核心翻译逻辑：扫描 → 展开 → 包装
+│   ├── core.go              # Core translation logic: scan → expand → wrap
 │   └── arch/
-│       └── reg.go           # 寄存器映射表
+│       └── reg.go           # Register mapping table
 │   └── opt/
-│       └── opt.go           # -O1 优化器（DCE + 常量折叠）
+│       └── opt.go           # -O1 optimizer (DCE + constant folding)
 ├── test/
-│   └── assembler_test.go    # 单元测试（26 项）
-├── bin/                     # 构建产物（gitignored）
-├── hello.vas                # 入门示例
-├── calc.vas                 # 算术示例
-├── fib.vas                  # 斐波那契示例
-├── fact.vas                 # 递归阶乘示例
-├── sort.vas                 # 冒泡排序示例
-├── greet.vas                # Linux syscall 示例
-├── win-ret42.vas            # Win64 最小示例
-├── win-ops.vas              # Win64 运算示例
-├── win-edge.vas             # Win64 边界测试
+│   └── assembler_test.go    # Unit tests (26 items)
+├── bin/                     # Build artifacts (gitignored)
+├── hello.vas                # Getting started example
+├── calc.vas                 # Arithmetic example
+├── fib.vas                  # Fibonacci example
+├── fact.vas                 # Recursive factorial example
+├── sort.vas                 # Bubble sort example
+├── greet.vas                # Linux syscall example
+├── win-ret42.vas            # Win64 minimal example
+├── win-ops.vas              # Win64 arithmetic example
+├── win-edge.vas             # Win64 edge‑case test
 ├── README.md
 └── LICENSE
 ```
@@ -373,17 +373,17 @@ vas/
 
 ## Distinction from a Real Assembler
 
-VAS **明确不执行**以下任务，不应与 GCC、LLVM 或真实汇编器比较：
+VAS explicitly does **not** perform the following tasks and should not be compared to GCC, LLVM, or real assemblers:
 
-- ❌ 无寄存器分配 / 指令调度
-- ❌ 无指令选择或优化（除简单的 -O1 外）
-- ❌ 无链接或重定位
-- ❌ 生成的 `.s` / `.asm` 文件**必须**由 NASM 汇编 + ld 链接才能运行
+- No register allocation / instruction scheduling
+- No instruction selection or optimization (except for simple -O1)
+- No linking or relocation
+- The generated `.s` / `.asm` file **must** be assembled by NASM and linked by ld to run
 
-它只是一个薄翻译层，让你能用更友好的伪指令编写原型，其余工作交给 NASM。
+It is merely a thin translation layer that lets you write prototypes with friendlier pseudo‑instructions, leaving the rest to NASM.
 
 ---
 
 ## License
 
-MIT — 参见 [LICENSE](LICENSE) 文件。
+MIT — see the [LICENSE](LICENSE) file.
