@@ -1,3 +1,13 @@
+# Build artifacts
 *.exe
 *.obj
 *.o
+vas/vas
+
+# Output directories
+bin/
+out/
+
+# Personal test files
+win-*.asm
+test-*.asm
