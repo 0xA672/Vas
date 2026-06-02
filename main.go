@@ -88,6 +88,6 @@ Input format: .vas or .asm files with virtual registers v0-v7.
 Output: x86-64 NASM assembly.
 
 Virtual register mapping:
-  v0 → rax   v1 → rdi   v2 → rsi   v3 → rdx
-  v4 → rcx   v5 → r8    v6 → r9    v7 → r10
+  v0 → rax   v1 → rbx   v2 → rcx   v3 → rdx
+  v4 → rsi   v5 → rdi   v6 → r8    v7 → r9
 `

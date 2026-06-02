@@ -23,12 +23,12 @@ section .text
 global _start
 _start:
     MOVI v0, 1       ; rax = 1 (write syscall)
-    MOVI v1, 1       ; rdi = 1 (stdout fd)
-    LEA  v2, [msg]   ; rsi = address of msg
+    MOVI v5, 1       ; rdi = 1 (stdout fd)
+    LEA  v4, [msg]   ; rsi = address of msg
     MOVI v3, 12      ; rdx = length
     SYSCALL
     MOVI v0, 60      ; rax = 60 (exit syscall)
-    MOVI v1, 0       ; rdi = 0 (exit code)
+    MOVI v5, 0       ; rdi = 0 (exit code)
     SYSCALL
 ```
 
@@ -61,18 +61,19 @@ _start:
 
 ### 3. Build an Executable
 
-**Windows** (using nasm and gcc):
-```bash
-nasm -f win64 -o hello.obj hello.s
-gcc -nostartfiles -o hello.exe hello.obj
-hello.exe
-```
-
 **Linux** (using nasm and ld):
 ```bash
 nasm -f elf64 -o hello.o hello.s
 ld -o hello hello.o
 ./hello
+```
+
+For Windows, write a `.vas` file with a `main:` entry point instead of `_start:`, then:
+```bash
+vas -target win64 hello-win.vas -o hello.asm
+nasm -f win64 -o hello.obj hello.asm
+gcc -nostartfiles -o hello.exe hello.obj
+hello.exe
 ```
 
 ---
@@ -84,13 +85,13 @@ The eight virtual registers `v0`-`v7` are mapped to physical x86-64 registers as
 | Virtual Register | Physical Register |
 |------------------|-------------------|
 | v0               | `rax`             |
-| v1               | `rdi`             |
-| v2               | `rsi`             |
+| v1               | `rbx`             |
+| v2               | `rcx`             |
 | v3               | `rdx`             |
-| v4               | `rcx`             |
-| v5               | `r8`              |
-| v6               | `r9`              |
-| v7               | `r10`             |
+| v4               | `rsi`             |
+| v5               | `rdi`             |
+| v6               | `r8`              |
+| v7               | `r9`              |
 
 Virtual registers may appear in any operand position, including memory addressing (e.g., `[v0+8]`). They are replaced during translation.
 
@@ -165,6 +166,7 @@ vas                         # Read from stdin, write to stdout
 vas input.vas               # Translate input.vas, output to stdout
 vas -o output.s input.vas   # Write to file (-o may precede or follow the input file)
 vas input.vas -o output.s   # Equally valid
+vas -target win64 input.vas # Output Windows x64 (COFF/NASM) skeleton instead of default ELF64
 vas -h                      # Display help
 ```
 
@@ -176,13 +178,16 @@ vas -h                      # Display help
 
 ## Standalone Mode
 
-When the input does **not** contain any section/global/extern boilerplate (i.e. it is pure pseudocode with virtual registers), `vas` automatically wraps the output in a minimal ELF64 skeleton so you can assemble and run it immediately:
+When the input does **not** contain any section/global/extern boilerplate (i.e. it is pure pseudocode with virtual registers), `vas` automatically wraps the output in a minimal skeleton so you can assemble and run it immediately.
+
+By default a **Linux ELF64** skeleton is emitted. Use `-target win64` for a **Windows x64** skeleton instead.
 
 ```bash
-echo "MOVI v0, 42" | vas
+echo "MOVI v0, 42" | vas          # default: ELF64
+echo "MOVI v0, 42" | vas -target win64   # Windows COFF
 ```
 
-translates to:
+Default (ELF64) output:
 
 ```asm
 default rel
@@ -200,12 +205,16 @@ _start:
 	result:	dq 0
 ```
 
-The skeleton includes:
+The ELF64 skeleton includes:
 - `default rel`, `section .text`, `global _start`, `_start:` header
 - An automatic `exit(0)` syscall (unless the last instruction is already `SYSCALL`)
 - A `.data` section with zero-initialised `dq` entries for any memory references found in `[...]`
 
-If your input already contains `section`, `global`, or `extern` directives, the standalone wrapping is skipped and the output is emitted verbatim.
+The win64 skeleton includes:
+- `default rel`, `section .text`, `global main`, `main:` header
+- An automatic `exit(0)` via `xor eax, eax; ret` (unless the last instruction is already `RET`)
+
+If your input already contains `section`, `global`, or `extern` directives, the standalone wrapping is skipped and the output is emitted verbatim regardless of `-target`.
 
 ---
 
