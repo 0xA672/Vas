@@ -10,25 +10,28 @@ import (
 )
 
 func main() {
- var inputFile, outFile, target string
- args := os.Args[1:]
- for i := 0; i < len(args); i++ {
-  if args[i] == "-o" && i+1 < len(args) {
-   outFile = args[i+1]
-   i++
-  } else if args[i] == "-target" && i+1 < len(args) {
-   target = args[i+1]
-   i++
-  } else if args[i] == "-h" || args[i] == "--help" {
-   fmt.Print(helpText)
-   return
-  } else if !strings.HasPrefix(args[i], "-") {
-   inputFile = args[i]
-  } else {
-   fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-   os.Exit(1)
-  }
- }
+	var inputFile, outFile, target string
+	optLevel := 0
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-o" && i+1 < len(args) {
+			outFile = args[i+1]
+			i++
+		} else if args[i] == "-target" && i+1 < len(args) {
+			target = args[i+1]
+			i++
+		} else if args[i] == "-O1" {
+			optLevel = 1
+		} else if args[i] == "-h" || args[i] == "--help" {
+			fmt.Print(helpText)
+			return
+		} else if !strings.HasPrefix(args[i], "-") {
+			inputFile = args[i]
+		} else {
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			os.Exit(1)
+		}
+	}
 
  if target == "" {
   target = "elf64"
@@ -57,7 +60,7 @@ func main() {
   }
  }
 
- output, err := vas.AssembleStandaloneTarget(input, target)
+ output, err := vas.AssembleStandaloneTargetOpt(input, target, optLevel)
  if err != nil {
   fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
   os.Exit(1)
@@ -73,7 +76,7 @@ func main() {
  }
 }
 
-const helpText = `VAS — Virtual ASseMbler
+const helpText = `VAS -- Virtual ASseMbler
 
 Usage:
   vas [options] <input file>
@@ -82,12 +85,13 @@ Usage:
 Options:
   -o <file>       Write output to file instead of stdout
   -target <arch>  Target platform: elf64 (default) or win64
+  -O1             Enable optimizations (constant folding, dead code elim, peephole)
   -h, --help      Show this help message
 
 Input format: .vas or .asm files with virtual registers v0-v7.
 Output: x86-64 NASM assembly.
 
 Virtual register mapping:
-  v0 → rax   v1 → rbx   v2 → rcx   v3 → rdx
-  v4 → rsi   v5 → rdi   v6 → r8    v7 → r9
+  v0 -> rax   v1 -> rbx   v2 -> rcx   v3 -> rdx
+  v4 -> rsi   v5 -> rdi   v6 -> r8    v7 -> r9
 `

@@ -1,4 +1,4 @@
-; hello.vas — simple CLI tool written with VAS assembler
+; hello.vas -- simple CLI tool written with VAS assembler
 ; full build process:
 ;   vas hello.vas -o hello.s
 ;   nasm -f elf64 hello.s -o hello.o

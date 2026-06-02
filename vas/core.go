@@ -1,9 +1,11 @@
 package vas
 
 import (
- "fmt"
- "strconv"
- "strings"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"vas/vas/opt"
 )
 
 var regMap = map[string]string{
@@ -17,14 +19,30 @@ var regMap = map[string]string{
 	"v7": "r9",
 }
 
-func mapReg(s string) string {
+func mapReg(s string) (string, error) {
+	// First pass: validate all virtual register names before replacement
+	// (check must happen before replacement to avoid false negatives like
+//  v10 becoming rbx0 after v1->rbx substitution)
+	for i := 0; i < len(s); i++ {
+		if s[i] == 'v' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
+			j := i + 1
+			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+				j++
+			}
+			name := s[i:j]
+			if _, ok := regMap[name]; !ok {
+				return "", fmt.Errorf("virtual register %s out of range (valid: v0-v7)", name)
+			}
+		}
+	}
+	// Second pass: replace valid virtual registers with physical registers
 	for i := 19; i >= 0; i-- {
 		old := fmt.Sprintf("v%d", i)
 		if phys, ok := regMap[old]; ok {
 			s = strings.ReplaceAll(s, old, phys)
 		}
 	}
-	return s
+	return s, nil
 }
 
 func stripComment(line string) string {
@@ -41,7 +59,25 @@ func stripComment(line string) string {
 }
 
 func Assemble(input string) (string, error) {
+	return AssembleWithOpt(input, 0)
+}
+
+// AssembleWithOpt assembles VAS source with the given optimization level.
+// level 0 = no optimization, level >=1 = -O1 (constant folding + DCE + peephole).
+func AssembleWithOpt(input string, optLevel int) (string, error) {
+	// Pre-expansion optimization: constant folding
 	lines := strings.Split(input, "\n")
+	if optLevel >= 1 {
+		lines = opt.FoldConstants(lines)
+		input = strings.Join(lines, "\n")
+	}
+
+	// Pre-expansion optimization: dead code elimination
+	if optLevel >= 1 {
+		input = opt.Optimize(input, optLevel)
+	}
+
+	lines = strings.Split(input, "\n")
 	var outLines []string
 
 	for _, line := range lines {
@@ -61,7 +97,11 @@ func Assemble(input string) (string, error) {
 		}
 
 		if strings.HasSuffix(line, ":") && !isInstruction(line) {
-			outLines = append(outLines, mapReg(line))
+			mapped, err := mapReg(line)
+			if err != nil {
+				return "", fmt.Errorf("line %q: %w", original, err)
+			}
+			outLines = append(outLines, mapped)
 			continue
 		}
 
@@ -72,7 +112,14 @@ func Assemble(input string) (string, error) {
 		outLines = append(outLines, result...)
 	}
 
-	return strings.Join(outLines, "\n"), nil
+	output := strings.Join(outLines, "\n")
+
+	// Post-expansion peephole optimization
+	if optLevel >= 1 {
+		output = opt.Optimize(output, optLevel)
+	}
+
+	return output, nil
 }
 
 func isInstruction(s string) bool {
@@ -133,16 +180,31 @@ func processInstruction(line string) ([]string, error) {
 	case "INT":
 		return expandInt(args)
 	default:
-		out := mapReg(line)
-		t := strings.TrimLeft(out, " \t")
-		if strings.HasPrefix(t, ".") {
-			// GAS → NASM: strip leading dot from directive keyword
-			// .section → section, .global → global
-			t = t[1:]
-			ws := out[:len(out)-len(strings.TrimLeft(out, " \t"))]
-			out = ws + t
+		mapped, err := mapReg(line)
+		if err != nil {
+			return nil, err
 		}
-		return []string{"\t" + out}, nil
+		t := strings.TrimLeft(mapped, " \t")
+		if strings.HasPrefix(t, ".") {
+			// GAS -> NASM: strip leading dot from directive keyword
+			// .section -> section, .global -> global, .globl -> global
+			t = t[1:]
+			// .globl -> global (not just globl)
+			if t == "globl" || strings.HasPrefix(t, "globl ") || strings.HasPrefix(t, "globl\t") {
+				t = "global" + t[5:]
+			}
+			// .data / .bss / .text -> section .data / section .bss / section .text
+			if t == "data" || strings.HasPrefix(t, "data ") || strings.HasPrefix(t, "data\t") {
+				t = "section .data"
+			} else if t == "bss" || strings.HasPrefix(t, "bss ") || strings.HasPrefix(t, "bss\t") {
+				t = "section .bss"
+			} else if t == "text" || strings.HasPrefix(t, "text ") || strings.HasPrefix(t, "text\t") {
+				t = "section .text"
+			}
+			ws := mapped[:len(mapped)-len(strings.TrimLeft(mapped, " \t"))]
+			mapped = ws + t
+		}
+		return []string{"\t" + mapped}, nil
 	}
 }
 
@@ -181,18 +243,45 @@ func expand2op(mnemonic string, args []string) ([]string, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return nil, fmt.Errorf("%s expects 2 or 3 operands, got %d", mnemonic, len(args))
 	}
-	dst := mapReg(args[0])
+	dst, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
 	if len(args) == 3 {
-		src1 := mapReg(args[1])
-		src2 := mapReg(args[2])
-		var lines []string
-		if dst != src1 {
-			lines = append(lines, fmt.Sprintf("\tmov\t%s, %s", dst, src1))
+		src1, err := mapReg(args[1])
+		if err != nil {
+			return nil, err
 		}
-		lines = append(lines, fmt.Sprintf("\t%s\t%s, %s", mnemonic, dst, src2))
+		src2, err := mapReg(args[2])
+		if err != nil {
+			return nil, err
+		}
+		var lines []string
+		if dst == src2 {
+			// dst == src2: src2 would be overwritten by the mov from src1.
+			if mnemonic == "add" || mnemonic == "imul" {
+				// Commutative: dst = src1 + dst  ==  dst + src1
+				lines = append(lines, fmt.Sprintf("\t%s\t%s, %s", mnemonic, dst, src1))
+			} else {
+				// Non-commutative: save src2 via r10 first
+				lines = append(lines, fmt.Sprintf("\tmov\tr10, %s", src2))
+				if dst != src1 {
+					lines = append(lines, fmt.Sprintf("\tmov\t%s, %s", dst, src1))
+				}
+				lines = append(lines, fmt.Sprintf("\t%s\t%s, r10", mnemonic, dst))
+			}
+		} else {
+			if dst != src1 {
+				lines = append(lines, fmt.Sprintf("\tmov\t%s, %s", dst, src1))
+			}
+			lines = append(lines, fmt.Sprintf("\t%s\t%s, %s", mnemonic, dst, src2))
+		}
 		return lines, nil
 	}
-	src := mapReg(args[1])
+	src, err := mapReg(args[1])
+	if err != nil {
+		return nil, err
+	}
 	return []string{fmt.Sprintf("\t%s\t%s, %s", mnemonic, dst, src)}, nil
 }
 
@@ -200,18 +289,35 @@ func expandMul(args []string) ([]string, error) {
 	if len(args) < 2 || len(args) > 3 {
 		return nil, fmt.Errorf("MUL expects 2 or 3 operands, got %d", len(args))
 	}
-	dst := mapReg(args[0])
+	dst, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
 	if len(args) == 3 {
-		src1 := mapReg(args[1])
-		src2 := mapReg(args[2])
-		var lines []string
-		if dst != src1 {
-			lines = append(lines, fmt.Sprintf("\tmov\t%s, %s", dst, src1))
+		src1, err := mapReg(args[1])
+		if err != nil {
+			return nil, err
 		}
-		lines = append(lines, fmt.Sprintf("\timul\t%s, %s", dst, src2))
+		src2, err := mapReg(args[2])
+		if err != nil {
+			return nil, err
+		}
+		var lines []string
+		if dst == src2 {
+			// dst == src2: imul is commutative, swap src1/src2
+			lines = append(lines, fmt.Sprintf("\timul\t%s, %s", dst, src1))
+		} else {
+			if dst != src1 {
+				lines = append(lines, fmt.Sprintf("\tmov\t%s, %s", dst, src1))
+			}
+			lines = append(lines, fmt.Sprintf("\timul\t%s, %s", dst, src2))
+		}
 		return lines, nil
 	}
-	src := mapReg(args[1])
+	src, err := mapReg(args[1])
+	if err != nil {
+		return nil, err
+	}
 	return []string{fmt.Sprintf("\timul\t%s, %s", dst, src)}, nil
 }
 
@@ -219,8 +325,14 @@ func expandLoad(args []string) ([]string, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("LOAD expects 2 operands, got %d", len(args))
 	}
-	dst := mapReg(args[0])
-	mem := mapReg(args[1])
+	dst, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
+	mem, err := mapReg(args[1])
+	if err != nil {
+		return nil, err
+	}
 	return []string{fmt.Sprintf("\tmov\t%s, %s", dst, mem)}, nil
 }
 
@@ -228,8 +340,16 @@ func expandStore(args []string) ([]string, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("STORE expects 2 operands, got %d", len(args))
 	}
-	src := mapReg(args[0])
-	mem := mapReg(args[1])
+	// STORE src, [mem]  →  args[0]=src, args[1]=[mem]
+	// Output: mov [mem], src  (Intel syntax: destination first)
+	src, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
+	mem, err := mapReg(args[1])
+	if err != nil {
+		return nil, err
+	}
 	return []string{fmt.Sprintf("\tmov\t%s, %s", mem, src)}, nil
 }
 
@@ -237,7 +357,10 @@ func expandMovi(args []string) ([]string, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("MOVI expects 2 operands, got %d", len(args))
 	}
-	dst := mapReg(args[0])
+	dst, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
 	imm := args[1]
 	return []string{fmt.Sprintf("\tmov\t%s, %s", dst, imm)}, nil
 }
@@ -246,8 +369,14 @@ func expandMov(args []string) ([]string, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("MOV expects 2 operands, got %d", len(args))
 	}
-	dst := mapReg(args[0])
-	src := mapReg(args[1])
+	dst, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
+	src, err := mapReg(args[1])
+	if err != nil {
+		return nil, err
+	}
 	return []string{fmt.Sprintf("\tmov\t%s, %s", dst, src)}, nil
 }
 
@@ -255,8 +384,14 @@ func expandCmp(args []string) ([]string, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("CMP expects 2 operands, got %d", len(args))
 	}
-	a := mapReg(args[0])
-	b := mapReg(args[1])
+	a, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
+	b, err := mapReg(args[1])
+	if err != nil {
+		return nil, err
+	}
 	return []string{fmt.Sprintf("\tcmp\t%s, %s", a, b)}, nil
 }
 
@@ -264,7 +399,10 @@ func expandJump(opcode string, args []string) ([]string, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("%s expects 1 operand, got %d", opcode, len(args))
 	}
-	target := mapReg(args[0])
+	target, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
 	mnemonic := strings.ToLower(opcode)
 	return []string{fmt.Sprintf("\t%s\t%s", mnemonic, target)}, nil
 }
@@ -273,14 +411,22 @@ func expandPush(args []string) ([]string, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("PUSH expects 1 operand, got %d", len(args))
 	}
-	return []string{fmt.Sprintf("\tpush\t%s", mapReg(args[0]))}, nil
+	reg, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
+	return []string{fmt.Sprintf("\tpush\t%s", reg)}, nil
 }
 
 func expandPop(args []string) ([]string, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("POP expects 1 operand, got %d", len(args))
 	}
-	return []string{fmt.Sprintf("\tpop\t%s", mapReg(args[0]))}, nil
+	reg, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
+	return []string{fmt.Sprintf("\tpop\t%s", reg)}, nil
 }
 
 func expandInt(args []string) ([]string, error) {
@@ -294,8 +440,18 @@ func expandLea(args []string) ([]string, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("LEA expects 2 operands, got %d", len(args))
 	}
-	dst := mapReg(args[0])
-	mem := mapReg(args[1])
+	dst, err := mapReg(args[0])
+	if err != nil {
+		return nil, err
+	}
+	mem, err := mapReg(args[1])
+	if err != nil {
+		return nil, err
+	}
+	// NASM requires brackets for LEA: lea rax, [data]
+	if !strings.HasPrefix(mem, "[") {
+		mem = "[" + mem + "]"
+	}
 	return []string{fmt.Sprintf("\tlea\t%s, %s", dst, mem)}, nil
 }
 
@@ -306,7 +462,13 @@ func AssembleStandalone(input string) (string, error) {
 }
 
 func AssembleStandaloneTarget(input, target string) (string, error) {
-	asm, err := Assemble(input)
+	return AssembleStandaloneTargetOpt(input, target, 0)
+}
+
+// AssembleStandaloneTargetOpt assembles VAS with optimization level and wraps
+// with a platform-appropriate skeleton.
+func AssembleStandaloneTargetOpt(input, target string, optLevel int) (string, error) {
+	asm, err := AssembleWithOpt(input, optLevel)
 	if err != nil {
 		return "", err
 	}
@@ -321,11 +483,13 @@ func AssembleStandaloneTarget(input, target string) (string, error) {
 	}
 }
 
+// hasBoilerplate checks if the assembled output already defines a .text section.
+// Only then can we safely skip adding the wrapper (section directives, entry point, etc.).
+// Sections like .data or .bss alone are not sufficient — without .text there's no code section
+// and the entry point won't be emitted.
 func hasBoilerplate(s string) bool {
 	lower := strings.ToLower(s)
-	return strings.Contains(lower, "\tsection ") ||
-		strings.Contains(lower, "\tglobal ") ||
-		strings.Contains(lower, "\textern ")
+	return strings.Contains(lower, "\tsection .text")
 }
 
 func wrapStandalone(vasInput, asmOutput string) string {
@@ -336,21 +500,30 @@ func wrapStandalone(vasInput, asmOutput string) string {
 	sb.WriteString("\tsection .text\n")
 	sb.WriteString("\tglobal _start\n")
 	sb.WriteString("_start:\n")
+	// Call the user's code as a subroutine so any RET returns here
+	sb.WriteString("\tcall\tvas_main\n")
+	sb.WriteString("\tmov\tedi, eax\n")
+	sb.WriteString("\tmov\teax, 60\n")
+	sb.WriteString("\tsyscall\n")
+	// User code label
+	sb.WriteString("vas_main:\n")
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 
-	// Only append exit if the last instruction isn't already a syscall or ret
-	trimmed := strings.TrimSpace(asmOutput)
-	if !strings.HasSuffix(trimmed, "syscall") && !strings.HasSuffix(trimmed, "ret") {
-		sb.WriteString("\txor\tedi, edi\n")
-		sb.WriteString("\tmov\teax, 60\n")
-		sb.WriteString("\tsyscall\n")
-	}
-
 	if len(memRefs) > 0 {
-		sb.WriteString("\n\tsection .data\n")
+		// Only add auto-generated data entries for references not already defined
+		// in the program's own .data/.bss sections
+		var dataLines []string
 		for _, ref := range memRefs {
-			sb.WriteString(fmt.Sprintf("%s:\tdq 0\n", ref))
+			if !strings.Contains(asmOutput, ref+":") {
+				dataLines = append(dataLines, fmt.Sprintf("%s:\tdq 0\n", ref))
+			}
+		}
+		if len(dataLines) > 0 {
+			sb.WriteString("\n\tsection .data\n")
+			for _, line := range dataLines {
+				sb.WriteString(line)
+			}
 		}
 	}
 
@@ -378,20 +551,63 @@ func wrapStandaloneWin64(vasInput, asmOutput string) string {
 	sb.WriteString("\n")
 
 	// On Windows, exit via ret (rax = 0)
-	trimmed := strings.TrimSpace(asmOutput)
-	if !strings.HasSuffix(trimmed, "ret") {
+	// Check the last instruction line, ignoring section directives and comments
+	lastInst := lastInstructionLine(asmOutput)
+	if !strings.HasSuffix(lastInst, "ret") {
 		sb.WriteString("\txor\teax, eax\n")
 		sb.WriteString("\tret\n")
 	}
 
 	if len(memRefs) > 0 {
-		sb.WriteString("\n\tsection .data\n")
+		// Only add auto-generated data entries for references not already defined
+		// in the program's own .data/.bss sections
+		var dataLines []string
 		for _, ref := range memRefs {
-			sb.WriteString(fmt.Sprintf("%s:\tdq 0\n", ref))
+			if !strings.Contains(asmOutput, ref+":") {
+				dataLines = append(dataLines, fmt.Sprintf("%s:\tdq 0\n", ref))
+			}
+		}
+		if len(dataLines) > 0 {
+			sb.WriteString("\n\tsection .data\n")
+			for _, line := range dataLines {
+				sb.WriteString(line)
+			}
 		}
 	}
 
 	return sb.String()
+}
+
+// lastInstructionLine returns the last line in asmOutput that looks like
+// an actual instruction (not a section directive, label, comment, data definition, or blank).
+// Used by the wrappers to decide whether to append a default exit sequence.
+func lastInstructionLine(asmOutput string) string {
+	lines := strings.Split(asmOutput, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "section ") || strings.HasPrefix(line, "global ") ||
+			strings.HasPrefix(line, "extern ") || strings.HasPrefix(line, "default ") {
+			continue
+		}
+		if strings.HasSuffix(line, ":") {
+			continue
+		}
+		// Skip data definition lines (e.g. "result: dq 0")
+		if strings.Contains(line, ":\t") || strings.Contains(line, ": ") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				switch strings.ToLower(fields[1]) {
+				case "dq", "db", "dd", "dw", "resq", "resb", "equ", "times":
+					continue
+				}
+			}
+		}
+		return line
+	}
+	return ""
 }
 
 func collectMemRefs(input string) []string {

@@ -1,11 +1,11 @@
-; calc.vas — simple calculator CLI (sum 1..n)
+; calc.vas -- simple calculator CLI (sum 1..n)
 ; computes 1+2+...+n and returns the result as exit code
 ;
 ; build:
 ;   vas -o calc.s calc.vas
 ;   nasm -f elf64 calc.s -o calc.o
 ;   ld calc.o -o calc
-;   ./calc; echo $?    → should output 55
+;   ./calc; echo $?    -> should output 55
 
 section .text
     global _start
@@ -20,7 +20,7 @@ loop:
     ADD     v2, 1           ; i++ (immediate operand)
 
     CMP     v2, v3          ; compare i and n
-    JLE     loop            ; i <= n → continue
+    JLE     loop            ; i <= n -> continue
 
     ; exit code = sum
     MOV     v5, v1          ; rdi = sum

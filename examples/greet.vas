@@ -1,4 +1,4 @@
-; greet.vas — CLI tool that accepts a command-line argument
+; greet.vas -- CLI tool that accepts a command-line argument
 ; usage: ./greet [name]
 ; prints "Hello, [name]!"
 ; defaults to "World" when no argument is given
@@ -7,8 +7,8 @@
 ;   vas -o greet.s greet.vas
 ;   nasm -f elf64 greet.s -o greet.o
 ;   ld greet.o -o greet
-;   ./greet              → Hello, World!
-;   ./greet VAS          → Hello, VAS!
+;   ./greet              -> Hello, World!
+;   ./greet VAS          -> Hello, VAS!
 
 default rel
 
@@ -33,7 +33,7 @@ _start:
     CMP     v0, 0
     JNE     got_name
 
-    ; no argument → use default
+    ; no argument -> use default
     MOVI    v0, world
 got_name:
     STORE   v0, [nameptr]   ; save name pointer to variable
