@@ -278,7 +278,7 @@ global _start
 
 ```bash
 # Clone the repository
-git clone https://github.com/your/vas.git
+git clone https://github.com/0xA672/Vas.git
 cd vas
 
 # Build
