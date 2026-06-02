@@ -2,12 +2,19 @@
 *.exe
 *.obj
 *.o
+*.asm
 vas/vas
 
 # Output directories
 bin/
 out/
 
+# Linux ELF binaries generated from test programs
+fact
+fib
+sort
+greet
+calc
+
 # Personal test files
-win-*.asm
 test-*.asm
