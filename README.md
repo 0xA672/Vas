@@ -367,10 +367,10 @@ vas/
 
 VAS **explicitly does not** perform the following tasks and should not be compared to GCC, LLVM, or a full assembler:
 
-- ❌ No register allocation / instruction scheduling
-- ❌ No instruction selection or optimization (beyond simple -O1)
-- ❌ No linking or relocation
-- ❌ Generated `.s` / `.asm` files **must** be assembled by NASM and linked by ld to produce an executable
+- No register allocation / instruction scheduling
+- No instruction selection or optimization (beyond simple -O1)
+- No linking or relocation
+- Generated `.s` / `.asm` files **must** be assembled by NASM and linked by ld to produce an executable
 
 It is simply a thin translation layer that lets you write prototypes with friendlier pseudo-instructions; NASM handles the rest.
 
