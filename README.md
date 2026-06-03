@@ -171,6 +171,7 @@ vas -O1 input.vas           # Enable optimization (dead code elimination + const
 vas diff input.vas          # Show VAS source vs NASM output side-by-side
 vas stats input.vas         # Show instruction category counts and register usage
 vas check input.vas         # Validate VAS syntax; exits 0 on success, 1 on error
+vas list                    # List all supported instructions and syntax
 vas version                 # Print version string (e.g. "vas v0.2.0")
 vas -v / --version          # Same as above
 vas -h / --help             # Show help

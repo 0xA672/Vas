@@ -24,6 +24,8 @@ func main() {
 
  // Subcommand dispatch
  switch args[0] {
+ case "list":
+  cmdList()
  case "diff":
   cmdDiff(args[1:])
  case "stats":
@@ -323,6 +325,58 @@ func analyzeVAS(input string) *vasStats {
 	return s
 }
 
+// ── list ──────────────────────────────────────────────────────────────────
+
+func cmdList() {
+ fmt.Println("VAS — supported instructions and syntax\n")
+ fmt.Println("Arithmetic (3-operand form, 2-operand form):")
+ fmt.Println("  ADD   dst, src1, src2    →  mov dst, src1 ; add dst, src2")
+ fmt.Println("  ADD   dst, src           →  add dst, src")
+ fmt.Println("  SUB   dst, src1, src2    →  mov dst, src1 ; sub dst, src2")
+ fmt.Println("  SUB   dst, src           →  sub dst, src")
+ fmt.Println("  MUL   dst, src1, src2    →  imul dst, src1, src2")
+ fmt.Println("  MUL   dst, src           →  imul dst, src\n")
+ fmt.Println("Memory:")
+ fmt.Println("  LOAD  dst, [addr]        →  mov dst, [addr]")
+ fmt.Println("  LOAD  dst, [addr+off]    →  mov dst, [addr+off]")
+ fmt.Println("  LOAD  dst, [addr*scale]  →  mov dst, [addr*scale]")
+ fmt.Println("  LOAD  dst, [base+idx*scale+disp]  (full SIB form)")
+ fmt.Println("  STORE [addr], src        →  mov [addr], src")
+ fmt.Println("  STORE [addr+off], src    →  mov [addr+off], src")
+ fmt.Println("  LEA   dst, [addr]        →  lea dst, [addr]\n")
+ fmt.Println("Data movement:")
+ fmt.Println("  MOVI  dst, imm           →  mov dst, imm")
+ fmt.Println("  MOV   dst, src           →  mov dst, src\n")
+ fmt.Println("Control flow:")
+ fmt.Println("  JMP   label              →  jmp label")
+ fmt.Println("  JE    label              →  je  label")
+ fmt.Println("  JNE   label              →  jne label")
+ fmt.Println("  JG    label              →  jg  label")
+ fmt.Println("  JL    label              →  jl  label")
+ fmt.Println("  JGE   label              →  jge label")
+ fmt.Println("  JLE   label              →  jle label")
+ fmt.Println("  CALL  label              →  call label")
+ fmt.Println("  RET                      →  ret")
+ fmt.Println("  NOP                      →  nop\n")
+ fmt.Println("Stack:")
+ fmt.Println("  PUSH  src                →  push src")
+ fmt.Println("  POP   dst                →  pop  dst\n")
+ fmt.Println("System:")
+ fmt.Println("  CMP   a, b               →  cmp a, b")
+ fmt.Println("  CMP   a, imm             →  cmp a, imm")
+ fmt.Println("  INT   n                  →  int n")
+ fmt.Println("  SYSCALL                  →  syscall\n")
+ fmt.Println("Directives (passthrough):")
+ fmt.Println("  SECTION .text / .data / .bss")
+ fmt.Println("  GLOBAL label")
+ fmt.Println("  EXTERN label")
+ fmt.Println("  BYTE, WORD, DWORD, QWORD, DD, DQ, DB")
+ fmt.Println("  ALIGN n, TYPE, SIZE, LENGTH\n")
+ fmt.Println("Virtual registers: v0-v7")
+ fmt.Println("  v0 → rax   v1 → rbx   v2 → rcx   v3 → rdx")
+ fmt.Println("  v4 → rsi   v5 → rdi   v6 → r8    v7 → r9")
+}
+
 // ── help / usage ──────────────────────────────────────────────────────────
 
 func printUsage() {
@@ -331,6 +385,7 @@ func printUsage() {
  fmt.Fprintln(os.Stderr, "       vas diff <input.vas>")
  fmt.Fprintln(os.Stderr, "       vas stats <input.vas>")
  fmt.Fprintln(os.Stderr, "       vas check <input.vas>")
+ fmt.Fprintln(os.Stderr, "       vas list")
  fmt.Fprintln(os.Stderr, "       vas version")
  os.Exit(1)
 }
@@ -343,6 +398,7 @@ Usage:
   vas diff <input.vas>      Show VAS source vs NASM output side-by-side
   vas stats <input.vas>     Show instruction and register statistics
   vas check <input.vas>     Validate VAS syntax (exit code: 0=ok, 1=error)
+  vas list                  List all supported instructions and syntax
   vas version               Print version and exit
 
 Options:
