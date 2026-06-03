@@ -298,9 +298,9 @@ async function bootstrap() {
     runBtn.disabled = false;
     statusEl.textContent = 'VAS engine loaded';
     loading.classList.remove('active');
-    console.log('[VAS] ✅ bootstrap complete, UI unlocked');
+    console.log('[VAS] bootstrap complete, UI unlocked');
   } catch (e) {
-    console.error('[VAS] ❌ bootstrap failed:', e.message, e.stack);
+    console.error('[VAS] bootstrap failed:', e.message, e.stack);
     statusEl.textContent = 'Load failed: ' + e.message;
     statusEl.className = 'err';
 loading.querySelector('p').textContent = 'Load failed: ' + e.message;
@@ -342,7 +342,7 @@ result = { error: 'WASM function not ready' };
 
     const outText = result.output || '';
     output.innerHTML = '<span class="timestamp">; Generated at ' + new Date().toLocaleTimeString() + '</span>\n' + escapeHtml(outText);
-    statusEl.textContent = 'OK ✓';
+    statusEl.textContent = 'OK';
     statusEl.className = 'ok';
 modeLabel.textContent = standalone ? 'standalone' : '';
 
