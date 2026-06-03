@@ -168,6 +168,11 @@ vas -o output.s input.vas   # Write to file (-o can appear before or after input
 vas input.vas -o output.s   # Same as above
 vas -target win64 input.vas # Output Windows x64 skeleton instead of default ELF64
 vas -O1 input.vas           # Enable optimization (dead code elimination + constant folding)
+vas diff input.vas          # Show VAS source vs NASM output side-by-side
+vas stats input.vas         # Show instruction category counts and register usage
+vas check input.vas         # Validate VAS syntax; exits 0 on success, 1 on error
+vas version                 # Print version string (e.g. "vas v0.2.0")
+vas -v / --version          # Same as above
 vas -h / --help             # Show help
 ```
 
@@ -325,12 +330,17 @@ win-ops.exe
 git clone https://github.com/0xA672/Vas.git
 cd vas
 
-# Build
-go build -o bin\vas.exe main.go
+# Build (dev version prints "vas dev")
+go build -o bin\vas.exe .
+
+# Build with a version string embedded via ldflags
+go build -ldflags "-X main.Version=v0.2.0" -o bin\vas.exe .
 
 # Or install to $GOPATH/bin
 go install
 ```
+
+`vas version` and `vas -v` print the embedded version string.
 
 ---
 

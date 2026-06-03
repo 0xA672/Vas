@@ -11,6 +11,9 @@ import (
  "vas/vas"
 )
 
+// Version is set at build time via -ldflags "-X main.Version=v0.2.0".
+var Version = "dev"
+
 func main() {
  args := os.Args[1:]
 
@@ -25,6 +28,12 @@ func main() {
   cmdDiff(args[1:])
  case "stats":
   cmdStats(args[1:])
+ case "version":
+  fmt.Println("vas " + Version)
+ case "check":
+  cmdCheck(args[1:])
+ case "-v", "--version":
+  fmt.Println("vas " + Version)
  case "-h", "--help":
   fmt.Print(helpText)
  default:
@@ -139,6 +148,27 @@ func cmdDiff(args []string) {
  for _, l := range asmLines {
   fmt.Println(l)
  }
+}
+
+// ── check subcommand ─────────────────────────────────────────────────────
+
+func cmdCheck(args []string) {
+	if len(args) < 1 || args[0] == "" || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: vas check <input.vas>")
+		os.Exit(1)
+	}
+
+	data, err := os.ReadFile(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "check error: %v\n", err)
+		os.Exit(1)
+	}
+
+	_, err = vas.Assemble(string(data))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "check error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // ── stats subcommand ──────────────────────────────────────────────────────
@@ -300,6 +330,8 @@ func printUsage() {
  fmt.Fprintln(os.Stderr, "       cat input.vas | vas [options]")
  fmt.Fprintln(os.Stderr, "       vas diff <input.vas>")
  fmt.Fprintln(os.Stderr, "       vas stats <input.vas>")
+ fmt.Fprintln(os.Stderr, "       vas check <input.vas>")
+ fmt.Fprintln(os.Stderr, "       vas version")
  os.Exit(1)
 }
 
@@ -310,11 +342,14 @@ Usage:
   cat <input> | vas [options]
   vas diff <input.vas>      Show VAS source vs NASM output side-by-side
   vas stats <input.vas>     Show instruction and register statistics
+  vas check <input.vas>     Validate VAS syntax (exit code: 0=ok, 1=error)
+  vas version               Print version and exit
 
 Options:
   -o <file>       Write output to file instead of stdout
   -target <arch>  Target platform: elf64 (default) or win64
   -O1             Enable optimizations (constant folding, dead code elim, peephole)
+  -v, --version   Print version and exit
   -h, --help      Show this help message
 
 Input format: .vas or .asm files with virtual registers v0-v7.
