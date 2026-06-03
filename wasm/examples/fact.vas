@@ -1,0 +1,32 @@
+; fact.vas -- recursive factorial: fact(n) = n * fact(n-1)
+; Computes fact(10) = 3628800 and returns it as exit code
+; Tests: CALL, RET, PUSH/POP stack frame, recursion
+
+.globl _start
+
+    MOVI v0, 5      ; n = 5
+    CALL fact
+    RET               ; result is already in v0
+
+; fact(n) -- argument in v0, return in v0
+; preserves v1 on stack
+fact:
+    PUSH v1           ; save caller's v1
+
+    ; base case: n <= 1
+    CMP v0, 1
+    JLE base
+
+    ; recursive case: n * fact(n-1)
+    MOV v1, v0        ; save n in v1
+    MOVI v0, 1
+    SUB v0, v1, v0    ; v0 = n - 1
+    CALL fact         ; v0 = fact(n-1)
+    MUL v0, v1, v0    ; v0 = n * fact(n-1)
+    POP v1            ; restore v1
+    RET
+
+base:
+    MOVI v0, 1        ; fact(0)=1, fact(1)=1
+    POP v1
+    RET

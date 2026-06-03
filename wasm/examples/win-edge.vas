@@ -1,0 +1,24 @@
+; win-edge.vas -- edge cases test
+
+    MOVI    v0, 42
+    PUSH    v0
+    POP     v1              ; v1 = 42 via stack
+
+    ; LOAD/STORE with variable
+    STORE   v1, [result]
+    LOAD    v2, [result]    ; v2 = 42
+
+    ; Conditional jump
+    MOVI    v3, 42
+    CMP     v2, v3
+    JE      match
+
+    MOVI    v0, 0           ; not matched
+    RET
+
+match:
+    MOVI    v0, 99          ; matched! return 99
+    RET
+
+    section .data
+result: dq 0

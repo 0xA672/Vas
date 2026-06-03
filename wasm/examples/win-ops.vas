@@ -1,0 +1,11 @@
+; win-ops.vas -- test all arithmetic ops on win64
+; computes: (10 + 20) * 2 - 5 = 55, returns as exit code
+
+    MOVI    v0, 10
+    MOVI    v1, 20
+    MOVI    v2, 2
+    MOVI    v3, 5
+    ADD     v0, v0, v1      ; v0 = 10 + 20 = 30
+    MUL     v0, v2           ; v0 = 30 * 2 = 60
+    SUB     v0, v3           ; v0 = 60 - 5 = 55
+    RET

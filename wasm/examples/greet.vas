@@ -1,0 +1,76 @@
+; greet.vas -- CLI tool that accepts a command-line argument
+; usage: ./greet [name]
+; prints "Hello, [name]!"
+; defaults to "World" when no argument is given
+;
+; build:
+;   vas -o greet.s greet.vas
+;   nasm -f elf64 greet.s -o greet.o
+;   ld greet.o -o greet
+;   ./greet              -> Hello, World!
+;   ./greet VAS          -> Hello, VAS!
+
+default rel
+
+section .data
+    hello   db 'Hello, ', 0
+    excl    db '!', 10
+    excllen equ $ - excl
+    world   db 'World', 0
+
+section .bss
+    nameptr resq 1          ; stores name pointer (8 bytes)
+
+section .text
+    global _start
+
+_start:
+    ; == parse command-line args ==
+    POP     v0              ; v0 = argc
+    POP     v0              ; v0 = argv[0] (program name, discard)
+
+    POP     v0              ; v0 = argv[1] (or NULL)
+    CMP     v0, 0
+    JNE     got_name
+
+    ; no argument -> use default
+    MOVI    v0, world
+got_name:
+    STORE   v0, [nameptr]   ; save name pointer to variable
+
+    ; == print "Hello, " ==
+    MOVI    v5, 1           ; rdi = stdout
+    MOVI    v4, hello       ; rsi = string
+    MOVI    v3, 7           ; rdx = length
+    MOVI    v0, 1           ; rax = sys_write
+    SYSCALL
+
+    ; == strlen: compute name length ==
+    LOAD    v2, [nameptr]   ; v2 = name pointer
+    MOVI    v1, 0           ; v1 = length counter
+strlen_loop:
+    movzx   v3, byte [v2]   ; passthrough: v3 = current char
+    CMP     v3, 0           ; hit '\0'?
+    JE      strlen_done
+    ADD     v2, 1           ; ptr++
+    ADD     v1, 1           ; count++
+    JMP     strlen_loop
+strlen_done:
+    ; v1 = string length, v4 = name start address (saved in nameptr)
+    LOAD    v4, [nameptr]   ; v4 = name pointer
+    MOV     v3, v1          ; v3 = name length
+    MOVI    v5, 1           ; v5 = stdout
+    MOVI    v0, 1           ; rax = sys_write
+    SYSCALL
+
+    ; == print "!\n" ==
+    MOVI    v5, 1
+    MOVI    v4, excl
+    MOVI    v3, excllen
+    MOVI    v0, 1
+    SYSCALL
+
+    ; == exit ==
+    MOVI    v5, 0
+    MOVI    v0, 60
+    SYSCALL
