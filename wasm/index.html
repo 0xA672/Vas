@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VAS Playground — Virtual Assembler Online</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f0f1a;
+      color: #e0e0ee;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: #1a1a2e;
+      padding: 16px 24px;
+      border-bottom: 1px solid #2a2a4a;
+      display: fleg;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    header h1 {
+      font-size: 1.3rem;
+      font-weight: 600;
+      color: #7ec8e3;
+      letter-spacing: 0.5px;
+    }
+    header h1 span { color: #8888bb; font-weight: 400; }
+    header .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .controls label { font-size: 0.85rem; color: #aab; }
+    .controls select, .controls button {
+      background: #252540;
+      color: #ddd;
+      border: 1px solid #3a3a5a;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .controls select:hover, .controls button:hover { background: #30305a; border-color: #5a5a8a; }
+    .controls button.primary {
+      background: #2a5a7a;
+      border-color: #3a8aba;
+      color: #fff;
+      font-weight: 600;
+    }
+    .controls button.primary:hover { background: #3a7aaa; }
+
+    main {
+      flex: 1;
+      display: flex;
+      gap: 0;
+      min-height: 0;
+    }
+    @media (max-width: 800px) {
+      main { flex-direction: column; }
+    }
+
+    .panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .panel + .panel { border-left: 1px solid #2a2a4a; }
+    @media (max-width: 800px) {
+      .panel + .panel { border-left: none; border-top: 1px solid #2a2a4a; }
+    }
+
+    .panel-header {
+      padding: 8px 16px;
+      background: #16162a;
+      border-bottom: 1px solid #2a2a4a;
+      font-size: 0.8rem;
+      color: #8899bb;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .panel-header .badge {
+      font-size: 0.7rem;
+      background: #2a2a4a;
+      padding: 2px 8px;
+      border-radius: 10px;
+      color: #99b;
+    }
+
+    textarea {
+      flex: 1;
+      background: #0a0a18;
+      color: #c9d1d9;
+      border: none;
+      outline: none;
+      padding: 16px;
+      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      resize: none;
+      tab-size: 2;
+    }
+    textarea::placeholder { color: #445; }
+
+    .output-area {
+      flex: 1;
+      background: #0a0a18;
+      padding: 16px;
+      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .output-area .error { color: #f55; }
+    .output-area .info { color: #888; }
+    .output-area .timestamp { color: #556; font-size: 0.75rem; }
+
+    .status-bar {
+      background: #12122a;
+      border-top: 1px solid #2a2a4a;
+      padding: 6px 16px;
+      font-size: 0.8rem;
+      color: #667;
+      display: flex;
+      gap: 20px;
+    }
+    .status-bar .ok { color: #5b5; }
+    .status-bar .err { color: #f55; }
+
+    .examples-bar {
+      background: #14142a;
+      border-top: 1px solid #2a2a4a;
+      padding: 8px 16px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .examples-bar span { font-size: 0.8rem; color: #667; }
+    .examples-bar button {
+      background: #1e1e3a;
+      color: #aab;
+      border: 1px solid #2a2a4a;
+      padding: 4px 12px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: 0.1s;
+    }
+    .examples-bar button:hover { background: #2e2e5a; color: #dde; }
+
+    /* spinner */
+    .loading-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 999;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .loading-overlay.active { display: flex; }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid #334;
+      border-top-color: #7ec8e3;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-overlay p { color: #aac; font-size: 1rem; }
+  </style>
+</head>
+<body>
+
+<div class="loading-overlay" id="loading">
+  <div class="spinner"></div>
+<p>Loading VAS WebAssembly engine...</p>
+</div>
+
+<header>
+  <h1>VAS <span>Playground</span></h1>
+  <div class="controls">
+<label>Target
+      <select id="target">
+        <option value="elf64">Linux (elf64)</option>
+        <option value="win64">Windows (win64)</option>
+      </select>
+    </label>
+<label>Optimization
+      <select id="opt">
+<option value="0">O0 (none)</option>
+<option value="1">O1 (constant folding)</option>
+      </select>
+    </label>
+<button class="primary" id="runBtn" disabled onclick="run()">▶ Assemble</button>
+  </div>
+</header>
+
+<main>
+  <div class="panel">
+    <div class="panel-header">
+<span>VAS Source</span>
+<span class="badge" id="inputLines">0 lines</span>
+    </div>
+    <textarea id="input" placeholder="; Enter VAS code here&#10;MOVI v0, 60&#10;SYSCALL">; A simple VAS program
+; Equivalent to sys_exit(0)
+
+SECTION .text
+GLOBAL _start
+
+_start:
+  MOVI  v0, 60       ; sys_exit number
+  MOVI  v1, 0        ; return value 0
+  SYSCALL</textarea>
+  </div>
+  <div class="panel">
+    <div class="panel-header">
+<span>Generated x86-64 Assembly</span>
+<span class="badge" id="modeLabel">standalone</span>
+    </div>
+    <div class="output-area" id="output">
+<span class="info">; Click &quot;▶ Assemble&quot; to start</span>
+    </div>
+  </div>
+</main>
+
+<div class="examples-bar">
+<span>Examples:</span>
+  <button onclick="loadExample('hello')">Hello World</button>
+<button onclick="loadExample('fib')">Fibonacci</button>
+<button onclick="loadExample('fact')">Factorial</button>
+<button onclick="loadExample('calc')">Calculator</button>
+<button onclick="loadExample('sort')">Sort</button>
+  <button onclick="loadExample('win-edge')">Windows GUI</button>
+</div>
+
+<div class="status-bar">
+<span>Status: <span id="status" class="ok">Ready</span></span>
+  <span id="stats"></span>
+</div>
+
+<script src="wasm_exec.js"></script>
+<script>
+// ── WASM Bootstrap ──
+const loading = document.getElementById('loading');
+const runBtn = document.getElementById('runBtn');
+const statusEl = document.getElementById('status');
+
+let go;
+let inst;
+
+async function bootstrap() {
+  loading.classList.add('active');
+  console.log('[VAS] bootstrap start');
+  try {
+    console.log('[VAS] creating Go()');
+    go = new Go();
+    console.log('[VAS] fetching vas.wasm ...');
+    const resp = await fetch('vas.wasm');
+    console.log('[VAS] fetch OK, status:', resp.status, 'size:', resp.headers.get('Content-Length'), 'type:', resp.headers.get('Content-Type'));
+
+    // Use arrayBuffer + instantiate instead of instantiateStreaming (more reliable MIME handling)
+    console.log('[VAS] reading arrayBuffer ...');
+    const bytes = await resp.arrayBuffer();
+    console.log('[VAS] arrayBuffer OK, bytes:', bytes.byteLength);
+
+    console.log('[VAS] WebAssembly.instantiate ...');
+    const result = await WebAssembly.instantiate(bytes, go.importObject);
+    console.log('[VAS] instantiate OK');
+
+    inst = result.instance;
+    console.log('[VAS] calling go.run(inst) (non-blocking) ...');
+    go.run(inst).then(() => {
+      console.log('[VAS] go.run resolved (engine exited)');
+    }).catch(e => {
+      console.error('[VAS] go.run error:', e);
+      statusEl.textContent = 'Engine error: ' + e.message;
+    });
+
+    // These run immediately — WASM is ready for JS calls
+    runBtn.disabled = false;
+    statusEl.textContent = 'VAS engine loaded';
+    loading.classList.remove('active');
+    console.log('[VAS] ✅ bootstrap complete, UI unlocked');
+  } catch (e) {
+    console.error('[VAS] ❌ bootstrap failed:', e.message, e.stack);
+    statusEl.textContent = 'Load failed: ' + e.message;
+    statusEl.className = 'err';
+loading.querySelector('p').textContent = 'Load failed: ' + e.message;
+  }
+}
+bootstrap();
+
+// ── Core assemble function ──
+function run() {
+  const input = document.getElementById('input').value;
+  const target = document.getElementById('target').value;
+  const opt = parseInt(document.getElementById('opt').value);
+  const output = document.getElementById('output');
+  const statsEl = document.getElementById('stats');
+  const modeLabel = document.getElementById('modeLabel');
+
+  if (!input.trim()) {
+output.innerHTML = '<span class="error">Error: enter VAS code</span>';
+    return;
+  }
+
+  try {
+    let result;
+    const standalone = typeof vasAssembleStandalone === 'function';
+    if (standalone) {
+      result = vasAssembleStandalone(input, target, opt);
+    } else {
+      // fallback
+result = { error: 'WASM function not ready' };
+    }
+
+    if (result.error) {
+      output.innerHTML = '<span class="error">' + escapeHtml(result.error) + '</span>';
+      statusEl.textContent = 'Error';
+      statusEl.className = 'err';
+      statsEl.textContent = '';
+      return;
+    }
+
+    const outText = result.output || '';
+    output.innerHTML = '<span class="timestamp">; Generated at ' + new Date().toLocaleTimeString() + '</span>\n' + escapeHtml(outText);
+    statusEl.textContent = 'OK ✓';
+    statusEl.className = 'ok';
+modeLabel.textContent = standalone ? 'standalone' : '';
+
+    // stats
+    const lines = outText.split('\n').length;
+    const instrs = outText.split('\n').filter(l => l.trim() && !l.trim().startsWith(';') && !l.trim().startsWith('.')).length;
+statsEl.textContent = lines + ' lines / ' + instrs + ' instructions';
+  } catch (e) {
+    output.innerHTML = '<span class="error">' + escapeHtml(String(e)) + '</span>';
+    statusEl.textContent = 'Exception';
+    statusEl.className = 'err';
+  }
+}
+
+// ── Line counter ──
+document.getElementById('input').addEventListener('input', function() {
+  const lines = this.value.split('\n').length;
+document.getElementById('inputLines').textContent = lines + ' lines';
+});
+
+// ── Examples ──
+const EXAMPLES = {};
+
+function loadExample(name) {
+  const area = document.getElementById('input');
+  if (EXAMPLES[name]) {
+    area.value = EXAMPLES[name];
+    area.dispatchEvent(new Event('input'));
+    // auto-run
+    run();
+  }
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ── Fetch examples from server ──
+async function loadExamples() {
+  const names = ['hello', 'fib', 'fact', 'calc', 'sort', 'win-edge'];
+  for (const name of names) {
+    try {
+      const resp = await fetch('examples/' + name + '.vas');
+      if (resp.ok) {
+        EXAMPLES[name] = await resp.text();
+      }
+    } catch(_) {}
+  }
+}
+loadExamples();
+
+// Keyboard shortcut: Ctrl+Enter to assemble
+document.getElementById('input').addEventListener('keydown', function(e) {
+  if (e.ctrlKey && e.key === 'Enter') {
+    e.preventDefault();
+    run();
+  }
+});
+</script>
+</body>
+</html>
