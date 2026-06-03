@@ -80,7 +80,7 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 	lines = strings.Split(input, "\n")
 	var outLines []string
 
-	for _, line := range lines {
+	for lineNum, line := range lines {
 		original := line
 		line = stripComment(line)
 		line = strings.TrimSpace(line)
@@ -99,7 +99,7 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 		if strings.HasSuffix(line, ":") && !isInstruction(line) {
 			mapped, err := mapReg(line)
 			if err != nil {
-				return "", fmt.Errorf("line %q: %w", original, err)
+				return "", fmt.Errorf("line %d: %q: %w", lineNum+1, original, err)
 			}
 			outLines = append(outLines, mapped)
 			continue
@@ -107,7 +107,7 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 
 		result, err := processInstruction(line)
 		if err != nil {
-			return "", fmt.Errorf("line %q: %w", original, err)
+			return "", fmt.Errorf("line %d: %q: %w", lineNum+1, original, err)
 		}
 		outLines = append(outLines, result...)
 	}
