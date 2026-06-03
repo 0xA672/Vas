@@ -1,37 +1,64 @@
 package main
 
 import (
-	"fmt"
-	"io"
-	"os"
-	"strings"
+ "fmt"
+ "io"
+ "os"
+ "path/filepath"
+ "sort"
+ "strings"
 
-	"vas/vas"
+ "vas/vas"
 )
 
 func main() {
-	var inputFile, outFile, target string
-	optLevel := 0
-	args := os.Args[1:]
-	for i := 0; i < len(args); i++ {
-		if args[i] == "-o" && i+1 < len(args) {
-			outFile = args[i+1]
-			i++
-		} else if args[i] == "-target" && i+1 < len(args) {
-			target = args[i+1]
-			i++
-		} else if args[i] == "-O1" {
-			optLevel = 1
-		} else if args[i] == "-h" || args[i] == "--help" {
-			fmt.Print(helpText)
-			return
-		} else if !strings.HasPrefix(args[i], "-") {
-			inputFile = args[i]
-		} else {
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			os.Exit(1)
-		}
-	}
+ args := os.Args[1:]
+
+ if len(args) == 0 {
+  printUsage()
+  os.Exit(1)
+ }
+
+ // Subcommand dispatch
+ switch args[0] {
+ case "diff":
+  cmdDiff(args[1:])
+ case "stats":
+  cmdStats(args[1:])
+ case "-h", "--help":
+  fmt.Print(helpText)
+ default:
+  // Existing behaviour: flags + input file
+  cmdAssemble(args)
+ }
+}
+
+// ── assemble (existing behaviour) ──────────────────────────────────────────
+
+func cmdAssemble(args []string) {
+ var inputFile, outFile, target string
+ optLevel := 0
+
+ for i := 0; i < len(args); i++ {
+  switch {
+  case args[i] == "-o" && i+1 < len(args):
+   outFile = args[i+1]
+   i++
+  case args[i] == "-target" && i+1 < len(args):
+   target = args[i+1]
+   i++
+  case args[i] == "-O1":
+   optLevel = 1
+  case args[i] == "-h" || args[i] == "--help":
+   fmt.Print(helpText)
+   return
+  case !strings.HasPrefix(args[i], "-"):
+   inputFile = args[i]
+  default:
+   fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+   os.Exit(1)
+  }
+ }
 
  if target == "" {
   target = "elf64"
@@ -54,8 +81,7 @@ func main() {
   }
   input = string(data)
   if input == "" {
-   fmt.Fprintln(os.Stderr, "usage: vas [options] <input.asm|.vas>")
-   fmt.Fprintln(os.Stderr, "       cat input.vas | vas")
+   printUsage()
    os.Exit(1)
   }
  }
@@ -76,11 +102,214 @@ func main() {
  }
 }
 
+// ── diff subcommand ───────────────────────────────────────────────────────
+
+func cmdDiff(args []string) {
+ if len(args) < 1 || args[0] == "" || strings.HasPrefix(args[0], "-") {
+  fmt.Fprintln(os.Stderr, "usage: vas diff <input.vas>")
+  os.Exit(1)
+ }
+
+ inputFile := args[0]
+ data, err := os.ReadFile(inputFile)
+ if err != nil {
+  fmt.Fprintf(os.Stderr, "read file: %v\n", err)
+  os.Exit(1)
+ }
+
+ source := string(data)
+ output, err := vas.Assemble(source)
+ if err != nil {
+  fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
+  os.Exit(1)
+ }
+
+ srcLines := strings.Split(strings.TrimRight(source, "\n"), "\n")
+ asmLines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+
+ name := filepath.Base(inputFile)
+ outName := strings.TrimSuffix(name, filepath.Ext(name)) + ".asm"
+
+ fmt.Printf("=== %s (VAS source) ===\n", name)
+ for _, l := range srcLines {
+  fmt.Println(l)
+ }
+ fmt.Println()
+ fmt.Printf("=== %s (NASM output) ===\n", outName)
+ for _, l := range asmLines {
+  fmt.Println(l)
+ }
+}
+
+// ── stats subcommand ──────────────────────────────────────────────────────
+
+func cmdStats(args []string) {
+	if len(args) < 1 || args[0] == "" || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: vas stats <input.vas>")
+		os.Exit(1)
+	}
+
+	data, err := os.ReadFile(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read file: %v\n", err)
+		os.Exit(1)
+	}
+
+	s := analyzeVAS(string(data))
+	s.file = filepath.Base(args[0])
+	s.print()
+}
+
+// vasStats holds aggregate statistics for a VAS source file.
+type vasStats struct {
+	file       string
+	lines      int
+	instrTotal int
+
+	// Instruction categories
+	arithmetic  int // ADD, SUB, MUL
+	move        int // MOV, MOVI
+	memory      int // LOAD, STORE
+	controlFlow int // JMP, JE, JNE, JG, JL, JGE, JLE, CALL, RET
+	stack       int // PUSH, POP
+	other       int // NOP, INT, SYSCALL, LEA, CMP, CMPI, SECTION, GLOBAL, …
+
+	// Virtual registers used
+	regsUsed map[string]bool
+	// Labels defined
+	labels int
+	// Errors
+	errCount int
+}
+
+func (s *vasStats) print() {
+	fmt.Printf("File: %s\n", s.file)
+	fmt.Printf("  Lines:         %d\n", s.lines)
+	fmt.Printf("  Labels:        %d\n", s.labels)
+	fmt.Println()
+	fmt.Printf("  Instructions:  %d\n", s.instrTotal)
+	fmt.Printf("    Arithmetic:  %d  (ADD, SUB, MUL)\n", s.arithmetic)
+	fmt.Printf("    Move:        %d  (MOV, MOVI)\n", s.move)
+	fmt.Printf("    Memory:      %d  (LOAD, STORE)\n", s.memory)
+	fmt.Printf("    Control:     %d  (JMP/Jcc, CALL, RET)\n", s.controlFlow)
+	fmt.Printf("    Stack:       %d  (PUSH, POP)\n", s.stack)
+	fmt.Printf("    Other:       %d\n", s.other)
+	fmt.Println()
+
+	used := make([]string, 0, len(s.regsUsed))
+	for r := range s.regsUsed {
+		used = append(used, r)
+	}
+	sort.Strings(used)
+	fmt.Printf("  Virtual regs used: %d of 8: %s\n", len(used), strings.Join(used, ", "))
+
+	if s.errCount > 0 {
+		fmt.Printf("\n  Warnings: %d\n", s.errCount)
+	}
+}
+
+// knownArithmetic, knownMove, etc. — instruction classification set
+var instrClass = map[string]string{
+	"ADD": "arith", "SUB": "arith", "MUL": "arith",
+	"MOV": "move", "MOVI": "move",
+	"LOAD": "mem", "STORE": "mem",
+	"JMP": "ctrl", "JE": "ctrl", "JNE": "ctrl",
+	"JG": "ctrl", "JL": "ctrl", "JGE": "ctrl", "JLE": "ctrl",
+	"CALL": "ctrl", "RET": "ctrl",
+	"PUSH": "stack", "POP": "stack",
+}
+
+// stripComment removes trailing ;...# comments (duplicated from vas package
+// so analyzeVAS can use it without an export).
+func stripComment(line string) string {
+	inQuote := false
+	for i, ch := range line {
+		if ch == '"' || ch == '\'' {
+			inQuote = !inQuote
+		}
+		if !inQuote && (ch == '#' || ch == ';') {
+			return strings.TrimSpace(line[:i])
+		}
+	}
+	return line
+}
+
+func analyzeVAS(input string) *vasStats {
+	s := &vasStats{regsUsed: map[string]bool{}}
+
+	lines := strings.Split(input, "\n")
+	s.lines = len(lines)
+
+	for _, raw := range lines {
+		line := strings.TrimSpace(stripComment(raw))
+		if line == "" {
+			continue
+		}
+
+		// Label definition (e.g. "loop:")
+		if strings.HasSuffix(line, ":") {
+			// Check it's not a known directive like "section .text:" / "global _start:"
+			// Actually those are not suffixed with : in VAS, so this is safe.
+			s.labels++
+			continue
+		}
+
+		// Section / global / extern directives
+		first := strings.Fields(line)[0]
+		upper := strings.ToUpper(first)
+
+		cls, known := instrClass[upper]
+		if !known {
+			// Might be a directive (section, global, extern, align, db, dq, …)
+			s.other++
+			s.instrTotal++
+			continue
+		}
+
+		switch cls {
+		case "arith":
+			s.arithmetic++
+		case "move":
+			s.move++
+		case "mem":
+			s.memory++
+		case "ctrl":
+			s.controlFlow++
+		case "stack":
+			s.stack++
+		}
+		s.instrTotal++
+
+		// Count virtual register references in this line
+		parts := strings.Fields(line)
+		for _, p := range parts {
+			p = strings.TrimRight(p, ",")
+			if strings.HasPrefix(p, "v") && len(p) == 2 && p[1] >= '0' && p[1] <= '7' {
+				s.regsUsed[p] = true
+			}
+		}
+	}
+
+	return s
+}
+
+// ── help / usage ──────────────────────────────────────────────────────────
+
+func printUsage() {
+ fmt.Fprintln(os.Stderr, "usage: vas [options] <input.asm|.vas>")
+ fmt.Fprintln(os.Stderr, "       cat input.vas | vas [options]")
+ fmt.Fprintln(os.Stderr, "       vas diff <input.vas>")
+ fmt.Fprintln(os.Stderr, "       vas stats <input.vas>")
+ os.Exit(1)
+}
+
 const helpText = `VAS -- Virtual ASseMbler
 
 Usage:
   vas [options] <input file>
   cat <input> | vas [options]
+  vas diff <input.vas>      Show VAS source vs NASM output side-by-side
+  vas stats <input.vas>     Show instruction and register statistics
 
 Options:
   -o <file>       Write output to file instead of stdout
