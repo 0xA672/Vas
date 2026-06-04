@@ -639,3 +639,76 @@ func TestConstPropagateInt(t *testing.T) {
 		t.Errorf("ADD should remain after INT: %q", result[2])
 	}
 }
+
+// #19: Optimizer preserves empty lines and comments
+func TestOptimizePreservesEmptyLines(t *testing.T) {
+	// Use MOVI with different registers so neither write is dead
+	input := "\tMOVI\tv0, 1\n\n\tMOVI\tv1, 2\n\tSYSCALL"
+	output := Optimize(input, 1)
+	// The empty line should survive
+	lines := strings.Split(output, "\n")
+	if len(lines) != 4 {
+		t.Errorf("expected 4 lines (with empty line), got %d: %q", len(lines), output)
+	}
+	if lines[1] != "" {
+		t.Errorf("expected line 2 to be empty, got %q", lines[1])
+	}
+}
+
+func TestOptimizePreservesComments(t *testing.T) {
+	// Use different registers for each MOVI so neither is dead
+	input := "\tMOVI\tv0, 1\t; set first\n\tMOVI\tv1, 60\t; exit\n\tSYSCALL"
+	output := Optimize(input, 1)
+	// Comments should be preserved
+	if !strings.Contains(output, "; set first") {
+		t.Errorf("expected comment '; set first' to survive: %q", output)
+	}
+	if !strings.Contains(output, "; exit") {
+		t.Errorf("expected comment '; exit' to survive: %q", output)
+	}
+}
+
+func TestOptimizePreservesHashComments(t *testing.T) {
+	input := "\tMOVI\tv0, 60\t# syscall: exit\n\tSYSCALL"
+	output := Optimize(input, 1)
+	if !strings.Contains(output, "# syscall: exit") {
+		t.Errorf("expected hash comment to survive: %q", output)
+	}
+}
+
+func TestOptimizePreservesCommentOnlyLines(t *testing.T) {
+	input := "\tMOVI\tv0, 1\n; this is a comment-only line\n\tMOVI\tv1, 60\n\tSYSCALL"
+	output := Optimize(input, 1)
+	if !strings.Contains(output, "; this is a comment-only line") {
+		t.Errorf("expected comment-only line to survive: %q", output)
+	}
+}
+
+func TestOptimizePreservesMixedBlanksAndComments(t *testing.T) {
+	// Use distinct registers to prevent DCE from removing lines
+	input := "\tMOVI\tv0, 1\n\n; comment\n\n\tMOVI\tv1, 60\n\tSYSCALL"
+	output := Optimize(input, 1)
+	if !strings.Contains(output, "; comment") {
+		t.Errorf("expected '; comment' to survive: %q", output)
+	}
+	lines := strings.Split(output, "\n")
+	if len(lines) != 6 {
+		t.Errorf("expected 6 lines (preserving blanks), got %d: %q", len(lines), output)
+	}
+}
+
+// #17: Fuzz test for optimizers
+func FuzzOptimize(f *testing.F) {
+	seeds := []string{
+		"\tMOVI\tv0, 1\n\tMOVI\tv0, 2\n\tSYSCALL",
+		"\tADD\tv1, 1, 2\n\tSUB\tv2, v1, 1",
+		"\tMUL\tv1, v0, 8\n\tSTORE\tv1, [x]\n\tLOAD\tv2, [x]",
+		"\tNOP\n\tNOP\n\tNOP",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		_ = Optimize(input, 1)
+	})
+}

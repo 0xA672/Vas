@@ -1,6 +1,10 @@
 package vas_test
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"vas/vas"
@@ -748,4 +752,222 @@ func TestCollectMemRefsNestedBrackets(t *testing.T) {
 	if !strings.Contains(got, "idx:\tdq 0") {
 		t.Errorf("expected auto-generated idx data entry for nested bracket, got: %s", got)
 	}
+}
+
+// #14: End-to-end compilation test (assemble → nasm → ld → run)
+func hasTool(t *testing.T, name string) bool {
+	t.Helper()
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+func TestEndToEndElf64(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping end-to-end test in short mode")
+	}
+	if !hasTool(t, "nasm") {
+		t.Skip("nasm not found on PATH, skipping end-to-end test")
+	}
+	if !hasTool(t, "ld") {
+		t.Skip("ld not found on PATH, skipping end-to-end test")
+	}
+
+	// VAS program: sum 1..n, exit with result
+	vasSrc := `
+MOVI v1, 0           ; sum = 0
+MOVI v2, 1           ; i = 1
+MOVI v3, 10          ; n = 10
+loop:
+ADD v1, v1, v2       ; sum += i
+ADD v2, 1            ; i++
+CMP v2, v3
+JLE loop
+; exit(sum)
+MOV v5, v1
+MOVI v0, 60
+SYSCALL
+`
+	asm, err := vas.AssembleStandalone(vasSrc)
+	if err != nil {
+		t.Fatalf("assembly error: %v", err)
+	}
+
+	dir := t.TempDir()
+	asmFile := filepath.Join(dir, "test.asm")
+	objFile := filepath.Join(dir, "test.o")
+	binFile := filepath.Join(dir, "test")
+	if runtime.GOOS == "windows" {
+		binFile += ".exe"
+	}
+
+	if err := os.WriteFile(asmFile, []byte(asm), 0644); err != nil {
+		t.Fatalf("write asm: %v", err)
+	}
+
+	// nasm
+	out, err := exec.Command("nasm", "-f", "elf64", "-o", objFile, asmFile).CombinedOutput()
+	if err != nil {
+		t.Fatalf("nasm failed: %v\n%s", err, out)
+	}
+
+	// ld
+	out, err = exec.Command("ld", "-o", binFile, objFile).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ld failed: %v\n%s", err, out)
+	}
+
+	// Verify binary exists
+	if _, err := os.Stat(binFile); err != nil {
+		t.Fatalf("binary not created: %v", err)
+	}
+
+	// On Windows, ELF binaries can't be run directly; skip execution check.
+	if runtime.GOOS == "windows" {
+		t.Log("skipping execution on Windows (ELF binary)")
+		return
+	}
+
+	// run
+	out, err = exec.Command(binFile).CombinedOutput()
+	// Check exit code = sum(1..10) = 55
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		if code := exitErr.ExitCode(); code != 55 {
+			t.Errorf("expected exit code 55, got %d\noutput: %s", code, out)
+		}
+	} else if err != nil {
+		t.Fatalf("exec failed: %v\n%s", err, out)
+	} else {
+		// Exit code 0 — wrong! Should be 55
+		t.Errorf("expected exit code 55, got 0 (program didn't exit via sys_exit?)")
+	}
+}
+
+// #15: Win64 standalone — user-defined main: with RET
+func TestWin64StandaloneWithMain(t *testing.T) {
+	input := "main:\nMOVI v0, 42\nRET"
+	got, err := vas.AssembleStandaloneTarget(input, "win64")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "\tglobal main") {
+		t.Errorf("expected global main, got: %s", got)
+	}
+	if !strings.Contains(got, "main:") {
+		t.Errorf("expected main label, got: %s", got)
+	}
+	// User's RET should prevent adding extra ret
+	if strings.Count(got, "ret") > 1 {
+		t.Errorf("expected exactly one ret (user's), got multiple: %s", got)
+	}
+}
+
+func TestWin64StandaloneNoRet(t *testing.T) {
+	// No RET in source — wrapper should add one
+	input := "MOVI v0, 0"
+	got, err := vas.AssembleStandaloneTarget(input, "win64")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "\tglobal main") {
+		t.Errorf("expected global main, got: %s", got)
+	}
+	if !strings.Contains(got, "main:") {
+		t.Errorf("expected main label, got: %s", got)
+	}
+	if !strings.Contains(got, "ret") {
+		t.Errorf("expected auto-generated ret, got: %s", got)
+	}
+}
+
+func TestWin64StandaloneWithData(t *testing.T) {
+	input := "section .data\nmsg: db \"hello\", 0\nsection .text\nMOVI v0, 0\nRET"
+	got, err := vas.AssembleStandaloneTarget(input, "win64")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// User already has section .text → wrapper skipped (no global main auto-added)
+	// But user's own global main or section .text should be present
+	if !strings.Contains(got, "section .data") {
+		t.Errorf("expected section .data preserved, got: %s", got)
+	}
+	if !strings.Contains(got, "msg:") {
+		t.Errorf("expected msg label preserved, got: %s", got)
+	}
+}
+
+// #18: Large input stress test
+func TestLargeInput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping stress test in short mode")
+	}
+	var lines []string
+	for i := 0; i < 5000; i++ {
+		lines = append(lines, "ADD v0, v0, 1")
+	}
+	lines = append(lines, "MOVI v0, 0")
+	lines = append(lines, "SYSCALL")
+	input := strings.Join(lines, "\n")
+
+	_, err := vas.Assemble(input)
+	if err != nil {
+		t.Fatalf("large input assembly failed: %v", err)
+	}
+}
+
+func TestLargeInputWithOpt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping stress test in short mode")
+	}
+	var lines []string
+	for i := 0; i < 5000; i++ {
+		lines = append(lines, "NOP")
+	}
+	lines = append(lines, "MOVI v0, 60")
+	lines = append(lines, "SYSCALL")
+	input := strings.Join(lines, "\n")
+
+	_, err := vas.AssembleWithOpt(input, 1)
+	if err != nil {
+		t.Fatalf("large input with opt failed: %v", err)
+	}
+}
+
+// #17: Fuzz tests
+func FuzzAssemble(f *testing.F) {
+	seeds := []string{
+		"",
+		"ADD v0, v1, v2",
+		"MOVI v0, 42\nSYSCALL",
+		"section .text\nglobal _start\n_start:\nMOVI v0, 60\nSYSCALL",
+		"NOP\nNOP\nNOP",
+		"; comment\n# hash comment",
+		"LOAD v0, [x]\nSTORE v0, [x]",
+		"JMP loop\nloop:\nNOP",
+		"PUSH v0\nPOP v1",
+		"INT 0x80",
+		"\t\n  ",
+		"v13:\nNOP",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		// Assemble should never panic (errors are acceptable)
+		_, _ = vas.Assemble(input)
+	})
+}
+
+func FuzzAssembleWithOpt(f *testing.F) {
+	seeds := []string{
+		"MOVI v0, 1\nMOVI v0, 2\nSYSCALL",
+		"ADD v1, 1, 2\nSUB v2, v1, 1",
+		"MUL v1, v0, 8\nSTORE v1, [x]\nLOAD v2, [x]",
+		"section .data\nx: dq 0\nsection .text\nMOVI v0, 60\nSYSCALL",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		_, _ = vas.AssembleWithOpt(input, 1)
+	})
 }
