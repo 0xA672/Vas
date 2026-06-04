@@ -1,0 +1,129 @@
+; cli.vas -- VAS 简易 CLI 工具 (纯汇编, 无需 CRT)
+;
+; 演示 VAS 虚拟汇编器的完整功能:
+;   1. strlen   - 字符串长度计算
+;   2. fib      - Fibonacci 数列
+;   3. prime    - 质数判定
+;   4. factorial- 阶乘计算
+;
+; 每个功能独立返回结果作为退出码。
+; 通过修改 main 中最后 MOV v0, ... 选择不同功能。
+;
+; v0=rax  v1=rbx  v2=rcx  v3=rdx
+; v4=rsi  v5=rdi  v6=r8   v7=r9
+; v8=r11  v9=r12  v10=r13 v11=r14 v12=r15
+;
+; 构建:
+;   vas -target win64 multitool.vas -o multitool.asm
+;   nasm -f win64 multitool.asm -o multitool.obj
+;   ld multitool.obj -o multitool.exe
+;   multitool && echo %ERRORLEVEL%
+
+default rel
+
+; ═══════════════════════════════════════════════════════════════
+section .data
+    msg     db 'Hello, VAS World!', 0   ; strlen=17
+
+section .bss
+    buf     resq 8
+
+; ═══════════════════════════════════════════════════════════════
+section .text
+    global main
+
+main:
+    ; ═══════════════════════════════════════════════════════
+    ; 功能 A: strlen("Hello, VAS World!") = 17 (0x11)
+    ; 演示: LOAD/STORE/LEA, 循环, 条件跳转
+    ; ═══════════════════════════════════════════════════════
+    MOVI    v10, msg            ; v10 = 字符串地址
+    MOVI    v11, 0              ; v11 = 计数器
+
+str_loop:
+    movzx   v0, byte [v10]      ; passthrough: v0 = *ptr
+    CMP     v0, 0               ; 遇到 '\0'?
+    JE      str_done
+    ADD     v11, 1              ; count++
+    ADD     v10, 1              ; ptr++
+    JMP     str_loop
+
+str_done:
+    MOV     v12, v11            ; v12 = strlen = 17
+
+    ; ═══════════════════════════════════════════════════════
+    ; 功能 B: Fibonacci(20) = 6765 (0x1A6D)
+    ; 演示: ADD/MOV, 寄存器传值, 循环
+    ; ═══════════════════════════════════════════════════════
+    MOVI    v9, 20              ; N = 20
+    MOVI    v10, 0              ; a = 0
+    MOVI    v11, 1              ; b = 1
+    MOVI    v2, 0               ; i = 0
+
+fib_loop:
+    CMP     v2, v9
+    JGE     fib_done
+    MOV     v0, v10
+    ADD     v0, v11             ; c = a + b
+    MOV     v10, v11            ; a = b
+    MOV     v11, v0             ; b = c
+    ADD     v2, 1               ; i++
+    JMP     fib_loop
+
+fib_done:
+    MOV     v9, v11             ; v9 = Fib(20) = 6765
+
+    ; ═══════════════════════════════════════════════════════
+    ; 功能 C: 判断 17 是否为质数 → 是 (结果为 1)
+    ; 演示: DIV passthrough, CMP/JE/JGE, 子程序思想
+    ; ═══════════════════════════════════════════════════════
+    MOVI    v10, 17             ; 待检测数 n = 17
+    MOVI    v8, 2               ; 除数 d = 2
+
+prime_test:
+    CMP     v8, v10
+    JGE     prime_yes           ; d >= n → 是质数
+    MOV     v0, v10             ; rax = n
+    MOVI    v3, 0               ; rdx = 0 (高64位清零)
+    div     v8                  ; div r11 → rax=商 rdx=余数
+    CMP     v3, 0
+    JE      prime_no            ; 能整除 → 不是质数
+    ADD     v8, 1               ; d++
+    JMP     prime_test
+
+prime_yes:
+    MOVI    v5, 1               ; 是质数
+    JMP     prime_done
+prime_no:
+    MOVI    v5, 0               ; 不是质数
+prime_done:
+
+    ; ═══════════════════════════════════════════════════════
+    ; 功能 D: 阶乘 8! = 40320 (0x9D80)
+    ; 演示: MUL 指令, SUB 递减
+    ; ═══════════════════════════════════════════════════════
+    MOVI    v2, 8               ; n = 8
+    MOVI    v0, 1               ; result = 1
+
+fact_loop:
+    CMP     v2, 1
+    JLE     fact_done
+    MUL     v0, v2              ; result *= n (imul rax, rcx)
+    SUB     v2, 1               ; n--
+    JMP     fact_loop
+
+fact_done:
+    MOV     v6, v0              ; v6 = 8! = 40320
+
+    ; ═══════════════════════════════════════════════════════
+    ; 选择返回哪个结果 (修改这一行切换)
+    ; ═══════════════════════════════════════════════════════
+    ; 可选项:
+    ;   MOV v0, v12  → strlen = 17
+    ;   MOV v0, v9   → Fib(20) = 6765
+    ;   MOV v0, v5   → is_prime(17) = 1
+    ;   MOV v0, v6   → 8! = 40320
+    ;
+    MOV     v0, v12             ; ← 默认返回 strlen
+
+    RET

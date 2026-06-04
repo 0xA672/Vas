@@ -1,7 +1,7 @@
 # VAS — Virtual Assembler
 
 ```
-.vas pseudocode  ->  VAS  ->  x86-64 NASM assembly (.s / .asm)  ->  nasm + ld / gcc  ->  executable
+.vas pseudocode  ->  VAS  ->  x86-64 NASM assembly (.asm)  ->  nasm + ld / gcc  ->  executable
 ```
 
 **VAS** (Virtual Assembler) is a lightweight text-replacement translator. It reads pseudo-instructions that use **virtual registers** (v0–v7) and outputs standard **x86-64 NASM** assembly.
@@ -32,10 +32,10 @@ msg: db "hello world", 10
 ### 2. Translate to NASM Assembly
 
 ```bash
-vas -o hello.s hello.vas
+vas -o hello.asm hello.vas
 ```
 
-Generated `hello.s`:
+Generated `hello.asm`:
 
 ```asm
 default rel
@@ -65,7 +65,7 @@ msg: db "hello world", 10
 
 **Linux / WSL** (nasm + ld):
 ```bash
-nasm -f elf64 -o hello.o hello.s
+nasm -f elf64 -o hello.o hello.asm
 ld -o hello hello.o
 ./hello
 ```
@@ -164,8 +164,8 @@ Address expressions (e.g. `[v1]`, `[v0+8]`, `[label]`) pass through with only vi
 ```bash
 vas                         # Read from stdin, output to stdout
 vas input.vas               # Translate input.vas, output to stdout
-vas -o output.s input.vas   # Write to file (-o can appear before or after input)
-vas input.vas -o output.s   # Same as above
+vas -o output.asm input.vas   # Write to file (-o can appear before or after input)
+vas input.vas -o output.asm   # Same as above
 vas -target win64 input.vas # Output Windows x64 skeleton instead of default ELF64
 vas -O1 input.vas           # Enable optimization (dead code elimination + constant folding)
 vas diff input.vas          # Show VAS source vs NASM output side-by-side
@@ -309,7 +309,7 @@ The project includes several practical examples covering a range of features:
 
 Run ELF examples on Linux/WSL:
 ```bash
-vas examples/fib.vas -o fib.s && nasm -f elf64 fib.s -o fib.o && ld fib.o -o fib && ./fib; echo $?
+vas examples/fib.vas -o fib.asm && nasm -f elf64 fib.asm -o fib.o && ld fib.o -o fib && ./fib; echo $?
 ```
 
 Run Win64 examples on Windows:
@@ -381,7 +381,7 @@ VAS **explicitly does not** perform the following tasks and should not be compar
 - No register allocation / instruction scheduling
 - No instruction selection or optimization (beyond simple -O1)
 - No linking or relocation
-- Generated `.s` / `.asm` files **must** be assembled by NASM and linked by ld to produce an executable
+- Generated `.asm` files **must** be assembled by NASM and linked by ld to produce an executable
 
 It is simply a thin translation layer that lets you write prototypes with friendlier pseudo-instructions; NASM handles the rest.
 

@@ -2,8 +2,8 @@
 ; computes 1+2+...+n and returns the result as exit code
 ;
 ; build:
-;   vas -o calc.s calc.vas
-;   nasm -f elf64 calc.s -o calc.o
+;   vas -o calc.asm calc.vas
+;   nasm -f elf64 calc.asm -o calc.o
 ;   ld calc.o -o calc
 ;   ./calc; echo $?    -> should output 55
 

@@ -4,8 +4,8 @@
 ; defaults to "World" when no argument is given
 ;
 ; build:
-;   vas -o greet.s greet.vas
-;   nasm -f elf64 greet.s -o greet.o
+;   vas -o greet.asm greet.vas
+;   nasm -f elf64 greet.asm -o greet.o
 ;   ld greet.o -o greet
 ;   ./greet              -> Hello, World!
 ;   ./greet VAS          -> Hello, VAS!

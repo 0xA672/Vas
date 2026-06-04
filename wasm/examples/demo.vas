@@ -1,9 +1,9 @@
 ; demo.vas - simple addition program (pseudo-instructions)
 
-.section .data
+.asmection .data
 msg:    dq 0
 
-.section .text
+.asmection .text
 .global _start
 
 _start:
@@ -31,6 +31,6 @@ done:
     MOVI v1, 0
     SYSCALL
 
-.section .data
+.asmection .data
 result: dq 0
 flag:   dq 0
