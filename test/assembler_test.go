@@ -1,6 +1,7 @@
 package vas_test
 
 import (
+	"strings"
 	"testing"
 	"vas/vas"
 )
@@ -426,5 +427,292 @@ func TestRegInBounds(t *testing.T) {
 		if err != nil {
 			t.Errorf("Assemble(%q) unexpected error: %v", input, err)
 		}
+	}
+}
+
+func TestInt(t *testing.T) {
+	got, err := vas.Assemble("INT 0x80")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tint\t0x80"
+	if got != expected {
+		t.Errorf("Assemble(INT 0x80) = %q, want %q", got, expected)
+	}
+}
+
+func TestIntError(t *testing.T) {
+	_, err := vas.Assemble("INT")
+	if err == nil {
+		t.Error("expected error for INT with no args, got nil")
+	}
+}
+
+func TestCall(t *testing.T) {
+	got, err := vas.Assemble("CALL myfunc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tcall\tmyfunc"
+	if got != expected {
+		t.Errorf("Assemble(CALL myfunc) = %q, want %q", got, expected)
+	}
+}
+
+func TestRet(t *testing.T) {
+	got, err := vas.Assemble("RET")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tret"
+	if got != expected {
+		t.Errorf("Assemble(RET) = %q, want %q", got, expected)
+	}
+}
+
+func Test3OpAddCommutative(t *testing.T) {
+	// ADD dst, src1, dst where dst==src2: commutative, so just "add dst, src1"
+	got, err := vas.Assemble("ADD v1, v0, v1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tadd\trbx, rax"
+	if got != expected {
+		t.Errorf("Assemble(ADD v1, v0, v1) = %q, want %q", got, expected)
+	}
+}
+
+func Test3OpSubNonCommutative(t *testing.T) {
+	// SUB dst, src1, dst where dst==src2: non-commutative, save via r10
+	got, err := vas.Assemble("SUB v1, v0, v1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tmov\tr10, rbx\n\tmov\trbx, rax\n\tsub\trbx, r10"
+	if got != expected {
+		t.Errorf("Assemble(SUB v1, v0, v1) = %q, want %q", got, expected)
+	}
+}
+
+func TestJumpError(t *testing.T) {
+	_, err := vas.Assemble("JMP")
+	if err == nil {
+		t.Error("expected error for JMP with no args, got nil")
+	}
+}
+
+func TestLoadError(t *testing.T) {
+	_, err := vas.Assemble("LOAD v0")
+	if err == nil {
+		t.Error("expected error for LOAD with 1 arg, got nil")
+	}
+	_, err2 := vas.Assemble("LOAD v0, v1, v2")
+	if err2 == nil {
+		t.Error("expected error for LOAD with 3 args, got nil")
+	}
+}
+
+func TestStoreError(t *testing.T) {
+	_, err := vas.Assemble("STORE v0")
+	if err == nil {
+		t.Error("expected error for STORE with 1 arg, got nil")
+	}
+}
+
+func TestCmpError(t *testing.T) {
+	_, err := vas.Assemble("CMP v0")
+	if err == nil {
+		t.Error("expected error for CMP with 1 arg, got nil")
+	}
+}
+
+func TestPushError(t *testing.T) {
+	_, err := vas.Assemble("PUSH")
+	if err == nil {
+		t.Error("expected error for PUSH with no args, got nil")
+	}
+}
+
+func TestPopError(t *testing.T) {
+	_, err := vas.Assemble("POP")
+	if err == nil {
+		t.Error("expected error for POP with no args, got nil")
+	}
+}
+
+func TestLeaError(t *testing.T) {
+	_, err := vas.Assemble("LEA v0")
+	if err == nil {
+		t.Error("expected error for LEA with 1 arg, got nil")
+	}
+}
+
+func TestGloblDirective(t *testing.T) {
+	got, err := vas.Assemble(".globl main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tglobal main"
+	if got != expected {
+		t.Errorf("Assemble(.globl main) = %q, want %q", got, expected)
+	}
+}
+
+func TestDataDirective(t *testing.T) {
+	got, err := vas.Assemble(".data")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tsection .data"
+	if got != expected {
+		t.Errorf("Assemble(.data) = %q, want %q", got, expected)
+	}
+}
+
+func TestBssDirective(t *testing.T) {
+	got, err := vas.Assemble(".bss")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tsection .bss"
+	if got != expected {
+		t.Errorf("Assemble(.bss) = %q, want %q", got, expected)
+	}
+}
+
+func TestTextDirective(t *testing.T) {
+	got, err := vas.Assemble(".text")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tsection .text"
+	if got != expected {
+		t.Errorf("Assemble(.text) = %q, want %q", got, expected)
+	}
+}
+
+func TestMoviHex(t *testing.T) {
+	got, err := vas.Assemble("MOVI v0, 0xFF")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tmov\trax, 0xFF"
+	if got != expected {
+		t.Errorf("Assemble(MOVI v0, 0xFF) = %q, want %q", got, expected)
+	}
+}
+
+func TestMoviNegative(t *testing.T) {
+	got, err := vas.Assemble("MOVI v0, -1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "\tmov\trax, -1"
+	if got != expected {
+		t.Errorf("Assemble(MOVI v0, -1) = %q, want %q", got, expected)
+	}
+}
+
+func TestEmptyInput(t *testing.T) {
+	got, err := vas.Assemble("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("Assemble('') = %q, want ''", got)
+	}
+}
+
+func TestWhitespaceInput(t *testing.T) {
+	got, err := vas.Assemble("  ")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "  " {
+		t.Errorf("Assemble('  ') = %q, want '  '", got)
+	}
+}
+
+func TestLabelAndInstruction(t *testing.T) {
+	input := "start:\nMOVI v0, 42"
+	got, err := vas.Assemble(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := "start:\n\tmov\trax, 42"
+	if got != expected {
+		t.Errorf("Assemble = %q, want %q", got, expected)
+	}
+}
+
+func TestAssembleWithOptLevel1(t *testing.T) {
+	// Dead MOVI should be eliminated at -O1
+	input := "MOVI v0, 1\nMOVI v0, 60\nSYSCALL"
+	got, err := vas.AssembleWithOpt(input, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(got, "mov\trax, 1") {
+		t.Errorf("dead MOVI v0,1 should be eliminated at -O1, got: %s", got)
+	}
+	if !strings.Contains(got, "mov\trax, 60") {
+		t.Errorf("expected mov rax, 60 to remain, got: %s", got)
+	}
+	if !strings.Contains(got, "syscall") {
+		t.Errorf("expected syscall to remain, got: %s", got)
+	}
+}
+
+func TestAssembleStandaloneElf(t *testing.T) {
+	input := "MOVI v0, 60\nSYSCALL"
+	got, err := vas.AssembleStandalone(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "\tglobal _start") {
+		t.Errorf("expected global _start in standalone ELF64 output")
+	}
+	if !strings.Contains(got, "_start:") {
+		t.Errorf("expected _start label in standalone ELF64 output")
+	}
+	if !strings.Contains(got, "call\tvas_main") {
+		t.Errorf("expected call vas_main in standalone ELF64 output")
+	}
+	if !strings.Contains(got, "vas_main:") {
+		t.Errorf("expected vas_main label in standalone ELF64 output")
+	}
+	if !strings.Contains(got, "mov\teax, 60") {
+		t.Errorf("expected exit syscall in standalone ELF64 output")
+	}
+}
+
+func TestAssembleStandaloneWin64(t *testing.T) {
+	input := "MOVI v0, 0\nRET"
+	got, err := vas.AssembleStandaloneTarget(input, "win64")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "\tglobal main") {
+		t.Errorf("expected global main in standalone Win64 output")
+	}
+	if !strings.Contains(got, "main:") {
+		t.Errorf("expected main label in standalone Win64 output")
+	}
+	if !strings.Contains(got, "ret") {
+		t.Errorf("expected ret in standalone Win64 output")
+	}
+}
+
+func TestAssembleStandaloneWithMemRefs(t *testing.T) {
+	input := "LOAD v0, [result]\nSTORE v1, [buf+8]"
+	got, err := vas.AssembleStandalone(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "result:\tdq 0") {
+		t.Errorf("expected auto-generated result data entry, got: %s", got)
+	}
+	if !strings.Contains(got, "buf:\tdq 0") {
+		t.Errorf("expected auto-generated buf data entry, got: %s", got)
 	}
 }
