@@ -9,14 +9,19 @@ import (
 )
 
 var regMap = map[string]string{
-	"v0": "rax",
-	"v1": "rbx",
-	"v2": "rcx",
-	"v3": "rdx",
-	"v4": "rsi",
-	"v5": "rdi",
-	"v6": "r8",
-	"v7": "r9",
+	"v0":  "rax",
+	"v1":  "rbx",
+	"v2":  "rcx",
+	"v3":  "rdx",
+	"v4":  "rsi",
+	"v5":  "rdi",
+	"v6":  "r8",
+	"v7":  "r9",
+	"v8":  "r11",
+	"v9":  "r12",
+	"v10": "r13",
+	"v11": "r14",
+	"v12": "r15",
 }
 
 func mapReg(s string) (string, error) {
@@ -31,7 +36,7 @@ func mapReg(s string) (string, error) {
 			}
 			name := s[i:j]
 			if _, ok := regMap[name]; !ok {
-				return "", fmt.Errorf("virtual register %s out of range (valid: v0-v7)", name)
+				return "", fmt.Errorf("virtual register %s out of range (valid: v0-v12)", name)
 			}
 		}
 	}
@@ -99,7 +104,7 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 		if strings.HasSuffix(line, ":") && !isInstruction(line) {
 			mapped, err := mapReg(line)
 			if err != nil {
-				return "", fmt.Errorf("line %d: %q: %w", lineNum+1, original, err)
+				return "", fmt.Errorf("line %d: %q: %w", lineNum+1, strings.TrimRight(original, "\r"), err)
 			}
 			outLines = append(outLines, mapped)
 			continue
@@ -107,7 +112,7 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 
 		result, err := processInstruction(line)
 		if err != nil {
-			return "", fmt.Errorf("line %d: %q: %w", lineNum+1, original, err)
+			return "", fmt.Errorf("line %d: %q: %w", lineNum+1, strings.TrimRight(original, "\r"), err)
 		}
 		outLines = append(outLines, result...)
 	}

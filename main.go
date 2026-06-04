@@ -1,3 +1,5 @@
+//go:build !wasm
+
 package main
 
 import (
@@ -99,6 +101,19 @@ func cmdAssemble(args []string) {
 
  output, err := vas.AssembleStandaloneTargetOpt(input, target, optLevel)
  if err != nil {
+  // Try to show source context for line-numbered errors
+  errMsg := err.Error()
+  lineNum := 0
+  if _, err2 := fmt.Sscanf(errMsg, "line %d:", &lineNum); err2 == nil && lineNum > 0 && inputFile != "" {
+   lines := strings.Split(input, "\n")
+   if lineNum-1 < len(lines) {
+    fmt.Fprintf(os.Stderr, "error at line %d:\n", lineNum)
+    fmt.Fprintf(os.Stderr, "  %s\n", strings.TrimRight(lines[lineNum-1], "\r"))
+    fmt.Fprintf(os.Stderr, "  ^\n")
+    fmt.Fprintf(os.Stderr, "%s\n", errMsg)
+    os.Exit(1)
+   }
+  }
   fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
   os.Exit(1)
  }
@@ -328,53 +343,79 @@ func analyzeVAS(input string) *vasStats {
 // ── list ──────────────────────────────────────────────────────────────────
 
 func cmdList() {
- fmt.Println("VAS — supported instructions and syntax\n")
- fmt.Println("Arithmetic (3-operand form, 2-operand form):")
- fmt.Println("  ADD   dst, src1, src2    →  mov dst, src1 ; add dst, src2")
- fmt.Println("  ADD   dst, src           →  add dst, src")
- fmt.Println("  SUB   dst, src1, src2    →  mov dst, src1 ; sub dst, src2")
- fmt.Println("  SUB   dst, src           →  sub dst, src")
- fmt.Println("  MUL   dst, src1, src2    →  imul dst, src1, src2")
- fmt.Println("  MUL   dst, src           →  imul dst, src\n")
- fmt.Println("Memory:")
- fmt.Println("  LOAD  dst, [addr]        →  mov dst, [addr]")
- fmt.Println("  LOAD  dst, [addr+off]    →  mov dst, [addr+off]")
- fmt.Println("  LOAD  dst, [addr*scale]  →  mov dst, [addr*scale]")
- fmt.Println("  LOAD  dst, [base+idx*scale+disp]  (full SIB form)")
- fmt.Println("  STORE [addr], src        →  mov [addr], src")
- fmt.Println("  STORE [addr+off], src    →  mov [addr+off], src")
- fmt.Println("  LEA   dst, [addr]        →  lea dst, [addr]\n")
- fmt.Println("Data movement:")
- fmt.Println("  MOVI  dst, imm           →  mov dst, imm")
- fmt.Println("  MOV   dst, src           →  mov dst, src\n")
- fmt.Println("Control flow:")
- fmt.Println("  JMP   label              →  jmp label")
- fmt.Println("  JE    label              →  je  label")
- fmt.Println("  JNE   label              →  jne label")
- fmt.Println("  JG    label              →  jg  label")
- fmt.Println("  JL    label              →  jl  label")
- fmt.Println("  JGE   label              →  jge label")
- fmt.Println("  JLE   label              →  jle label")
- fmt.Println("  CALL  label              →  call label")
- fmt.Println("  RET                      →  ret")
- fmt.Println("  NOP                      →  nop\n")
- fmt.Println("Stack:")
- fmt.Println("  PUSH  src                →  push src")
- fmt.Println("  POP   dst                →  pop  dst\n")
- fmt.Println("System:")
- fmt.Println("  CMP   a, b               →  cmp a, b")
- fmt.Println("  CMP   a, imm             →  cmp a, imm")
- fmt.Println("  INT   n                  →  int n")
- fmt.Println("  SYSCALL                  →  syscall\n")
- fmt.Println("Directives (passthrough):")
- fmt.Println("  SECTION .text / .data / .bss")
- fmt.Println("  GLOBAL label")
- fmt.Println("  EXTERN label")
- fmt.Println("  BYTE, WORD, DWORD, QWORD, DD, DQ, DB")
- fmt.Println("  ALIGN n, TYPE, SIZE, LENGTH\n")
- fmt.Println("Virtual registers: v0-v7")
- fmt.Println("  v0 → rax   v1 → rbx   v2 → rcx   v3 → rdx")
- fmt.Println("  v4 → rsi   v5 → rdi   v6 → r8    v7 → r9")
+	fmt.Println("VAS -- supported instructions and syntax")
+	fmt.Println()
+	fmt.Println("Arithmetic (3-operand form, 2-operand form):")
+	fmt.Println("  ADD   dst, src1, src2    ->  mov dst, src1 ; add dst, src2")
+	fmt.Println("  ADD   dst, src           ->  add dst, src")
+	fmt.Println("  SUB   dst, src1, src2    ->  mov dst, src1 ; sub dst, src2")
+	fmt.Println("  SUB   dst, src           ->  sub dst, src")
+	fmt.Println("  MUL   dst, src1, src2    ->  imul dst, src1, src2")
+	fmt.Println("  MUL   dst, src           ->  imul dst, src")
+	fmt.Println()
+	fmt.Println("Memory:")
+	fmt.Println("  LOAD  dst, [addr]        ->  mov dst, [addr]")
+	fmt.Println("  LOAD  dst, [addr+off]    ->  mov dst, [addr+off]")
+	fmt.Println("  LOAD  dst, [addr*scale]  ->  mov dst, [addr*scale]")
+	fmt.Println("  STORE src, [addr]        ->  mov [addr], src")
+	fmt.Println("  STORE src, [addr+off]    ->  mov [addr+off], src")
+	fmt.Println("  LEA   dst, [addr]        ->  lea dst, [addr]")
+	fmt.Println()
+	fmt.Println("Data movement:")
+	fmt.Println("  MOVI  dst, imm           ->  mov dst, imm")
+	fmt.Println("  MOV   dst, src           ->  mov dst, src")
+	fmt.Println()
+	fmt.Println("Control flow:")
+	fmt.Println("  JMP   label              ->  jmp label")
+	fmt.Println("  JE    label              ->  je  label")
+	fmt.Println("  JNE   label              ->  jne label")
+	fmt.Println("  JG    label              ->  jg  label")
+	fmt.Println("  JL    label              ->  jl  label")
+	fmt.Println("  JGE   label              ->  jge label")
+	fmt.Println("  JLE   label              ->  jle label")
+	fmt.Println("  CALL  label              ->  call label")
+	fmt.Println("  RET                      ->  ret")
+	fmt.Println("  NOP                      ->  nop")
+	fmt.Println()
+	fmt.Println("Stack:")
+	fmt.Println("  PUSH  src                ->  push src")
+	fmt.Println("  POP   dst                ->  pop  dst")
+	fmt.Println()
+	fmt.Println("System:")
+	fmt.Println("  CMP   a, b               ->  cmp a, b")
+	fmt.Println("  CMP   a, imm             ->  cmp a, imm")
+	fmt.Println("  INT   n                  ->  int n")
+	fmt.Println("  SYSCALL                  ->  syscall")
+	fmt.Println()
+	fmt.Println("Directives (passthrough without register substitution):")
+	fmt.Println("  SECTION .text / .data / .bss")
+	fmt.Println("  GLOBAL / EXTERN label")
+	fmt.Println("  DB, DW, DD, DQ, BYTE, WORD, DWORD, QWORD")
+	fmt.Println("  ALIGN n, TYPE, SIZE, LENGTH")
+	fmt.Println()
+	fmt.Println("Passthrough (raw x86 instructions, registers ARE substituted):")
+	fmt.Println("  Any unrecognized line passes through with v-register mapping.")
+	fmt.Println("  Commonly used:")
+	fmt.Println("    movzx  dst, byte [src]   - zero-extend byte load")
+	fmt.Println("    div    reg               - unsigned divide rdx:rax by reg")
+	fmt.Println("    shl    reg, imm          - shift left")
+	fmt.Println("    shr    reg, imm          - shift right")
+	fmt.Println("    and    reg, imm/reg      - bitwise AND")
+	fmt.Println("    or     reg, imm/reg      - bitwise OR")
+	fmt.Println("    xor    reg, reg          - zero register")
+	fmt.Println("    test   reg, reg          - set flags without write")
+	fmt.Println("    not    reg               - bitwise NOT")
+	fmt.Println("    neg    reg               - negate (two's complement)")
+	fmt.Println()
+	fmt.Println("Virtual registers (v0-v12):")
+	fmt.Println("  v0 -> rax    v1 -> rbx    v2 -> rcx    v3 -> rdx")
+	fmt.Println("  v4 -> rsi    v5 -> rdi    v6 -> r8     v7 -> r9")
+	fmt.Println("  v8 -> r11    v9 -> r12    v10 -> r13   v11 -> r14")
+	fmt.Println("  v12 -> r15")
+	fmt.Println()
+	fmt.Println("  v-registers work in any operand position including memory:")
+	fmt.Println("    MOV  v4, [v2+8]     ->  mov rsi, [rcx+8]")
+	fmt.Println("    LOAD v6, [v1+v2*8]  ->  mov r8, [rbx+rcx*8]")
 }
 
 // ── help / usage ──────────────────────────────────────────────────────────
@@ -408,10 +449,12 @@ Options:
   -v, --version   Print version and exit
   -h, --help      Show this help message
 
-Input format: .vas or .asm files with virtual registers v0-v7.
-Output: x86-64 NASM assembly.
+Input format: .vas or .asm files with virtual registers v0-v12.
+Output: x86-64 NASM assembly (.asm).
 
 Virtual register mapping:
   v0 -> rax   v1 -> rbx   v2 -> rcx   v3 -> rdx
   v4 -> rsi   v5 -> rdi   v6 -> r8    v7 -> r9
+  v8 -> r11   v9 -> r12   v10 -> r13  v11 -> r14
+  v12 -> r15
 `

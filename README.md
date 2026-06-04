@@ -1,12 +1,12 @@
-# VAS — Virtual Assembler
+# VAS - Virtual Assembler
 
 ```
 .vas pseudocode  ->  VAS  ->  x86-64 NASM assembly (.asm)  ->  nasm + ld / gcc  ->  executable
 ```
 
-**VAS** (Virtual Assembler) is a lightweight text-replacement translator. It reads pseudo-instructions that use **virtual registers** (v0–v7) and outputs standard **x86-64 NASM** assembly.
+VAS (Virtual Assembler) is a lightweight text-replacement translator. It reads pseudo-instructions that use **virtual registers** (v0-v12) and outputs standard **x86-64 NASM** assembly.
 
-It does not perform register allocation, instruction scheduling, or linking — its sole purpose is to turn educational/prototype pseudo-code into NASM-assemblable source.
+It does not perform register allocation, instruction scheduling, or linking. Its sole purpose is to turn educational/prototype pseudo-code into NASM-assemblable source.
 
 ---
 
@@ -15,7 +15,7 @@ It does not perform register allocation, instruction scheduling, or linking — 
 ### 1. Write Pseudocode (`hello.vas`)
 
 ```asm
-; hello.vas — print "hello world" via Linux write syscall
+; hello.vas - print "hello world" via Linux write syscall
 MOVI v0, 1        ; rax = 1 (write syscall number)
 MOVI v5, 1        ; rdi = 1 (stdout fd)
 LEA  v4, [msg]    ; rsi = address of msg
@@ -40,24 +40,24 @@ Generated `hello.asm`:
 ```asm
 default rel
 
-	section .text
-	global _start
+        section .text
+        global _start
 _start:
-	call	vas_main
-	mov	edi, eax
-	mov	eax, 60
-	syscall
+        call    vas_main
+        mov     edi, eax
+        mov     eax, 60
+        syscall
 vas_main:
-	mov	rax, 1
-	mov	rdi, 1
-	lea	rsi, [msg]
-	mov	rdx, 12
-	syscall
-	mov	rax, 60
-	mov	rdi, 0
-	syscall
+        mov     rax, 1
+        mov     rdi, 1
+        lea     rsi, [msg]
+        mov     rdx, 12
+        syscall
+        mov     rax, 60
+        mov     rdi, 0
+        syscall
 
-	section .data
+        section .data
 msg: db "hello world", 10
 ```
 
@@ -70,7 +70,7 @@ ld -o hello hello.o
 ./hello
 ```
 
-**Windows** (nasm + link.exe or ld):
+**Windows** (nasm + ld):
 ```bash
 vas -target win64 hello.vas -o hello.asm
 nasm -f win64 -o hello.obj hello.asm
@@ -92,8 +92,13 @@ hello.exe
 | v5               | `rdi`             |
 | v6               | `r8`              |
 | v7               | `r9`              |
+| v8               | `r11`             |
+| v9               | `r12`             |
+| v10              | `r13`             |
+| v11              | `r14`             |
+| v12              | `r15`             |
 
-Virtual registers can be used in any operand position, including memory addressing (e.g. `[v0+8]`), and are automatically replaced during translation.
+Virtual registers can be used in any operand position, including memory addressing (e.g. `[v0+8]`, `[v1+v2*8]`), and are automatically replaced during translation.
 
 ---
 
@@ -135,7 +140,7 @@ Address expressions (e.g. `[v1]`, `[v0+8]`, `[label]`) pass through with only vi
 | `JGE` | `label` | `jge label` |
 | `JLE` | `label` | `jle label` |
 | `CALL` | `label` | `call label` |
-| `RET` | — | `ret` |
+| `RET` | - | `ret` |
 
 ### Stack Operations
 
@@ -148,7 +153,7 @@ Address expressions (e.g. `[v1]`, `[v0+8]`, `[label]`) pass through with only vi
 
 | Pseudo-instruction | Operands | Expansion |
 |--------------------|----------|-----------|
-| `SYSCALL` | — | `syscall` |
+| `SYSCALL` | - | `syscall` |
 | `INT` | `n` | `int n` |
 
 ### Miscellaneous
@@ -157,6 +162,31 @@ Address expressions (e.g. `[v1]`, `[v0+8]`, `[label]`) pass through with only vi
 |--------------------|-----------|
 | `NOP` | `nop` |
 
+### Passthrough (Raw x86 Instructions)
+
+Any line not recognized as a pseudo-instruction passes through with virtual registers substituted. This lets you use raw x86 instructions directly:
+
+| Instruction | Example | Notes |
+|-------------|---------|-------|
+| `movzx` | `movzx v0, byte [v1]` | Zero-extend byte load |
+| `div` | `div v6` | Unsigned divide rdx:rax by v6 |
+| `shl` / `shr` | `shl v0, 8` | Shift left/right |
+| `and` / `or` / `xor` | `and v0, 0xFF` | Bitwise operations |
+| `test` | `test v0, v0` | Set flags without write |
+| `not` / `neg` | `neg v0` | Bitwise NOT / negate |
+
+Virtual register substitution works inside passthrough, so `div v6` becomes `div r8`.
+
+### Directives (Passthrough without Register Substitution)
+
+These directives pass through unchanged (no v-register substitution):
+- `SECTION .text`, `SECTION .data`, `SECTION .bss`
+- `GLOBAL label`, `EXTERN label`
+- `DB`, `DW`, `DD`, `DQ`, `BYTE`, `WORD`, `DWORD`, `QWORD`
+- `ALIGN n`, `TYPE`, `SIZE`, `LENGTH`
+
+**GAS-to-NASM conversion**: Dot-prefixed directives (`.section`, `.global`, `.globl`, `.data`, `.text`, `.bss`) are automatically converted to NASM syntax (dot stripped, `.globl` -> `global`, `.data` -> `section .data`).
+
 ---
 
 ## Command Line Usage
@@ -164,28 +194,29 @@ Address expressions (e.g. `[v1]`, `[v0+8]`, `[label]`) pass through with only vi
 ```bash
 vas                         # Read from stdin, output to stdout
 vas input.vas               # Translate input.vas, output to stdout
-vas -o output.asm input.vas   # Write to file (-o can appear before or after input)
-vas input.vas -o output.asm   # Same as above
-vas -target win64 input.vas # Output Windows x64 skeleton instead of default ELF64
-vas -O1 input.vas           # Enable optimization (dead code elimination + constant folding)
-vas diff input.vas          # Show VAS source vs NASM output side-by-side
-vas stats input.vas         # Show instruction category counts and register usage
-vas check input.vas         # Validate VAS syntax; exits 0 on success, 1 on error
-vas list                    # List all supported instructions and syntax
-vas version                 # Print version string (e.g. "vas v0.2.0")
-vas -v / --version          # Same as above
-vas -h / --help             # Show help
+vas -o output.asm input.vas # Write to file
+vas input.vas -o output.asm # Same as above
+vas -target win64 input.vas # Output Windows x64 skeleton
+vas -O1 input.vas           # Enable optimizations
+vas diff input.vas          # Show VAS source vs NASM output
+vas stats input.vas         # Show instruction and register statistics
+vas check input.vas         # Validate syntax (exit: 0=ok, 1=error)
+vas list                    # List all instructions and syntax
+vas version                 # Print version
 ```
 
-- **Pipeline input**: `echo "MOVI v0, 42" | vas`
-- Exits with error if input file does not exist
-- If no input file is given and stdin is empty, prints help and exits
+Options:
+- `-o <file>`         - Write output to file instead of stdout
+- `-target <arch>`    - Target platform: `elf64` (default) or `win64`
+- `-O1`               - Enable optimizations (constant folding, dead code elimination, peephole)
+- `-v`, `--version`   - Print version and exit
+- `-h`, `--help`      - Show help
 
 ---
 
 ## Standalone Mode
 
-When the assembled output **does not** contain a `section .text` directive, VAS automatically wraps the output in a minimal standalone skeleton that can be assembled and run directly. If the input already defines its own `.text` section, the standalone skeleton is skipped.
+When the assembled output does not contain a `section .text` directive, VAS automatically wraps it in a minimal standalone skeleton that can be assembled and run directly. If the input already defines its own `.text` section, the skeleton is skipped.
 
 ### ELF64 (Linux / WSL, default)
 
@@ -193,26 +224,7 @@ When the assembled output **does not** contain a `section .text` directive, VAS 
 echo "MOVI v0, 42" | vas
 ```
 
-Output:
-
-```asm
-default rel
-
-	section .text
-	global _start
-_start:
-	call	vas_main
-	mov	edi, eax
-	mov	eax, 60
-	syscall
-vas_main:
-	mov	rax, 42
-```
-
-The skeleton includes:
-- `default rel` + `section .text` + `global _start` / `_start:` → `call vas_main` → syscall exit
-- User code is placed under `vas_main:`; to return cleanly the user code should end with `RET`
-- After `call vas_main` returns, the exit syscall `exit(eax)` executes automatically
+Output includes: `default rel`, `section .text`, `global _start`, `_start:` entry that calls `vas_main` and then performs `exit(eax)` via syscall. User code is placed under `vas_main:`.
 
 ### Win64 (Windows)
 
@@ -220,22 +232,25 @@ The skeleton includes:
 echo "MOVI v0, 42" | vas -target win64
 ```
 
-The skeleton uses `main:` as the entry point, ending with `xor eax, eax; ret` (unless the user's last instruction is already `RET`).
+Uses `main:` as the entry point. Ends with `xor eax, eax; ret` unless the user's last instruction is already `RET`.
 
 ### Skip Standalone Mode
 
-If the assembled output already contains a `section .text` directive (i.e. the input defines its own text section), the output is passed through as-is without any skeleton wrapping.
+If the assembled output already defines a `.text` section, output is passed through as-is without wrapping.
 
 ---
 
 ## Optimization (-O1)
 
-`-O1` enables two levels of optimization:
+`-O1` enables:
 
-1. **Dead Code Elimination (DCE)**: Removes register assignments that have no effect on subsequent output (e.g. `MOV v1, v0` where v1 is never used before being overwritten)
-2. **Constant Folding**: Computes literal arithmetic at compile time (e.g. `MOVI v1, 3; ADD v0, v1, 7` → `mov rax, 10`)
-
-DCE correctly preserves instructions with side effects (PUSH, POP, CALL, STORE, LOAD, SYSCALL, INT, RET, etc.).
+1. **Constant Folding**: Computes literal arithmetic at compile time. `ADD v1, 1, 2` becomes `MOVI v1, 3`.
+2. **Dead Code Elimination**: Removes register writes that are never read before being overwritten.
+3. **Peephole Optimizations**:
+   - `mov reg, 0` -> `xor reg, reg` (smaller encoding)
+   - `cmp reg, 0` -> `test reg, reg` (smaller encoding)
+   - Multi-nop sequences merged into one
+   - `mov + add` fused into `lea`
 
 ---
 
@@ -243,16 +258,16 @@ DCE correctly preserves instructions with side effects (PUSH, POP, CALL, STORE, 
 
 ### Comments
 
-Both `;` and `#` can start inline comments (they won't be confused with delimiters inside string literals):
+Both `;` and `#` start inline comments. Quoted strings preserve `;` and `#` as literals.
 
 ```asm
 MOVI v0, 42   ; this is a comment
 ADD  v1, v0   # this is also a comment
 ```
 
-### Labels and Directives
+### Labels
 
-Lines ending with a colon that are not known pseudo-instructions pass through with only virtual register substitution:
+Lines ending with `:` that are not known pseudo-instructions pass through as labels with virtual register substitution:
 
 ```asm
 section .data
@@ -263,56 +278,46 @@ global _start
 _start:
 ```
 
-### Passthrough
-
-Any line that is not a known pseudo-instruction (data definitions, section directives, alignment, etc.) is output as-is, with only virtual register substitution. Recognized data/section keywords include: `section`, `global`, `extern`, `dq`, `db`, `resb`, `equ`, etc.
-
-**GAS → NASM dot-prefix stripping**: the default case in `processInstruction` automatically strips the leading `.` from GAS-style directives and performs a few common conversions:
-
-| GAS input | NASM output |
-|-----------|-------------|
-| `.section .data` | `section .data` |
-| `.global _start` | `global _start` |
-| `.globl _start` | `global _start` |
-| `.data` | `section .data` |
-| `.text` | `section .text` |
-| `.bss` | `section .bss` |
-
-Other dot-prefixed directives (e.g. `.asciz`, `.type`, `.size`) are stripped of the leading dot but otherwise pass through unchanged — they may not be valid NASM and should be written in NASM syntax directly.
-
 ---
 
 ## Error Handling
 
-- **Known instruction operand count mismatch**: reports the original line text, then exits
-- **Virtual register out of range** (only v0–v7 are defined): reports the invalid register name, then exits
-- **Input file does not exist**: immediately reports error and exits
-- **Unknown instruction**: passed through (only virtual registers are substituted), no error reported
+Errors include source context when reading from a file:
+
+```
+error at line 3:
+  MOVI v99, 42
+  ^
+line 3: "MOVI v99, 42": virtual register v99 out of range (valid: v0-v12)
+```
+
+- **Virtual register out of range**: reports the invalid name and valid range (v0-v12)
+- **Operand count mismatch**: reports the original line and expected count
+- **Input file not found**: reports the path
+- **Unknown instruction**: passes through silently (only virtual register substitution applied)
 
 ---
 
 ## Examples
 
-The project includes several practical examples covering a range of features:
-
 | File | Description | Instructions Used |
 |------|-------------|-------------------|
-| `hello.vas` | Linux write syscall to print | MOVI, LEA, SYSCALL |
-| `calc.vas` | Arithmetic operation chain | MOVI, ADD, CMP, JLE, MOV, SYSCALL |
-| `demo.vas` | Combined example: syscall, branches, memory | MOVI, ADD, STORE, CMP, JG, JMP, SYSCALL |
-| `fib.vas` | Iterative Fibonacci F(20) | MOVI, MOV, ADD, CMP, JGE, JMP |
-| `fact.vas` | Recursive factorial fact(5) | CALL, RET, PUSH, POP |
-| `sort.vas` | Bubble sort of 8 elements | MOVI, LEA, LOAD, STORE, CMP, JGE, JLE, JE, JMP, PUSH, POP, RET |
-| `greet.vas` | Linux CLI tool with cmd-line args | MOVI, MOV, ADD, LOAD, STORE, CMP, JE, JNE, JMP, POP, SYSCALL |
-| `win-ops.vas` | Win64 operation pipeline | MOVI, ADD, MUL, SUB, RET |
-| `win-edge.vas` | Win64 edge-case tests | MOVI, PUSH, POP, STORE, LOAD, CMP, JE, RET |
+| `hello.vas` | Linux write syscall | MOVI, LEA, SYSCALL |
+| `calc.vas` | Sum 1..n arithmetic | MOVI, ADD, CMP, JLE, MOV, SYSCALL |
+| `fib.vas` | Iterative Fibonacci | MOVI, MOV, ADD, CMP, JGE, JMP |
+| `fact.vas` | Recursive factorial | CALL, RET, PUSH, POP |
+| `sort.vas` | Bubble sort of 8 elements | LOAD, STORE, CMP, JMP, PUSH, POP |
+| `greet.vas` | CLI tool with args | POP, CMP, STORE, LOAD, SYSCALL |
+| `win-ops.vas` | Win64 arithmetic chain | ADD, MUL, SUB, RET |
+| `win-edge.vas` | Win64 edge cases | PUSH, POP, STORE, LOAD, CMP, JE, RET |
+| `multitool.vas` | Multi-function demo | strlen, Fibonacci, prime, factorial |
 
-Run ELF examples on Linux/WSL:
+Build and run Linux examples:
 ```bash
 vas examples/fib.vas -o fib.asm && nasm -f elf64 fib.asm -o fib.o && ld fib.o -o fib && ./fib; echo $?
 ```
 
-Run Win64 examples on Windows:
+Build and run Windows examples:
 ```bash
 vas -target win64 examples/win-ops.vas -o win-ops.asm
 nasm -f win64 win-ops.asm -o win-ops.obj
@@ -332,12 +337,12 @@ git clone https://github.com/0xA672/Vas.git
 cd vas
 
 # Build (dev version prints "vas dev")
-go build -o bin\vas.exe .
+go build -o vas.exe .
 
-# Build with a version string embedded via ldflags
-go build -ldflags "-X main.Version=v0.2.0" -o bin\vas.exe .
+# Build with version string
+go build -ldflags "-X main.Version=v0.2.0" -o vas.exe .
 
-# Or install to $GOPATH/bin
+# Install to $GOPATH/bin
 go install
 ```
 
@@ -349,44 +354,33 @@ go install
 
 ```
 vas/
-├── main.go                  # CLI entry, argument parsing
-├── go.mod                   # Go module
-├── vas/
-│   ├── core.go              # Core translation: scan → expand → wrap (includes regMap)
-│   └── opt/
-│       └── opt.go           # -O1 optimizer (DCE + constant folding)
-├── test/
-│   └── assembler_test.go    # Unit tests (39 cases)
-├── examples/                # Example .vas files
-│   ├── hello.vas            # Getting-started example
-│   ├── calc.vas             # Arithmetic example
-│   ├── demo.vas             # Combined demonstration
-│   ├── fib.vas              # Fibonacci example
-│   ├── fact.vas             # Recursive factorial
-│   ├── sort.vas             # Bubble sort
-│   ├── greet.vas            # Linux syscall example
-│   ├── win-ops.vas          # Win64 operation example
-│   └── win-edge.vas         # Win64 edge-case test
-├── bin/                     # Build artifacts (gitignored)
-├── README.md
-└── LICENSE
++-- main.go                  # CLI entry, argument parsing, subcommands
++-- go.mod                   # Go module
++-- vas/
+|   +-- core.go              # Core translation: scan -> expand -> wrap (includes regMap)
+|   +-- opt/
+|       +-- opt.go           # -O1 optimizer (DCE + constant folding + peephole)
++-- test/
+|   +-- assembler_test.go    # Unit tests
++-- examples/                # Example .vas files
++-- bin/                     # Build artifacts (gitignored)
++-- README.md
++-- LICENSE
 ```
 
 ---
 
 ## Distinction from a Real Assembler
 
-VAS **explicitly does not** perform the following tasks and should not be compared to GCC, LLVM, or a full assembler:
+VAS explicitly does not perform:
+- Register allocation or instruction scheduling
+- Instruction selection or optimization (beyond simple -O1)
+- Linking or relocation
 
-- No register allocation / instruction scheduling
-- No instruction selection or optimization (beyond simple -O1)
-- No linking or relocation
-- Generated `.asm` files **must** be assembled by NASM and linked by ld to produce an executable
-
-It is simply a thin translation layer that lets you write prototypes with friendlier pseudo-instructions; NASM handles the rest.
+Generated `.asm` files must be assembled by NASM and linked by ld to produce an executable. VAS is a thin translation layer; NASM handles the rest.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE) file.
+MIT - see [LICENSE](LICENSE) file.
