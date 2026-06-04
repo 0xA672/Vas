@@ -1,0 +1,18 @@
+fix: resolve 5 bugs — boilerplate detection, INT tracking, nested brackets, strength-reduce split, const clobber
+
+1. hasBoilerplate: use line-by-line matching instead of strings.Contains
+   to avoid false positives from comments containing "section .text".
+
+2. readRegs: add INT case to track syscall ABI register reads (v0,v3-v8),
+   same as SYSCALL. Fixes DCE missing register reads after INT.
+
+3. collectMemRefs: use bracket-depth tracking instead of first-] search
+   to correctly handle nested brackets like [arr + [idx*4]].
+
+4. strengthReduce: split 3-op MUL result (MOV + SHL joined by \n) into
+   separate slice entries so downstream passes see real line boundaries.
+
+5. constBlock: add SYSCALL/INT case to clear all ABI register constants,
+   preventing incorrect constant folding across syscall boundaries.
+
+Co-Authored-By: AtomCode (deepseek-v4-flash) <noreply@atomgit.com>

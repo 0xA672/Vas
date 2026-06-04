@@ -541,8 +541,20 @@ func AssembleStandaloneTargetOpt(input, target string, optLevel int) (string, er
 // Sections like .data or .bss alone are not sufficient — without .text there's no code section
 // and the entry point won't be emitted.
 func hasBoilerplate(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.Contains(lower, "\tsection .text")
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Skip comments
+		if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+			trimmed = strings.TrimSpace(trimmed[:idx])
+		}
+		if strings.ToLower(trimmed) == "section .text" {
+			return true
+		}
+	}
+	return false
 }
 
 func wrapStandalone(vasInput, asmOutput string) string {
@@ -672,18 +684,32 @@ func collectMemRefs(input string) []string {
 		if trimmed == "" {
 			continue
 		}
-		// Find all [...] patterns
+		// Find all [...] patterns, correctly handling nested brackets
 		for {
 			start := strings.Index(trimmed, "[")
 			if start == -1 {
 				break
 			}
-			end := strings.Index(trimmed[start:], "]")
+			// Scan forward with depth tracking to find matching ]
+			depth := 1
+			end := -1
+			for j := start + 1; j < len(trimmed); j++ {
+				switch trimmed[j] {
+				case '[':
+					depth++
+				case ']':
+					depth--
+					if depth == 0 {
+						end = j
+						break
+					}
+				}
+			}
 			if end == -1 {
 				break
 			}
-			inner := strings.TrimSpace(trimmed[start+1 : start+end])
-			trimmed = trimmed[start+end+1:]
+			inner := strings.TrimSpace(trimmed[start+1 : end])
+			trimmed = trimmed[end+1:]
 
 			// Extract the base symbol (before + - or *)
 			sym := inner

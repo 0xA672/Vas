@@ -313,15 +313,15 @@ func TestStrengthReduceMul2Op(t *testing.T) {
 func TestStrengthReduceMul3Op(t *testing.T) {
 	lines := []string{"\tMUL\tv1, v0, 16"}
 	result := strengthReduce(lines)
-	// The 3-op case returns a single element with embedded \n
-	if len(result) != 1 {
-		t.Fatalf("expected 1 line (with embedded newline), got %d: %v", len(result), result)
+	// Now correctly split into 2 separate lines
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines (MOV + SHL), got %d: %v", len(result), result)
 	}
 	if !strings.Contains(result[0], "MOV\tv1, v0") && !strings.Contains(result[0], "mov\tv1, v0") {
 		t.Errorf("strengthReduce[0] = %q, want MOV v1, v0", result[0])
 	}
-	if !strings.Contains(result[0], "shl\tv1, 4") {
-		t.Errorf("strengthReduce[0] = %q, want shl v1, 4", result[0])
+	if !strings.Contains(result[1], "shl\tv1, 4") {
+		t.Errorf("strengthReduce[1] = %q, want shl v1, 4", result[1])
 	}
 }
 

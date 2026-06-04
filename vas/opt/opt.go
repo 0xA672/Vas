@@ -350,6 +350,9 @@ func readRegs(op string, args []string) []int {
 	case "SYSCALL":
 		// Linux x86-64 syscall ABI: rax(v0)=number, rdi(v5)=arg1, rsi(v4)=arg2, rdx(v3)=arg3, r10(v8)=arg4, r8(v6)=arg5, r9(v7)=arg6
 		regs = append(regs, 0, 3, 4, 5, 6, 7, 8)
+	case "INT":
+		// int 0x80 uses the same ABI regs in 32-bit mode
+		regs = append(regs, 0, 3, 4, 5, 6, 7, 8)
 	}
 	return regs
 }
@@ -615,6 +618,11 @@ func constBlock(lines []string) []string {
 					}
 				}
 			}
+		case "SYSCALL", "INT":
+			// Syscall/INT clobber all ABI registers: v0(eax/rax), v3(rdx), v4(rsi), v5(rdi), v6(r8), v7(r9), v8(r10)
+			for _, r := range []int{0, 3, 4, 5, 6, 7, 8} {
+				constVal[r] = nil
+			}
 		default:
 			// Any other instruction that writes to a register clears its const
 			dst := dstReg(op, args)
@@ -701,9 +709,16 @@ func elimDeadStoreBlock(lines []string) []string {
 // Pre-expansion: strength reduction (MUL by power-of-2 -> SHL)
 // ---------------------------------------------------------------------------
 func strengthReduce(lines []string) []string {
-	result := make([]string, len(lines))
-	for i, line := range lines {
-		result[i] = reduceLine(line)
+	var result []string
+	for _, line := range lines {
+		reduced := reduceLine(line)
+		// reduceLine may return multiple lines (e.g. 3-op MUL: "MOV dst, src\nSHL dst, shift")
+		// Split them so each entry is a real line in the slice.
+		if strings.Contains(reduced, "\n") {
+			result = append(result, strings.Split(reduced, "\n")...)
+		} else {
+			result = append(result, reduced)
+		}
 	}
 	return result
 }
