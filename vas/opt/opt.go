@@ -27,13 +27,8 @@ func Optimize(input string, level int) string {
 		return input
 	}
 
-	// Pre-expansion optimization: constant folding on VAS source
-	// (This is done before instruction expansion; we receive already-expanded
-	//  assembly text from core.go, so constant folding must be done earlier.
-	//  We handle it here by re-running on the raw lines if available.
-	//  For now, post-expansion optimizations only.)
-
 	lines := strings.Split(input, "\n")
+	lines = copyPropagate(lines)
 	lines = deadCodeElim(lines)
 	lines = peephole(lines)
 	return strings.Join(lines, "\n")
@@ -352,11 +347,127 @@ func readRegs(op string, args []string) []int {
 	return regs
 }
 
-// regIndex returns the v-register index (0-7) or -1 if not a v-reg.
+// ---------------------------------------------------------------------------
+// Pre-expansion: copy propagation (MOV vX, vY => use vY instead of vX)
+// ---------------------------------------------------------------------------
+
+// copyPropagate replaces references to copy-destination registers with their
+// source register within a basic block. After propagation, dead MOVs can be
+// eliminated by the subsequent DCE pass.
+func copyPropagate(lines []string) []string {
+	blocks := splitBlocks(lines)
+	var result []string
+	for _, block := range blocks {
+		result = append(result, propagateBlock(block)...)
+	}
+	return result
+}
+
+// propagateBlock performs copy propagation within a single basic block.
+func propagateBlock(lines []string) []string {
+	// alias[v] = the v-reg index that v is an alias for (-1 = no alias)
+	alias := make([]int, 13) // v0-v12
+	for i := range alias {
+		alias[i] = -1
+	}
+
+	// resolve follows the alias chain transitively.
+	resolve := func(ri int) int {
+		for ri >= 0 && alias[ri] >= 0 {
+			ri = alias[ri]
+		}
+		return ri
+	}
+
+	result := make([]string, len(lines))
+	for i, line := range lines {
+		code := strings.TrimSpace(line)
+		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+			code = strings.TrimSpace(code[:idx])
+		}
+		if code == "" {
+			result[i] = line
+			continue
+		}
+
+		fields := strings.Fields(code)
+		if len(fields) == 0 {
+			result[i] = line
+			continue
+		}
+		op := strings.ToUpper(fields[0])
+		args := fields[1:]
+
+		// Only process instructions with at least one v-reg argument
+		hasVReg := false
+		for _, a := range args {
+			if regIndex(a) >= 0 {
+				hasVReg = true
+				break
+			}
+		}
+		if !hasVReg {
+			result[i] = line
+			continue
+		}
+
+		dst := dstReg(op, args)
+
+		// Step 1: replace source operands with their propagated alias
+		propagated := make([]string, len(args))
+		for j, a := range args {
+			ri := regIndex(a)
+			resolved := resolve(ri)
+			if resolved >= 0 && resolved != ri {
+				comma := ""
+				if strings.HasSuffix(a, ",") {
+					comma = ","
+				}
+				propagated[j] = fmt.Sprintf("v%d%s", resolved, comma)
+			} else {
+				propagated[j] = a
+			}
+		}
+
+		// Rebuild the line with propagated args
+		newLine := fmt.Sprintf("\t%s\t%s", op, strings.Join(propagated, " "))
+		if idx := strings.IndexAny(line, ";#"); idx >= 0 {
+			newLine += line[idx:]
+		}
+
+		// Step 2: update alias map (resolve source transitively)
+		if op == "MOV" && dst >= 0 && len(args) >= 2 {
+			srcRi := resolve(regIndex(args[1]))
+			if srcRi >= 0 {
+				alias[dst] = srcRi
+			}
+		} else if dst >= 0 {
+			alias[dst] = -1
+		}
+
+		result[i] = newLine
+	}
+	return result
+}
+
+// ---------------------------------------------------------------------------
+// Post-expansion: peephole optimizations on asm output
+// ---------------------------------------------------------------------------
+// regIndex returns the v-register index (0-12) or -1 if not a v-reg.
 func regIndex(s string) int {
+	s = strings.TrimRight(s, ",")
 	if len(s) >= 2 && s[0] == 'v' {
-		if idx := strings.Index("01234567", s[1:]); idx >= 0 {
-			return idx
+		rest := s[1:]
+		if len(rest) == 0 {
+			return -1
+		}
+		// Single digit: v0-v9
+		if len(rest) == 1 && rest[0] >= '0' && rest[0] <= '9' {
+			return int(rest[0] - '0')
+		}
+		// Two digits: v10, v11, v12
+		if len(rest) == 2 && rest[0] == '1' && rest[1] >= '0' && rest[1] <= '2' {
+			return 10 + int(rest[1]-'0')
 		}
 	}
 	return -1
