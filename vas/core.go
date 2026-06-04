@@ -2,6 +2,7 @@ package vas
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -102,6 +103,7 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 		}
 
 		if strings.HasSuffix(line, ":") && !isInstruction(line) {
+			checkNasmKeyword(line)
 			mapped, err := mapReg(line)
 			if err != nil {
 				return "", fmt.Errorf("line %d: %q: %w", lineNum+1, strings.TrimRight(original, "\r"), err)
@@ -140,6 +142,51 @@ func isInstruction(s string) bool {
 		return true
 	}
 	return false
+}
+
+// nasmKeywords lists identifiers that are reserved by NASM and should not be
+// used as user labels. VAS emits a warning when it sees them in passthrough.
+var nasmKeywords = map[string]bool{
+	"ptr": true,
+	"byte": true, "word": true, "dword": true, "qword": true, "tword": true, "oword": true,
+	"short": true, "near": true, "far": true,
+	"to": true, "strict": true, "nosplit": true, "rel": true, "abs": true,
+	"seg": true, "wrt": true,
+}
+
+func checkNasmKeyword(line string) {
+	trimmed := strings.TrimSpace(line)
+	if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:idx])
+	}
+	if trimmed == "" {
+		return
+	}
+	// Skip lines that look like known VAS directives or instructions
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return
+	}
+	upper := strings.ToUpper(fields[0])
+	switch upper {
+	case "SECTION", "GLOBAL", "EXTERN", "ALIGN", "DB", "DW", "DD", "DQ",
+		"BYTE", "WORD", "DWORD", "QWORD", "TYPE", "SIZE", "LENGTH", "START",
+		"RESB", "RESW", "RESD", "RESQ", "EQU", "TIMES", "INCBIN":
+		return
+	}
+	// Strip trailing colon for label check
+	first := fields[0]
+	hasColon := strings.HasSuffix(first, ":")
+	if hasColon {
+		first = first[:len(first)-1]
+	}
+	if nasmKeywords[strings.ToLower(first)] {
+		fmt.Fprintf(os.Stderr, "warning: %q is a NASM reserved keyword", first)
+		if hasColon {
+			fmt.Fprintf(os.Stderr, " (used as label)")
+		}
+		fmt.Fprintf(os.Stderr, " - may cause assembly errors\n")
+	}
 }
 
 func processInstruction(line string) ([]string, error) {
@@ -185,6 +232,7 @@ func processInstruction(line string) ([]string, error) {
 	case "INT":
 		return expandInt(args)
 	default:
+		checkNasmKeyword(line)
 		mapped, err := mapReg(line)
 		if err != nil {
 			return nil, err

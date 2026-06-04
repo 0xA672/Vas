@@ -328,99 +328,99 @@ func TestSyscall(t *testing.T) {
 // Out-of-bounds virtual register checks
 
 func TestRegOutOfBoundsAdd(t *testing.T) {
-	_, err := vas.Assemble("ADD v0, v1, v8")
+	_, err := vas.Assemble("ADD v0, v1, v13")
 	if err == nil {
-		t.Fatal("expected error for v8, got nil")
+		t.Fatal("expected error for v13, got nil")
 	}
 }
 
 func TestRegOutOfBoundsSub(t *testing.T) {
-	_, err := vas.Assemble("SUB v8, v0, v1")
+	_, err := vas.Assemble("SUB v13, v0, v1")
 	if err == nil {
-		t.Fatal("expected error for v8, got nil")
+		t.Fatal("expected error for v13, got nil")
 	}
 }
 
 func TestRegOutOfBoundsLoad(t *testing.T) {
-	_, err := vas.Assemble("LOAD v8, [msg]")
+	_, err := vas.Assemble("LOAD v13, [msg]")
 	if err == nil {
-		t.Fatal("expected error for v8, got nil")
+		t.Fatal("expected error for v13, got nil")
 	}
 }
 
 func TestRegOutOfBoundsStore(t *testing.T) {
-	_, err := vas.Assemble("STORE v8, [msg]")
+	_, err := vas.Assemble("STORE v13, [msg]")
 	if err == nil {
-		t.Fatal("expected error for v8, got nil")
+		t.Fatal("expected error for v13, got nil")
 	}
 }
 
 func TestRegOutOfBoundsMovi(t *testing.T) {
-	_, err := vas.Assemble("MOVI v8, 42")
+	_, err := vas.Assemble("MOVI v13, 42")
 	if err == nil {
-		t.Fatal("expected error for v8, got nil")
+		t.Fatal("expected error for v13, got nil")
 	}
 }
 
 func TestRegOutOfBoundsMov(t *testing.T) {
-	_, err := vas.Assemble("MOV v8, v0")
+	_, err := vas.Assemble("MOV v13, v0")
 	if err == nil {
-		t.Fatal("expected error for v8, got nil")
+		t.Fatal("expected error for v13, got nil")
 	}
 }
 
 func TestRegOutOfBoundsCmp(t *testing.T) {
-	_, err := vas.Assemble("CMP v0, v8")
+	_, err := vas.Assemble("CMP v0, v13")
 	if err == nil {
-		t.Fatal("expected error for v8, got nil")
+		t.Fatal("expected error for v13, got nil")
 	}
 }
 
 func TestRegOutOfBoundsPush(t *testing.T) {
-	_, err := vas.Assemble("PUSH v8")
+	_, err := vas.Assemble("PUSH v13")
 	if err == nil {
-		t.Fatal("expected error for v8, got nil")
+		t.Fatal("expected error for v13, got nil")
 	}
 }
 
 func TestRegOutOfBoundsPop(t *testing.T) {
-	_, err := vas.Assemble("POP v8")
+	_, err := vas.Assemble("POP v13")
 	if err == nil {
-		t.Fatal("expected error for v8, got nil")
+		t.Fatal("expected error for v13, got nil")
 	}
 }
 
 func TestRegOutOfBoundsLea(t *testing.T) {
-	_, err := vas.Assemble("LEA v8, [v0+1]")
+	_, err := vas.Assemble("LEA v13, [v0+1]")
 	if err == nil {
-		t.Fatal("expected error for v8, got nil")
+		t.Fatal("expected error for v13, got nil")
 	}
 }
 
-func TestRegOutOfBoundsV9(t *testing.T) {
-	_, err := vas.Assemble("MOVI v9, 1")
-	if err == nil {
-		t.Fatal("expected error for v9, got nil")
-	}
+func TestRegOutOfBoundsV13(t *testing.T) {
+ _, err := vas.Assemble("MOVI v13, 1")
+ if err == nil {
+  t.Fatal("expected error for v13, got nil")
+ }
 }
 
-func TestRegOutOfBoundsV10(t *testing.T) {
-	_, err := vas.Assemble("MOVI v10, 1")
-	if err == nil {
-		t.Fatal("expected error for v10, got nil")
-	}
+func TestRegOutOfBoundsV14(t *testing.T) {
+ _, err := vas.Assemble("MOVI v14, 1")
+ if err == nil {
+  t.Fatal("expected error for v14, got nil")
+ }
 }
 
 func TestRegOutOfBoundsLabel(t *testing.T) {
-	_, err := vas.Assemble("v8:\n    NOP")
+	_, err := vas.Assemble("v13:\n    NOP")
 	if err == nil {
-		t.Fatal("expected error for v8 label, got nil")
+		t.Fatal("expected error for v13 label, got nil")
 	}
 }
 
 func TestRegInBounds(t *testing.T) {
-	// v0-v7 should still work
-	for _, r := range []string{"v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7"} {
+	// v0-v12 should all work
+	for _, r := range []string{"v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"} {
 		input := "MOVI " + r + ", 1"
 		_, err := vas.Assemble(input)
 		if err != nil {
