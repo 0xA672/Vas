@@ -1010,6 +1010,10 @@ func nopMerge(lines []string) []string {
 
 // leaFuse replaces "mov r1, r2; add r1, r3" with "lea r1, [r2+r3]"
 // when r2 is not used between the two instructions.
+// Also fuses:
+//
+//	"mov r1, r2; sub r1, N"  → "lea r1, [r2-N]"
+//	"mov r1, r2; imul r1, K" → "lea r1, [r2+r2*(K-1)]" (K ∈ {3,5,9})
 func leaFuse(lines []string) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
@@ -1034,6 +1038,12 @@ var movRe = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
 // addRe matches: add\tr1,\s*r3
 var addRe = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
 
+// subImmRe matches: sub\tr1,\s*N  (register, immediate)
+var subImmRe = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*(-?\d+)$`)
+
+// imulImmRe matches: imul\tr1,\s*K  (register, immediate)
+var imulImmRe = regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*(\d+)$`)
+
 func tryLeaFuse(line1, line2 string) (string, bool) {
 	m1 := movRe.FindStringSubmatch(strings.TrimRight(line1, " \t\r"))
 	if m1 == nil {
@@ -1041,18 +1051,40 @@ func tryLeaFuse(line1, line2 string) (string, bool) {
 	}
 	dst, src1 := m1[1], m1[2]
 
-	m2 := addRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r"))
-	if m2 == nil {
-		return "", false
-	}
-	addDst, src2 := m2[1], m2[2]
-
-	if addDst != dst {
-		return "", false
+	// Try: mov dst, src1 ; add dst, src2  →  lea dst, [src1+src2]
+	if m2 := addRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
+		addDst, src2 := m2[1], m2[2]
+		if addDst == dst {
+			return fmt.Sprintf("\tlea\t%s, [%s+%s]", dst, src1, src2), true
+		}
 	}
 
-	// lea dst, [src1+src2]
-	return fmt.Sprintf("\tlea\t%s, [%s+%s]", dst, src1, src2), true
+	// Try: mov dst, src1 ; sub dst, N  →  lea dst, [src1-N]
+	if m2 := subImmRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
+		subDst, imm := m2[1], m2[2]
+		if subDst == dst {
+			return fmt.Sprintf("\tlea\t%s, [%s-%s]", dst, src1, imm), true
+		}
+	}
+
+	// Try: mov dst, src1 ; imul dst, K  (K ∈ {3,5,9}) → lea dst, [src1+src1*(K-1)]
+	if m2 := imulImmRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
+		imulDst, kStr := m2[1], m2[2]
+		if imulDst == dst {
+			k, err := strconv.Atoi(kStr)
+			if err == nil {
+				// LEA supports scale 1,2,4,8. Decompose K as 1+scale.
+				// Valid K: 2 (1+1), 3 (1+2), 5 (1+4), 9 (1+8)
+				scale := k - 1
+				switch scale {
+				case 1, 2, 4, 8:
+					return fmt.Sprintf("\tlea\t%s, [%s+%s*%d]", dst, src1, src1, scale), true
+				}
+			}
+		}
+	}
+
+	return "", false
 }
 
 // regTo32 converts a 64-bit register name to 32-bit (for XOR/TEST).

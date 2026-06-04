@@ -161,6 +161,107 @@ func TestLeaFuseNoMatch(t *testing.T) {
 	}
 }
 
+func TestLeaFuseSubImm(t *testing.T) {
+	// mov rax, rbx; sub rax, 5  →  lea rax, [rbx-5]
+	lines := []string{"\tmov\trax, rbx", "\tsub\trax, 5"}
+	result := leaFuse(lines)
+	expected := "\tlea\trax, [rbx-5]"
+	if len(result) != 1 {
+		t.Fatalf("expected 1 fused line, got %d: %v", len(result), result)
+	}
+	if result[0] != expected {
+		t.Errorf("leaFuse(mov+sub) = %q, want %q", result[0], expected)
+	}
+}
+
+func TestLeaFuseSubImmNegative(t *testing.T) {
+	// mov rax, rbx; sub rax, -8  →  lea rax, [rbx--8]  (LEA equivalent)
+	lines := []string{"\tmov\trax, rbx", "\tsub\trax, -8"}
+	result := leaFuse(lines)
+	expected := "\tlea\trax, [rbx--8]"
+	if len(result) != 1 {
+		t.Fatalf("expected 1 fused line, got %d: %v", len(result), result)
+	}
+	if result[0] != expected {
+		t.Errorf("leaFuse(mov+sub neg) = %q, want %q", result[0], expected)
+	}
+}
+
+func TestLeaFuseSubImmNoMatch(t *testing.T) {
+	// Different destination -> no fusion
+	lines := []string{"\tmov\trax, rbx", "\tsub\trcx, 5"}
+	result := leaFuse(lines)
+	if len(result) != 2 {
+		t.Errorf("expected 2 lines unchanged, got %d", len(result))
+	}
+}
+
+func TestLeaFuseSubReg(t *testing.T) {
+	// mov rax, rbx; sub rax, rcx  (reg-reg sub) — NOT fused (not representable as LEA)
+	lines := []string{"\tmov\trax, rbx", "\tsub\trax, rcx"}
+	result := leaFuse(lines)
+	if len(result) != 2 {
+		t.Errorf("reg-reg sub should NOT be fused, got %d lines", len(result))
+	}
+}
+
+func TestLeaFuseImul3(t *testing.T) {
+	// mov rax, rbx; imul rax, 3  →  lea rax, [rbx+rbx*2]
+	lines := []string{"\tmov\trax, rbx", "\timul\trax, 3"}
+	result := leaFuse(lines)
+	expected := "\tlea\trax, [rbx+rbx*2]"
+	if len(result) != 1 {
+		t.Fatalf("expected 1 fused line, got %d: %v", len(result), result)
+	}
+	if result[0] != expected {
+		t.Errorf("leaFuse(mov+imul 3) = %q, want %q", result[0], expected)
+	}
+}
+
+func TestLeaFuseImul5(t *testing.T) {
+	// mov rax, rbx; imul rax, 5  →  lea rax, [rbx+rbx*4]
+	lines := []string{"\tmov\trax, rbx", "\timul\trax, 5"}
+	result := leaFuse(lines)
+	expected := "\tlea\trax, [rbx+rbx*4]"
+	if len(result) != 1 {
+		t.Fatalf("expected 1 fused line, got %d: %v", len(result), result)
+	}
+	if result[0] != expected {
+		t.Errorf("leaFuse(mov+imul 5) = %q, want %q", result[0], expected)
+	}
+}
+
+func TestLeaFuseImul9(t *testing.T) {
+	// mov rax, rbx; imul rax, 9  →  lea rax, [rbx+rbx*8]
+	lines := []string{"\tmov\trax, rbx", "\timul\trax, 9"}
+	result := leaFuse(lines)
+	expected := "\tlea\trax, [rbx+rbx*8]"
+	if len(result) != 1 {
+		t.Fatalf("expected 1 fused line, got %d: %v", len(result), result)
+	}
+	if result[0] != expected {
+		t.Errorf("leaFuse(mov+imul 9) = %q, want %q", result[0], expected)
+	}
+}
+
+func TestLeaFuseImulNoMatch(t *testing.T) {
+	// Different destination -> no fusion
+	lines := []string{"\tmov\trax, rbx", "\timul\trcx, 3"}
+	result := leaFuse(lines)
+	if len(result) != 2 {
+		t.Errorf("expected 2 lines unchanged, got %d", len(result))
+	}
+}
+
+func TestLeaFuseImulNonDecomposable(t *testing.T) {
+	// imul by 7 cannot be represented as 1+scale (scale must be 1,2,4,8)
+	lines := []string{"\tmov\trax, rbx", "\timul\trax, 7"}
+	result := leaFuse(lines)
+	if len(result) != 2 {
+		t.Errorf("imul by 7 should NOT be fused, got %d lines", len(result))
+	}
+}
+
 func TestRegTo32(t *testing.T) {
 	tests := map[string]string{
 		"rax": "eax", "rbx": "ebx", "rcx": "ecx", "rdx": "edx",
