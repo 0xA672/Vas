@@ -39,11 +39,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          curl -sL https://github.com/netwide-assembler/nasm/releases/download/nasm-2.16.03/nasm-2.16.03-win64.zip -o nasm.zip
-          7z x nasm.zip -onasm_tmp > $null
-          mkdir $env:USERPROFILE\.local\bin -Force | Out-Null
-          copy nasm_tmp\nasm-2.16.03\nasm.exe $env:USERPROFILE\.local\bin\
-          echo "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $url = "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip"
+          $zip = "$env:TEMP\nasm.zip"
+          $extract = "$env:TEMP\nasm"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          $bin = "$env:USERPROFILE\.local\bin"
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          Copy-Item "$extract\nasm-2.16.03\nasm.exe" "$bin\" -Force
+          echo "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Verify NASM
         run: nasm --version
