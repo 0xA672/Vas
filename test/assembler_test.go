@@ -716,3 +716,36 @@ func TestAssembleStandaloneWithMemRefs(t *testing.T) {
 		t.Errorf("expected auto-generated buf data entry, got: %s", got)
 	}
 }
+
+func TestHasBoilerplateNotConfusedByData(t *testing.T) {
+	// hasBoilerplate should NOT match when "section .text" appears inside a
+	// data string rather than as an actual section directive.
+	input := "msg: db \"section .text\""
+	got, err := vas.AssembleStandalone(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The wrapper should still be added because there's no real section .text
+	if !strings.Contains(got, "_start:") {
+		t.Errorf("expected standalone wrapper despite string containing 'section .text'")
+	}
+	// The data line should be preserved (tab prefix + line)
+	if !strings.Contains(got, "msg: db") {
+		t.Errorf("expected data line to be preserved, got: %s", got)
+	}
+}
+
+func TestCollectMemRefsNestedBrackets(t *testing.T) {
+	// Nested brackets like [arr + [idx*4]] should still extract "arr" and "idx"
+	input := "LOAD v0, [arr + [idx*4]]"
+	got, err := vas.AssembleStandalone(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "arr:\tdq 0") {
+		t.Errorf("expected auto-generated arr data entry for nested bracket, got: %s", got)
+	}
+	if !strings.Contains(got, "idx:\tdq 0") {
+		t.Errorf("expected auto-generated idx data entry for nested bracket, got: %s", got)
+	}
+}

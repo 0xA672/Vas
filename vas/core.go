@@ -679,22 +679,19 @@ func collectMemRefs(input string) []string {
 	var refs []string
 	seen := map[string]bool{}
 
-	for _, line := range strings.Split(input, "\n") {
-		trimmed := strings.TrimSpace(stripComment(line))
-		if trimmed == "" {
-			continue
-		}
-		// Find all [...] patterns, correctly handling nested brackets
+	// collectFrom scans a single line for [...] patterns, handling nested brackets.
+	var collectFrom func(text string)
+	collectFrom = func(text string) {
 		for {
-			start := strings.Index(trimmed, "[")
+			start := strings.Index(text, "[")
 			if start == -1 {
 				break
 			}
 			// Scan forward with depth tracking to find matching ]
 			depth := 1
 			end := -1
-			for j := start + 1; j < len(trimmed); j++ {
-				switch trimmed[j] {
+			for j := start + 1; j < len(text); j++ {
+				switch text[j] {
 				case '[':
 					depth++
 				case ']':
@@ -708,8 +705,11 @@ func collectMemRefs(input string) []string {
 			if end == -1 {
 				break
 			}
-			inner := strings.TrimSpace(trimmed[start+1 : end])
-			trimmed = trimmed[end+1:]
+			inner := strings.TrimSpace(text[start+1 : end])
+			text = text[end+1:]
+
+			// Recursively scan inner content for nested brackets
+			collectFrom(inner)
 
 			// Extract the base symbol (before + - or *)
 			sym := inner
@@ -728,6 +728,14 @@ func collectMemRefs(input string) []string {
 			seen[sym] = true
 			refs = append(refs, sym)
 		}
+	}
+
+	for _, line := range strings.Split(input, "\n") {
+		trimmed := strings.TrimSpace(stripComment(line))
+		if trimmed == "" {
+			continue
+		}
+		collectFrom(trimmed)
 	}
 	return refs
 }

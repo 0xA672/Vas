@@ -501,3 +501,40 @@ func TestOptimizeFullPipeline(t *testing.T) {
 		t.Errorf("LOAD should be forwarded to MOV: %q", output)
 	}
 }
+
+// Bug 2: readRegs missing INT — DCE should keep writes used by INT
+func TestDeadCodeElimInt(t *testing.T) {
+	// INT reads v0 as the syscall number. If readRegs("INT") returns empty,
+	// DCE would incorrectly remove MOVI v0, 1 (thinking it's overwritten by MOVI v0, 2).
+	input := "\tMOVI\tv0, 1\n\tINT\t0x80\n\tMOVI\tv0, 2\n\tSYSCALL"
+	output := Optimize(input, 1)
+	// v0=1 should survive because INT reads it as the syscall number
+	if !strings.Contains(output, "MOVI\tv0, 1") {
+		t.Errorf("write to v0=1 should be kept (read by INT as syscall number): %q", output)
+	}
+	// v0=2 should survive (last write, read by SYSCALL)
+	if !strings.Contains(output, "MOVI\tv0, 2") {
+		t.Errorf("write to v0=2 should remain: %q", output)
+	}
+	if !strings.Contains(output, "SYSCALL") {
+		t.Errorf("SYSCALL should remain: %q", output)
+	}
+}
+
+// Bug 5: constBlock missing INT — constant propagation across INT is incorrect
+func TestConstPropagateInt(t *testing.T) {
+	// INT clobbers v0 with the return value, so ADD v1, v0, 0 should NOT fold
+	lines := []string{"\tMOVI\tv0, 60", "\tINT\t0x80", "\tADD\tv1, v0, 0"}
+	result := constPropagate(lines)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 lines, got %d", len(result))
+	}
+	// Without fix: ADD would fold to MOVI v1, 60 (wrong! INT clobbered v0)
+	if strings.Contains(result[2], "MOVI\tv1, 60") {
+		t.Errorf("ADD should NOT be folded across INT (INT clobbers v0): %q", result[2])
+	}
+	// ADD should remain as-is (or at least not fold to a stale constant)
+	if !strings.Contains(result[2], "ADD") && !strings.Contains(result[2], "MOV") {
+		t.Errorf("ADD should remain after INT: %q", result[2])
+	}
+}
