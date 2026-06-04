@@ -31,22 +31,35 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
 
-      - name: Install NASM (Linux, needed for full E2E test)
+      - name: Install NASM (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y nasm
 
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          curl -sL https://github.com/netwide-assembler/nasm/releases/download/nasm-2.16.03/nasm-2.16.03-win64.zip -o nasm.zip
+          7z x nasm.zip -onasm_tmp > $null
+          mkdir $env:USERPROFILE\.local\bin -Force | Out-Null
+          copy nasm_tmp\nasm-2.16.03\nasm.exe $env:USERPROFILE\.local\bin\
+          echo "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Verify NASM
-        if: runner.os == 'Linux'
         run: nasm --version
 
       - name: Build
         run: go build ./...
 
-      - name: Test
+      - name: Short test
         run: go test -short ./...
 
-      - name: Full test with E2E (Linux only)
+      - name: Full test (incl. E2E with nasm + ld)
         if: runner.os == 'Linux'
+        run: go test ./...
+
+      - name: Full test (incl. nasm, skip ELF runtime)
+        if: runner.os == 'Windows'
         run: go test ./...
 
       - name: Vet
