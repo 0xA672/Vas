@@ -10,6 +10,7 @@ bin/
 out/
 
 # Linux ELF binaries generated from test programs
+hello
 fact
 fib
 sort
