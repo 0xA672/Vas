@@ -31,32 +31,23 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
 
-      - name: Install NASM (Linux)
+      - name: Install NASM (Linux, needed for full E2E test)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y nasm
 
-      - name: Install NASM (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install nasm -y
-          echo "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
       - name: Verify NASM
+        if: runner.os == 'Linux'
         run: nasm --version
 
-      - name: Tidy
-        run: go mod tidy
-
       - name: Build
-        run: go build -v ./...
+        run: go build ./...
 
-      - name: Test (short, no nasm-dependent E2E)
-        run: go test -short -v ./...
+      - name: Test
+        run: go test -short ./...
 
-      - name: Test (full)
+      - name: Full test with E2E (Linux only)
         if: runner.os == 'Linux'
-        run: go test -v ./...
+        run: go test ./...
 
       - name: Vet
         run: go vet ./...
