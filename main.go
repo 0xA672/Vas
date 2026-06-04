@@ -3,269 +3,269 @@
 package main
 
 import (
- "fmt"
- "io"
- "os"
- "os/exec"
- "path/filepath"
- "sort"
- "strings"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
 
- "vas/vas"
+	"vas/vas"
 )
 
 // Version is set at build time via -ldflags "-X main.Version=v0.2.0".
 var Version = "dev"
 
 func main() {
- args := os.Args[1:]
+	args := os.Args[1:]
 
- if len(args) == 0 {
-  printUsage()
-  os.Exit(1)
- }
+	if len(args) == 0 {
+		printUsage()
+		os.Exit(1)
+	}
 
- // Subcommand dispatch
- switch args[0] {
- case "list":
-  cmdList()
- case "diff":
-  cmdDiff(args[1:])
- case "stats":
-  cmdStats(args[1:])
- case "version":
-  fmt.Println("vas " + Version)
- case "check":
-  cmdCheck(args[1:])
- case "build":
-  cmdBuild(args[1:])
- case "-v", "--version":
-  fmt.Println("vas " + Version)
- case "-h", "--help":
-  fmt.Print(helpText)
- default:
-  // Existing behaviour: flags + input file
-  cmdAssemble(args)
- }
+	// Subcommand dispatch
+	switch args[0] {
+	case "list":
+		cmdList()
+	case "diff":
+		cmdDiff(args[1:])
+	case "stats":
+		cmdStats(args[1:])
+	case "version":
+		fmt.Println("vas " + Version)
+	case "check":
+		cmdCheck(args[1:])
+	case "build":
+		cmdBuild(args[1:])
+	case "-v", "--version":
+		fmt.Println("vas " + Version)
+	case "-h", "--help":
+		fmt.Print(helpText)
+	default:
+		// Existing behaviour: flags + input file
+		cmdAssemble(args)
+	}
 }
 
 // ── assemble (existing behaviour) ──────────────────────────────────────────
 
 func cmdAssemble(args []string) {
- var inputFile, outFile, target string
- optLevel := 0
+	var inputFile, outFile, target string
+	optLevel := 0
 
- for i := 0; i < len(args); i++ {
-  switch {
-  case args[i] == "-o" && i+1 < len(args):
-   outFile = args[i+1]
-   i++
-  case args[i] == "-target" && i+1 < len(args):
-   target = args[i+1]
-   i++
-  case args[i] == "-O1":
-   optLevel = 1
-  case args[i] == "-h" || args[i] == "--help":
-   fmt.Print(helpText)
-   return
-  case !strings.HasPrefix(args[i], "-"):
-   inputFile = args[i]
-  default:
-   fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-   os.Exit(1)
-  }
- }
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-o" && i+1 < len(args):
+			outFile = args[i+1]
+			i++
+		case args[i] == "-target" && i+1 < len(args):
+			target = args[i+1]
+			i++
+		case args[i] == "-O1":
+			optLevel = 1
+		case args[i] == "-h" || args[i] == "--help":
+			fmt.Print(helpText)
+			return
+		case !strings.HasPrefix(args[i], "-"):
+			inputFile = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			os.Exit(1)
+		}
+	}
 
- if target == "" {
-  target = "elf64"
- }
+	if target == "" {
+		target = "elf64"
+	}
 
- var input string
+	var input string
 
- if inputFile != "" {
-  data, err := os.ReadFile(inputFile)
-  if err != nil {
-   fmt.Fprintf(os.Stderr, "read file: %v\n", err)
-   os.Exit(1)
-  }
-  input = string(data)
- } else {
-  data, err := io.ReadAll(os.Stdin)
-  if err != nil {
-   fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
-   os.Exit(1)
-  }
-  input = string(data)
-  if input == "" {
-   printUsage()
-   os.Exit(1)
-  }
- }
+	if inputFile != "" {
+		data, err := os.ReadFile(inputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read file: %v\n", err)
+			os.Exit(1)
+		}
+		input = string(data)
+	} else {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
+			os.Exit(1)
+		}
+		input = string(data)
+		if input == "" {
+			printUsage()
+			os.Exit(1)
+		}
+	}
 
- output, err := vas.AssembleStandaloneTargetOpt(input, target, optLevel)
- if err != nil {
-  // Try to show source context for line-numbered errors
-  errMsg := err.Error()
-  lineNum := 0
-  if _, err2 := fmt.Sscanf(errMsg, "line %d:", &lineNum); err2 == nil && lineNum > 0 && inputFile != "" {
-   lines := strings.Split(input, "\n")
-   if lineNum-1 < len(lines) {
-    fmt.Fprintf(os.Stderr, "error at line %d:\n", lineNum)
-    fmt.Fprintf(os.Stderr, "  %s\n", strings.TrimRight(lines[lineNum-1], "\r"))
-    fmt.Fprintf(os.Stderr, "  ^\n")
-    fmt.Fprintf(os.Stderr, "%s\n", errMsg)
-    os.Exit(1)
-   }
-  }
-  fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
-  os.Exit(1)
- }
+	output, err := vas.AssembleStandaloneTargetOpt(input, target, optLevel)
+	if err != nil {
+		// Try to show source context for line-numbered errors
+		errMsg := err.Error()
+		lineNum := 0
+		if _, err2 := fmt.Sscanf(errMsg, "line %d:", &lineNum); err2 == nil && lineNum > 0 && inputFile != "" {
+			lines := strings.Split(input, "\n")
+			if lineNum-1 < len(lines) {
+				fmt.Fprintf(os.Stderr, "error at line %d:\n", lineNum)
+				fmt.Fprintf(os.Stderr, "  %s\n", strings.TrimRight(lines[lineNum-1], "\r"))
+				fmt.Fprintf(os.Stderr, "  ^\n")
+				fmt.Fprintf(os.Stderr, "%s\n", errMsg)
+				os.Exit(1)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
+		os.Exit(1)
+	}
 
- if outFile != "" {
-  if err := os.WriteFile(outFile, []byte(output), 0644); err != nil {
-   fmt.Fprintf(os.Stderr, "write file: %v\n", err)
-   os.Exit(1)
-  }
- } else {
-  fmt.Print(output)
- }
+	if outFile != "" {
+		if err := os.WriteFile(outFile, []byte(output), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "write file: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Print(output)
+	}
 }
 
 // ── build subcommand ──────────────────────────────────────────────────────
 
 func cmdBuild(args []string) {
- var inputFile, outFile, target string
- optLevel := 0
- keepTemps := false
- verbose := false
+	var inputFile, outFile, target string
+	optLevel := 0
+	keepTemps := false
+	verbose := false
 
- for i := 0; i < len(args); i++ {
-  switch {
-  case args[i] == "-o" && i+1 < len(args):
-   outFile = args[i+1]
-   i++
-  case args[i] == "-target" && i+1 < len(args):
-   target = args[i+1]
-   i++
-  case args[i] == "-O1":
-   optLevel = 1
-  case args[i] == "--keep-temps":
-   keepTemps = true
-  case args[i] == "-v" || args[i] == "--verbose":
-   verbose = true
-  case args[i] == "-h" || args[i] == "--help":
-   fmt.Print(buildHelpText)
-   return
-  case !strings.HasPrefix(args[i], "-"):
-   inputFile = args[i]
-  default:
-   fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-   fmt.Fprint(os.Stderr, buildHelpText)
-   os.Exit(1)
-  }
- }
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-o" && i+1 < len(args):
+			outFile = args[i+1]
+			i++
+		case args[i] == "-target" && i+1 < len(args):
+			target = args[i+1]
+			i++
+		case args[i] == "-O1":
+			optLevel = 1
+		case args[i] == "--keep-temps":
+			keepTemps = true
+		case args[i] == "-v" || args[i] == "--verbose":
+			verbose = true
+		case args[i] == "-h" || args[i] == "--help":
+			fmt.Print(buildHelpText)
+			return
+		case !strings.HasPrefix(args[i], "-"):
+			inputFile = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			fmt.Fprint(os.Stderr, buildHelpText)
+			os.Exit(1)
+		}
+	}
 
- if inputFile == "" {
-  fmt.Fprintln(os.Stderr, "error: no input file")
-  fmt.Fprint(os.Stderr, buildHelpText)
-  os.Exit(1)
- }
+	if inputFile == "" {
+		fmt.Fprintln(os.Stderr, "error: no input file")
+		fmt.Fprint(os.Stderr, buildHelpText)
+		os.Exit(1)
+	}
 
- if target == "" {
-  target = "elf64"
- }
+	if target == "" {
+		target = "elf64"
+	}
 
- // Check tools
- if _, err := exec.LookPath("nasm"); err != nil {
-  fmt.Fprintln(os.Stderr, "error: nasm not found — install it from https://nasm.us")
-  os.Exit(1)
- }
- if _, err := exec.LookPath("ld"); err != nil {
-  fmt.Fprintln(os.Stderr, "error: ld not found — install a linker (e.g. MinGW or binutils)")
-  os.Exit(1)
- }
+	// Check tools
+	if _, err := exec.LookPath("nasm"); err != nil {
+		fmt.Fprintln(os.Stderr, "error: nasm not found — install it from https://nasm.us")
+		os.Exit(1)
+	}
+	if _, err := exec.LookPath("ld"); err != nil {
+		fmt.Fprintln(os.Stderr, "error: ld not found — install a linker (e.g. MinGW or binutils)")
+		os.Exit(1)
+	}
 
- // Read input
- data, err := os.ReadFile(inputFile)
- if err != nil {
-  fmt.Fprintf(os.Stderr, "error: %v\n", err)
-  os.Exit(1)
- }
- input := string(data)
+	// Read input
+	data, err := os.ReadFile(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	input := string(data)
 
- // Assemble
- asm, err := vas.AssembleStandaloneTargetOpt(input, target, optLevel)
- if err != nil {
-  fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
-  os.Exit(1)
- }
+	// Assemble
+	asm, err := vas.AssembleStandaloneTargetOpt(input, target, optLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
+		os.Exit(1)
+	}
 
- // Default output name
- inputBase := strings.TrimSuffix(filepath.Base(inputFile), filepath.Ext(inputFile))
- if outFile == "" {
-  outFile = inputBase
-  if target == "win64" {
-   outFile += ".exe"
-  }
- }
+	// Default output name
+	inputBase := strings.TrimSuffix(filepath.Base(inputFile), filepath.Ext(inputFile))
+	if outFile == "" {
+		outFile = inputBase
+		if target == "win64" {
+			outFile += ".exe"
+		}
+	}
 
- // Temp dir or working directory for intermediates
- workDir := filepath.Dir(inputFile)
- asmFile := filepath.Join(workDir, inputBase+".asm")
- objFile := filepath.Join(workDir, inputBase+".o")
- if target == "win64" {
-  objFile = filepath.Join(workDir, inputBase+".obj")
- }
- binFile := outFile
- if !filepath.IsAbs(binFile) {
-  binFile = filepath.Join(workDir, binFile)
- }
+	// Temp dir or working directory for intermediates
+	workDir := filepath.Dir(inputFile)
+	asmFile := filepath.Join(workDir, inputBase+".asm")
+	objFile := filepath.Join(workDir, inputBase+".o")
+	if target == "win64" {
+		objFile = filepath.Join(workDir, inputBase+".obj")
+	}
+	binFile := outFile
+	if !filepath.IsAbs(binFile) {
+		binFile = filepath.Join(workDir, binFile)
+	}
 
- // Write .asm
- if err := os.WriteFile(asmFile, []byte(asm), 0644); err != nil {
-  fmt.Fprintf(os.Stderr, "write .asm: %v\n", err)
-  os.Exit(1)
- }
+	// Write .asm
+	if err := os.WriteFile(asmFile, []byte(asm), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "write .asm: %v\n", err)
+		os.Exit(1)
+	}
 
- // nasm
- var nasmArgs []string
- if target == "win64" {
-  nasmArgs = []string{"-f", "win64", "-o", objFile, asmFile}
- } else {
-  nasmArgs = []string{"-f", "elf64", "-o", objFile, asmFile}
- }
- if verbose {
-  fmt.Fprintf(os.Stderr, "+ nasm %s\n", strings.Join(nasmArgs, " "))
- }
- if out, err := exec.Command("nasm", nasmArgs...).CombinedOutput(); err != nil {
-  fmt.Fprintf(os.Stderr, "nasm error:\n%s\n", out)
-  os.Exit(1)
- }
+	// nasm
+	var nasmArgs []string
+	if target == "win64" {
+		nasmArgs = []string{"-f", "win64", "-o", objFile, asmFile}
+	} else {
+		nasmArgs = []string{"-f", "elf64", "-o", objFile, asmFile}
+	}
+	if verbose {
+		fmt.Fprintf(os.Stderr, "+ nasm %s\n", strings.Join(nasmArgs, " "))
+	}
+	if out, err := exec.Command("nasm", nasmArgs...).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "nasm error:\n%s\n", out)
+		os.Exit(1)
+	}
 
- // ld
- var ldArgs []string
- if target == "win64" {
-  ldArgs = []string{"-e", "main", "-o", binFile, objFile}
- } else {
-  ldArgs = []string{"-o", binFile, objFile}
- }
- if verbose {
-  fmt.Fprintf(os.Stderr, "+ ld %s\n", strings.Join(ldArgs, " "))
- }
- if out, err := exec.Command("ld", ldArgs...).CombinedOutput(); err != nil {
-  fmt.Fprintf(os.Stderr, "ld error:\n%s\n", out)
-  os.Exit(1)
- }
+	// ld
+	var ldArgs []string
+	if target == "win64" {
+		ldArgs = []string{"-e", "main", "-o", binFile, objFile}
+	} else {
+		ldArgs = []string{"-o", binFile, objFile}
+	}
+	if verbose {
+		fmt.Fprintf(os.Stderr, "+ ld %s\n", strings.Join(ldArgs, " "))
+	}
+	if out, err := exec.Command("ld", ldArgs...).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "ld error:\n%s\n", out)
+		os.Exit(1)
+	}
 
- // Cleanup temp files
- if !keepTemps {
-  os.Remove(asmFile)
-  os.Remove(objFile)
- }
+	// Cleanup temp files
+	if !keepTemps {
+		os.Remove(asmFile)
+		os.Remove(objFile)
+	}
 
- if verbose {
-  fmt.Fprintf(os.Stderr, "→ %s\n", binFile)
- }
+	if verbose {
+		fmt.Fprintf(os.Stderr, "→ %s\n", binFile)
+	}
 }
 
 const buildHelpText = `usage: vas build <input.vas> [options]
@@ -289,40 +289,40 @@ Examples:
 // ── diff subcommand ───────────────────────────────────────────────────────
 
 func cmdDiff(args []string) {
- if len(args) < 1 || args[0] == "" || strings.HasPrefix(args[0], "-") {
-  fmt.Fprintln(os.Stderr, "usage: vas diff <input.vas>")
-  os.Exit(1)
- }
+	if len(args) < 1 || args[0] == "" || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: vas diff <input.vas>")
+		os.Exit(1)
+	}
 
- inputFile := args[0]
- data, err := os.ReadFile(inputFile)
- if err != nil {
-  fmt.Fprintf(os.Stderr, "read file: %v\n", err)
-  os.Exit(1)
- }
+	inputFile := args[0]
+	data, err := os.ReadFile(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read file: %v\n", err)
+		os.Exit(1)
+	}
 
- source := string(data)
- output, err := vas.Assemble(source)
- if err != nil {
-  fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
-  os.Exit(1)
- }
+	source := string(data)
+	output, err := vas.Assemble(source)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
+		os.Exit(1)
+	}
 
- srcLines := strings.Split(strings.TrimRight(source, "\n"), "\n")
- asmLines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	srcLines := strings.Split(strings.TrimRight(source, "\n"), "\n")
+	asmLines := strings.Split(strings.TrimRight(output, "\n"), "\n")
 
- name := filepath.Base(inputFile)
- outName := strings.TrimSuffix(name, filepath.Ext(name)) + ".asm"
+	name := filepath.Base(inputFile)
+	outName := strings.TrimSuffix(name, filepath.Ext(name)) + ".asm"
 
- fmt.Printf("=== %s (VAS source) ===\n", name)
- for _, l := range srcLines {
-  fmt.Println(l)
- }
- fmt.Println()
- fmt.Printf("=== %s (NASM output) ===\n", outName)
- for _, l := range asmLines {
-  fmt.Println(l)
- }
+	fmt.Printf("=== %s (VAS source) ===\n", name)
+	for _, l := range srcLines {
+		fmt.Println(l)
+	}
+	fmt.Println()
+	fmt.Printf("=== %s (NASM output) ===\n", outName)
+	for _, l := range asmLines {
+		fmt.Println(l)
+	}
 }
 
 // ── check subcommand ─────────────────────────────────────────────────────
@@ -579,15 +579,15 @@ func cmdList() {
 // ── help / usage ──────────────────────────────────────────────────────────
 
 func printUsage() {
- fmt.Fprintln(os.Stderr, "usage: vas [options] <input.asm|.vas>")
- fmt.Fprintln(os.Stderr, "       cat input.vas | vas [options]")
- fmt.Fprintln(os.Stderr, "       vas diff <input.vas>")
- fmt.Fprintln(os.Stderr, "       vas stats <input.vas>")
- fmt.Fprintln(os.Stderr, "       vas check <input.vas>")
- fmt.Fprintln(os.Stderr, "       vas build <input.vas> [build-options]")
- fmt.Fprintln(os.Stderr, "       vas list")
- fmt.Fprintln(os.Stderr, "       vas version")
- os.Exit(1)
+	fmt.Fprintln(os.Stderr, "usage: vas [options] <input.asm|.vas>")
+	fmt.Fprintln(os.Stderr, "       cat input.vas | vas [options]")
+	fmt.Fprintln(os.Stderr, "       vas diff <input.vas>")
+	fmt.Fprintln(os.Stderr, "       vas stats <input.vas>")
+	fmt.Fprintln(os.Stderr, "       vas check <input.vas>")
+	fmt.Fprintln(os.Stderr, "       vas build <input.vas> [build-options]")
+	fmt.Fprintln(os.Stderr, "       vas list")
+	fmt.Fprintln(os.Stderr, "       vas version")
+	os.Exit(1)
 }
 
 const helpText = `VAS -- Virtual ASseMbler

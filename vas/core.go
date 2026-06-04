@@ -28,7 +28,7 @@ var regMap = map[string]string{
 func mapReg(s string) (string, error) {
 	// First pass: validate all virtual register names before replacement
 	// (check must happen before replacement to avoid false negatives like
-//  v10 becoming rbx0 after v1->rbx substitution)
+	//  v10 becoming rbx0 after v1->rbx substitution)
 	for i := 0; i < len(s); i++ {
 		if s[i] == 'v' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
 			j := i + 1
@@ -147,7 +147,7 @@ func isInstruction(s string) bool {
 // nasmKeywords lists identifiers that are reserved by NASM and should not be
 // used as user labels. VAS emits a warning when it sees them in passthrough.
 var nasmKeywords = map[string]bool{
-	"ptr": true,
+	"ptr":  true,
 	"byte": true, "word": true, "dword": true, "qword": true, "tword": true, "oword": true,
 	"short": true, "near": true, "far": true,
 	"to": true, "strict": true, "nosplit": true, "rel": true, "abs": true,
@@ -290,7 +290,6 @@ func splitTokens(line string) []string {
 	flush()
 	return tokens
 }
-
 
 func expand2op(mnemonic string, args []string) ([]string, error) {
 	if len(args) < 2 || len(args) > 3 {

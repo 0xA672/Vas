@@ -403,17 +403,17 @@ func TestRegOutOfBoundsLea(t *testing.T) {
 }
 
 func TestRegOutOfBoundsV13(t *testing.T) {
- _, err := vas.Assemble("MOVI v13, 1")
- if err == nil {
-  t.Fatal("expected error for v13, got nil")
- }
+	_, err := vas.Assemble("MOVI v13, 1")
+	if err == nil {
+		t.Fatal("expected error for v13, got nil")
+	}
 }
 
 func TestRegOutOfBoundsV14(t *testing.T) {
- _, err := vas.Assemble("MOVI v14, 1")
- if err == nil {
-  t.Fatal("expected error for v14, got nil")
- }
+	_, err := vas.Assemble("MOVI v14, 1")
+	if err == nil {
+		t.Fatal("expected error for v14, got nil")
+	}
 }
 
 func TestRegOutOfBoundsLabel(t *testing.T) {
