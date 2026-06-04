@@ -1,0 +1,6 @@
+section .text  
+global main  
+main:  
+MOVI v0, 42  
+MUL v0, 8  
+RET  

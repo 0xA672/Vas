@@ -64,18 +64,17 @@ func TestConstantFoldNoFold(t *testing.T) {
 }
 
 func TestDeadCodeElimUnusedWrite(t *testing.T) {
-	// Without a final SYSCALL/SYSCALL, the DCE eliminates all writes
-	// because no register is read at block end.
-	// Use a SYSCALL to make registers live at block end.
 	input := "\tMOVI\tv1, 1\n\tMOVI\tv2, 2\n\tMOVI\tv1, 3\n\tSYSCALL"
 	output := Optimize(input, 1)
 	// v1 = 1 should be eliminated (overwritten by v1 = 3 before being read)
 	if strings.Contains(output, "MOVI\tv1, 1") {
 		t.Errorf("unused write to v1 should have been eliminated: %q", output)
 	}
+	// v2 = 2 survives (only DCE runs, terminal dead writes are kept)
 	if !strings.Contains(output, "MOVI\tv2, 2") {
-		t.Errorf("write to v2 should remain (SYSCALL reads v0)")
+		t.Errorf("write to v2 should remain (never overwritten)")
 	}
+	// v1 = 3 survives (last write, not overwritten)
 	if !strings.Contains(output, "MOVI\tv1, 3") {
 		t.Errorf("last write to v1 should remain")
 	}
@@ -94,7 +93,7 @@ func TestDeadCodeElimBetweenBlocks(t *testing.T) {
 	// Control flow should not confuse DCE
 	input := "\tMOVI\tv1, 1\nloop:\n\tMOVI\tv1, 2\n\tSYSCALL"
 	output := Optimize(input, 1)
-	// v1=1 and v1=2 are in different blocks, both should survive
+	// v1=1 and v1=2 are in different blocks, both survive (DCE per block)
 	if !strings.Contains(output, "MOVI\tv1, 1") {
 		t.Errorf("v1=1 should survive (different block from v1=2)")
 	}

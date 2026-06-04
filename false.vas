@@ -1,0 +1,14 @@
+; false.vas -- returns exit code 1 (like Unix false)
+;   vas -target win64 false.vas -o false.asm
+;   nasm -f win64 false.asm -o false.obj
+;   ld false.obj -o false.exe
+;   false && echo %ERRORLEVEL%
+
+default rel
+
+section .text
+    global main
+
+main:
+    MOVI    v0, 1
+    RET

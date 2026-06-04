@@ -29,8 +29,10 @@ func Optimize(input string, level int) string {
 
 	lines := strings.Split(input, "\n")
 	lines = copyPropagate(lines)
+	lines = constPropagate(lines)
 	lines = strengthReduce(lines)
 	lines = storeLoadFwd(lines)
+	lines = deadStoreElim(lines)
 	lines = deadCodeElim(lines)
 	lines = peephole(lines)
 	return strings.Join(lines, "\n")
@@ -345,6 +347,9 @@ func readRegs(op string, args []string) []int {
 				regs = append(regs, r)
 			}
 		}
+	case "SYSCALL":
+		// Linux x86-64 syscall ABI: rax(v0)=number, rdi(v5)=arg1, rsi(v4)=arg2, rdx(v3)=arg3, r10(v8)=arg4, r8(v6)=arg5, r9(v7)=arg6
+		regs = append(regs, 0, 3, 4, 5, 6, 7, 8)
 	}
 	return regs
 }
@@ -453,10 +458,248 @@ func propagateBlock(lines []string) []string {
 }
 
 // ---------------------------------------------------------------------------
-// Pre-expansion: strength reduction (MUL by power-of-2 -> SHL)
+// Pre-expansion: constant propagation (MOVI vX, imm -> fold subsequent uses)
 // ---------------------------------------------------------------------------
 
-// strengthReduce replaces MUL by a power-of-2 constant with a left shift.
+// constPropagate tracks MOVI assignments and folds known-constant register
+// references into immediate operands within each basic block.
+func constPropagate(lines []string) []string {
+	blocks := splitBlocks(lines)
+	var result []string
+	for _, block := range blocks {
+		result = append(result, constBlock(block)...)
+	}
+	return result
+}
+
+func constBlock(lines []string) []string {
+	// const[v] = known constant value (nil = unknown)
+	constVal := make([]*int64, 13)
+	// used[reg] tracks registers whose value is read after the last MOVI to them
+	used := map[int]bool{}
+	// moviLine[reg] = line index of the last MOVI to this register in this block
+	moviLine := map[int]int{}
+
+	// parseArg extracts the integer value from an argument token.
+	parseArg := func(a string) (int64, bool) {
+		a = strings.TrimRight(a, ",")
+		ri := regIndex(a)
+		if ri >= 0 && constVal[ri] != nil {
+			return *constVal[ri], true
+		}
+		n, err := strconv.ParseInt(a, 0, 64)
+		if err == nil {
+			return n, true
+		}
+		return 0, false
+	}
+
+	result := make([]string, len(lines))
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		code := trimmed
+		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+			code = strings.TrimSpace(code[:idx])
+		}
+		if code == "" {
+			result[i] = line
+			continue
+		}
+
+		tokens := tokenizeFold(code)
+		if len(tokens) < 2 {
+			result[i] = line
+			continue
+		}
+		op := strings.ToUpper(tokens[0])
+		args := tokens[1:]
+
+		// Mark source registers as used (before folding, so folded instructions
+		// can suppress this by not adding their sources to used).
+		reads := readRegs(op, args)
+		folded := false
+
+		switch op {
+		case "MOVI":
+			if len(args) >= 2 {
+				dst := args[0]
+				dstRi := regIndex(dst)
+				imm, err := strconv.ParseInt(args[1], 0, 64)
+				if dstRi >= 0 && err == nil {
+					constVal[dstRi] = &imm
+					moviLine[dstRi] = i
+					// Clear used flag: the previous value is overwritten by this MOVI
+					delete(used, dstRi)
+				}
+			}
+			// MOVI doesn't read any register (immediate source), don't mark reads
+			reads = nil
+		case "ADD", "SUB":
+			if len(args) == 2 {
+				// 2-op: ADD dst, src  (dst += src)
+				dst := args[0]
+				dstRi := regIndex(dst)
+				if dstRi >= 0 {
+					constVal[dstRi] = nil // unknown after 2-op
+				}
+			} else if len(args) == 3 {
+				// 3-op: ADD dst, src1, src2
+				dst := args[0]
+				dstRi := regIndex(dst)
+				if dstRi < 0 {
+					result[i] = line
+					continue
+				}
+				v1, ok1 := parseArg(args[1])
+				v2, ok2 := parseArg(args[2])
+				if ok1 && ok2 {
+					var val int64
+					switch op {
+					case "ADD":
+						val = v1 + v2
+					case "SUB":
+						val = v1 - v2
+					}
+					constVal[dstRi] = &val
+					comment := ""
+					if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+						comment = " " + trimmed[idx:]
+					}
+					result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
+					continue
+				}
+				// If src1 is a known constant but src2 is a reg, try folding anyway
+				// Only fold if the instruction is ADD/SUB with one constant and one reg
+				// This is handled by leaving it for the next pass.
+				constVal[dstRi] = nil
+			}
+		case "MUL":
+			if len(args) == 2 {
+				dst := args[0]
+				dstRi := regIndex(dst)
+				if dstRi >= 0 {
+					constVal[dstRi] = nil
+				}
+			} else if len(args) == 3 {
+				dst := args[0]
+				dstRi := regIndex(dst)
+				if dstRi >= 0 {
+					v1, ok1 := parseArg(args[1])
+					v2, ok2 := parseArg(args[2])
+					if ok1 && ok2 {
+						val := v1 * v2
+						constVal[dstRi] = &val
+						comment := ""
+						if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+							comment = " " + trimmed[idx:]
+						}
+						result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
+						continue
+					}
+					constVal[dstRi] = nil
+				}
+			}
+		case "MOV":
+			if len(args) >= 2 {
+				dst := args[0]
+				dstRi := regIndex(dst)
+				if dstRi >= 0 {
+					src := strings.TrimRight(args[1], ",")
+					srcRi := regIndex(src)
+					if srcRi >= 0 && constVal[srcRi] != nil {
+						// MOV vX, vY where vY is known constant
+						cp := *constVal[srcRi]
+						constVal[dstRi] = &cp
+					} else {
+						constVal[dstRi] = nil
+					}
+				}
+			}
+		default:
+			// Any other instruction that writes to a register clears its const
+			dst := dstReg(op, args)
+			if dst >= 0 {
+				constVal[dst] = nil
+			}
+		}
+		// Mark source registers as used (unless the instruction was folded).
+		if !folded {
+			for _, r := range reads {
+				used[r] = true
+			}
+		}
+		result[i] = line
+	}
+	return result
+}
+
+// ---------------------------------------------------------------------------
+// Pre-expansion: dead STORE elimination
+// ---------------------------------------------------------------------------
+
+// deadStoreElim removes STORE instructions whose target label is stored again
+// before any LOAD within the same basic block.
+func deadStoreElim(lines []string) []string {
+	blocks := splitBlocks(lines)
+	var result []string
+	for _, block := range blocks {
+		result = append(result, elimDeadStoreBlock(block)...)
+	}
+	return result
+}
+
+func elimDeadStoreBlock(lines []string) []string {
+	// Scan backward: track the last LOAD/STORE for each label
+	// If a STORE's label is stored again before any LOAD, the first is dead.
+	lastAccess := map[string]string{} // label -> "STORE" or "LOAD"
+	remove := make([]bool, len(lines))
+
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		code := trimmed
+		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+			code = strings.TrimSpace(code[:idx])
+		}
+		if code == "" {
+			continue
+		}
+		fields := strings.Fields(code)
+		if len(fields) < 2 {
+			continue
+		}
+		op := strings.ToUpper(fields[0])
+		if op != "STORE" && op != "LOAD" {
+			continue
+		}
+		args := fields[1:]
+		if len(args) < 2 {
+			continue
+		}
+		label := extractLabel(args[1])
+		if label == "" {
+			continue
+		}
+
+		prev := lastAccess[label]
+		if op == "STORE" && prev == "STORE" {
+			// Another STORE follows without an intervening LOAD -> this one is dead
+			remove[i] = true
+		}
+		lastAccess[label] = op
+	}
+
+	result := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if !remove[i] {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+// ---------------------------------------------------------------------------
+// Pre-expansion: strength reduction (MUL by power-of-2 -> SHL)
+// ---------------------------------------------------------------------------
 func strengthReduce(lines []string) []string {
 	result := make([]string, len(lines))
 	for i, line := range lines {
