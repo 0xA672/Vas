@@ -398,6 +398,84 @@ func TestConstPropagateOverwrite(t *testing.T) {
 	}
 }
 
+// 2-op constant folding: ADD dst, imm when dst is known
+func TestConstPropagate2OpAdd(t *testing.T) {
+	lines := []string{"\tMOVI\tv1, 3", "\tADD\tv1, 5"}
+	result := constPropagate(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[1], "MOVI\tv1, 8") {
+		t.Errorf("2-op ADD should fold to MOVI v1, 8: %q", result[1])
+	}
+}
+
+// 2-op constant folding: SUB dst, imm when dst is known
+func TestConstPropagate2OpSub(t *testing.T) {
+	lines := []string{"\tMOVI\tv1, 10", "\tSUB\tv1, 3"}
+	result := constPropagate(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[1], "MOVI\tv1, 7") {
+		t.Errorf("2-op SUB should fold to MOVI v1, 7: %q", result[1])
+	}
+}
+
+// 2-op constant folding: MUL dst, imm when dst is known
+func TestConstPropagate2OpMul(t *testing.T) {
+	lines := []string{"\tMOVI\tv1, 6", "\tMUL\tv1, 7"}
+	result := constPropagate(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[1], "MOVI\tv1, 42") {
+		t.Errorf("2-op MUL should fold to MOVI v1, 42: %q", result[1])
+	}
+}
+
+// 2-op constant folding: no folding when dst is unknown
+func TestConstPropagate2OpNoFold(t *testing.T) {
+	lines := []string{"\tADD\tv1, 5"}
+	result := constPropagate(lines)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 line, got %d: %v", len(result), result)
+	}
+	// Should remain as ADD (v1 has no known constant)
+	if !strings.Contains(result[0], "ADD") {
+		t.Errorf("2-op ADD with unknown dst should remain ADD: %q", result[0])
+	}
+}
+
+// 2-op constant folding with comment preservation
+func TestConstPropagate2OpWithComment(t *testing.T) {
+	lines := []string{"\tMOVI\tv1, 3", "\tADD\tv1, 5\t; increment"}
+	result := constPropagate(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[1], "MOVI\tv1, 8") {
+		t.Errorf("2-op ADD with comment should fold: %q", result[1])
+	}
+	if !strings.Contains(result[1], "; increment") {
+		t.Errorf("comment should survive folding: %q", result[1])
+	}
+}
+
+// 2-op constant folding through the Optimize pipeline
+func TestOptimize2OpFoldPipeline(t *testing.T) {
+	input := "\tMOVI\tv1, 3\n\tADD\tv1, 5\n\tMOV\tv5, v1\n\tMOVI\tv0, 60\n\tSYSCALL"
+	output := Optimize(input, 1)
+	// ADD v1, 5 should be folded to MOVI v1, 8
+	if !strings.Contains(output, "MOVI\tv1, 8") {
+		t.Errorf("expected folded MOVI v1, 8 in pipeline: %q", output)
+	}
+	// MOV v5, v1 propagates constant to 8
+	if !strings.Contains(output, "MOVI\tv5, 8") {
+		t.Errorf("expected constant propagated to v5: %q", output)
+	}
+}
+
 // --- Strength reduction ---
 
 func TestStrengthReduceMul2Op(t *testing.T) {

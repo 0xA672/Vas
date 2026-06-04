@@ -543,6 +543,26 @@ func constBlock(lines []string) []string {
 				dst := args[0]
 				dstRi := regIndex(dst)
 				if dstRi >= 0 {
+					// Try 2-op constant folding: OP dst, imm where dst is known
+					if constVal[dstRi] != nil {
+						if imm, ok := parseArg(args[1]); ok {
+							var val int64
+							switch op {
+							case "ADD":
+								val = *constVal[dstRi] + imm
+							case "SUB":
+								val = *constVal[dstRi] - imm
+							}
+							constVal[dstRi] = &val
+							comment := ""
+							if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+								comment = " " + trimmed[idx:]
+							}
+							result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
+							reads = nil // already folded, don't mark reads
+							continue
+						}
+					}
 					constVal[dstRi] = nil // unknown after 2-op
 				}
 			} else if len(args) == 3 {
@@ -581,6 +601,20 @@ func constBlock(lines []string) []string {
 				dst := args[0]
 				dstRi := regIndex(dst)
 				if dstRi >= 0 {
+					// Try 2-op constant folding: MUL dst, imm where dst is known
+					if constVal[dstRi] != nil {
+						if imm, ok := parseArg(args[1]); ok {
+							val := *constVal[dstRi] * imm
+							constVal[dstRi] = &val
+							comment := ""
+							if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+								comment = " " + trimmed[idx:]
+							}
+							result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
+							reads = nil // already folded, don't mark reads
+							continue
+						}
+					}
 					constVal[dstRi] = nil
 				}
 			} else if len(args) == 3 {
@@ -610,9 +644,16 @@ func constBlock(lines []string) []string {
 					src := strings.TrimRight(args[1], ",")
 					srcRi := regIndex(src)
 					if srcRi >= 0 && constVal[srcRi] != nil {
-						// MOV vX, vY where vY is known constant
+						// MOV vX, vY where vY is known constant -> MOVI vX, const
 						cp := *constVal[srcRi]
 						constVal[dstRi] = &cp
+						comment := ""
+						if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+							comment = " " + trimmed[idx:]
+						}
+						result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, cp, comment)
+						reads = nil // folded, don't mark reads
+						continue
 					} else {
 						constVal[dstRi] = nil
 					}
