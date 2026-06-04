@@ -29,6 +29,8 @@ func Optimize(input string, level int) string {
 
 	lines := strings.Split(input, "\n")
 	lines = copyPropagate(lines)
+	lines = strengthReduce(lines)
+	lines = storeLoadFwd(lines)
 	lines = deadCodeElim(lines)
 	lines = peephole(lines)
 	return strings.Join(lines, "\n")
@@ -448,6 +450,207 @@ func propagateBlock(lines []string) []string {
 		result[i] = newLine
 	}
 	return result
+}
+
+// ---------------------------------------------------------------------------
+// Pre-expansion: strength reduction (MUL by power-of-2 -> SHL)
+// ---------------------------------------------------------------------------
+
+// strengthReduce replaces MUL by a power-of-2 constant with a left shift.
+func strengthReduce(lines []string) []string {
+	result := make([]string, len(lines))
+	for i, line := range lines {
+		result[i] = reduceLine(line)
+	}
+	return result
+}
+
+func reduceLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	code := trimmed
+	if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+		code = strings.TrimSpace(code[:idx])
+	}
+	if code == "" {
+		return line
+	}
+	fields := strings.Fields(code)
+	if len(fields) < 2 {
+		return line
+	}
+	op := strings.ToUpper(fields[0])
+	if op != "MUL" {
+		return line
+	}
+
+	// arg helper: strip trailing comma
+	arg := func(i int) string {
+		s := fields[i]
+		s = strings.TrimRight(s, ",")
+		return s
+	}
+
+	if len(fields) == 3 {
+		// 2-op: MUL dst, imm
+		dst := arg(1)
+		imm, err := strconv.ParseInt(arg(2), 0, 64)
+		if err == nil && isPowerOf2(imm) && imm > 0 && imm <= 0x80000000 {
+			shift := log2(imm)
+			comment := ""
+			if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+				comment = " " + trimmed[idx:]
+			}
+			return fmt.Sprintf("\tshl\t%s, %d%s", dst, shift, comment)
+		}
+	} else if len(fields) == 4 {
+		// 3-op: MUL dst, src, imm  (or MUL dst, src, reg)
+		dst := arg(1)
+		src := arg(2)
+		imm, err := strconv.ParseInt(arg(3), 0, 64)
+		if err == nil && isPowerOf2(imm) && imm > 0 && imm <= 0x80000000 {
+			shift := log2(imm)
+			comment := ""
+			if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+				comment = " " + trimmed[idx:]
+			}
+			// MOV dst, src; SHL dst, shift
+			return fmt.Sprintf("\tMOV\t%s, %s%s\n\tshl\t%s, %d%s", dst, src, comment, dst, shift, comment)
+		}
+	}
+	return line
+}
+
+func isPowerOf2(n int64) bool {
+	return n > 0 && (n&(n-1)) == 0
+}
+
+func log2(n int64) int {
+	r := 0
+	for n > 1 {
+		n >>= 1
+		r++
+	}
+	return r
+}
+
+// ---------------------------------------------------------------------------
+// Pre-expansion: STORE-LOAD forwarding
+// ---------------------------------------------------------------------------
+
+// storeLoadFwd replaces LOAD from a label with MOV from the last STORE to
+// that label within the same basic block.
+func storeLoadFwd(lines []string) []string {
+	blocks := splitBlocks(lines)
+	var result []string
+	for _, block := range blocks {
+		result = append(result, fwdBlock(block)...)
+	}
+	return result
+}
+
+// fwdBlock performs STORE-LOAD forwarding within a single basic block.
+func fwdBlock(lines []string) []string {
+	// lastStore[labelName] = v-reg index that was stored
+	lastStore := map[string]int{}
+
+	result := make([]string, len(lines))
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		code := trimmed
+		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+			code = strings.TrimSpace(code[:idx])
+		}
+		if code == "" {
+			lastStore = map[string]int{} // clear on empty line
+			result[i] = line
+			continue
+		}
+
+		fields := strings.Fields(code)
+		if len(fields) < 2 {
+			result[i] = line
+			continue
+		}
+		op := strings.ToUpper(fields[0])
+		args := fields[1:]
+
+		switch op {
+		case "STORE":
+			if len(args) >= 2 {
+				src := strings.TrimRight(args[0], ",")
+				srcRi := regIndex(src)
+				if srcRi >= 0 {
+					label := extractLabel(args[1])
+					if label != "" {
+						lastStore[label] = srcRi
+					}
+				}
+			}
+		case "LOAD":
+			if len(args) >= 2 {
+				dst := strings.TrimRight(args[0], ",")
+				dstRi := regIndex(dst)
+				if dstRi >= 0 {
+					label := extractLabel(args[1])
+					if label != "" {
+						if srcRi, ok := lastStore[label]; ok {
+							// Forward: replace LOAD with MOV
+							comment := ""
+							if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+								comment = " " + trimmed[idx:]
+							}
+							result[i] = fmt.Sprintf("\tMOV\t%s, v%d%s", dst, srcRi, comment)
+							continue
+						}
+					}
+				}
+			}
+		default:
+			// Any non-STORE/LOAD instruction that could modify memory
+			// clears the store map for safety.
+			if len(fields) >= 2 {
+				firstArg := strings.TrimRight(args[0], ",")
+				if strings.HasPrefix(firstArg, "[") {
+					// Writing to memory (e.g., passthrough). Clear all.
+					lastStore = map[string]int{}
+				}
+			}
+		}
+
+		result[i] = line
+	}
+	return result
+}
+
+// extractLabel extracts a label name from a memory operand like "[label]"
+// or "[label+8]". Returns "" if no simple label is found.
+func extractLabel(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "[") {
+		return ""
+	}
+	s = s[1:] // strip '['
+	if idx := strings.IndexAny(s, "+-*/]"); idx >= 0 {
+		before := strings.TrimSpace(s[:idx])
+		// Check if it's a v-reg or number
+		if regIndex(before) >= 0 {
+			return ""
+		}
+		if _, err := strconv.ParseInt(before, 0, 64); err == nil {
+			return ""
+		}
+		return before
+	}
+	// Simple case: [label]
+	s = strings.TrimRight(s, "]")
+	s = strings.TrimSpace(s)
+	if regIndex(s) >= 0 {
+		return ""
+	}
+	if _, err := strconv.ParseInt(s, 0, 64); err == nil {
+		return ""
+	}
+	return s
 }
 
 // ---------------------------------------------------------------------------
