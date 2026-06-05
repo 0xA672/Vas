@@ -26,6 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Strip CRLF (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          sed -i 's/\r$//' main.go test/assembler_test.go vas/arch/arch.go vas/core.go vas/opt/opt.go vas/opt/opt_test.go wasm/wasm.go wasm/wasm_test.go
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
