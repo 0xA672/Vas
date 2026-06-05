@@ -1,0 +1,22 @@
+test: add 24 targeted tests for all 8 -O2 optimisation passes
+
+Each pass gets 2-4 tests covering match, no-match, edge cases:
+
+- CSE: simple, different-ops, killed (overwritten dst)
+- LICM: LEA hoisting, no-loop
+- Redundant load elimination: simple, different-addr, store-invalidates
+- PUSH/POP elimination: simple, with-code-between, modified-reg, different-reg
+- Tail call: simple, no-match
+- noopElim: mov-same-reg, add/sub/imul-noop, non-zero-operands
+- pushPopMov: simple, not-pair
+- xorMovElim: simple eax/rax, different-reg, not-xor
+- Integration: full -O2 pipeline with LICM hoisting check
+
+Also fixed bugs uncovered by the new tests:
+- CSE & redundantLoad: strip trailing commas in output
+- pushPop: compare TrimRight'd register names to handle comma tokens
+- xorMovElim: map 32-bit reg (eax) to 64-bit (rax) for mov matching
+- LICM: exclude current instruction from "modified in loop" check
+- redundantLoad: track address register modification, not dst reg
+
+Co-Authored-By: AtomCode (deepseek-v4-flash) <noreply@atomgit.com>

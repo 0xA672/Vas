@@ -1200,15 +1200,22 @@ func cseBlock(lines []string) []string {
 
 		// For 2- or 3-operand arithmetic: check if this computation is already seen
 		if len(args) >= 2 && (op == "ADD" || op == "SUB" || op == "MUL") {
+			// Strip trailing commas from args for clean comparison
+			cleanArgs := make([]string, len(args[1:]))
+			for i, a := range args[1:] {
+				cleanArgs[i] = strings.TrimRight(a, ",")
+			}
 			// Key = (op, remaining args after dst)
-			key := cseKey{op: op, args: strings.Join(args[1:], " ")}
+			key := cseKey{op: op, args: strings.Join(cleanArgs, " ")}
 			if prevDst, ok := seen[key]; ok && prevDst != args[0] {
 				// Same computation exists — emit MOV instead
+				dst := strings.TrimRight(args[0], ",")
+				src := strings.TrimRight(prevDst, ",")
 				comment := ""
 				if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-					comment = trimmed[idx:]
+					comment = " " + trimmed[idx:]
 				}
-				result = append(result, fmt.Sprintf("\tMOV\t%s, %s%s", args[0], prevDst, comment))
+				result = append(result, fmt.Sprintf("\tMOV\t%s, %s%s", dst, src, comment))
 				// Track that args[0] now holds the same value as prevDst
 				regVals[args[0]] = key
 				continue
@@ -1334,13 +1341,42 @@ func licm(lines []string) []string {
 			op := strings.ToUpper(fields[0])
 			args := fields[1:]
 
-			// Hoist LEA with label operand if its dst is not modified in the loop
+			// Hoist LEA with label operand if its dst is not modified elsewhere in the loop
 			if op == "LEA" && len(args) >= 2 {
 				dst := args[0]
-				if !modified[dst] {
-					// Check that the source operand references a label, not a v-reg
-					src := args[1]
-					if !strings.HasPrefix(src, "[v") && strings.HasPrefix(src, "[") {
+				// Check that the source operand references a label, not a v-reg
+				src := args[1]
+				if !strings.HasPrefix(src, "[v") && strings.HasPrefix(src, "[") {
+					// Check dst is not modified by any OTHER instruction in the loop
+					modifiedElsewhere := false
+					for jj := l.header + 1; jj < l.back; jj++ {
+						if jj == j {
+							continue
+						}
+						jjTrimmed := strings.TrimSpace(lines[jj])
+						jjCode := jjTrimmed
+						if idx := strings.IndexAny(jjCode, ";#"); idx >= 0 {
+							jjCode = strings.TrimSpace(jjCode[:idx])
+						}
+						if jjCode == "" {
+							continue
+						}
+						jjFields := strings.Fields(jjCode)
+						if len(jjFields) < 2 {
+							continue
+						}
+						jjOp := strings.ToUpper(jjFields[0])
+						jjArgs := jjFields[1:]
+						if jjOp == "MOVI" && len(jjArgs) >= 1 && jjArgs[0] == dst {
+							modifiedElsewhere = true
+							break
+						}
+						if d := dstReg(jjOp, jjArgs); d >= 0 && jjArgs[0] == dst {
+							modifiedElsewhere = true
+							break
+						}
+					}
+					if !modifiedElsewhere {
 						hoisted = append(hoisted, j)
 					}
 				}
@@ -1388,8 +1424,8 @@ func redundantLoadElim(lines []string) []string {
 func redundantLoadBlock(lines []string) []string {
 	// lastLoad[operand_string] = dst_register that holds the loaded value
 	lastLoad := map[string]string{}
-	// Track which registers have been modified
-	modified := map[string]bool{}
+	// Track which address registers have been modified since their last load
+	addrModified := map[string]bool{}
 
 	result := make([]string, len(lines))
 	for i, line := range lines {
@@ -1410,7 +1446,27 @@ func redundantLoadBlock(lines []string) []string {
 		op := strings.ToUpper(fields[0])
 		args := fields[1:]
 
-		// Track modified registers
+		if op == "LOAD" && len(args) >= 2 {
+			addr := args[1]
+			// Extract the address register (strip brackets)
+			addrReg := strings.TrimRight(strings.TrimLeft(addr, "["), "]")
+			if prevDst, ok := lastLoad[addr]; ok && !addrModified[addrReg] {
+				// Same address, no intervening modification — reuse previous value
+				dst := strings.TrimRight(args[0], ",")
+				src := strings.TrimRight(prevDst, ",")
+				comment := ""
+				if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+					comment = " " + trimmed[idx:]
+				}
+				result[i] = fmt.Sprintf("\tMOV\t%s, %s%s", dst, src, comment)
+				continue
+			}
+			// Record this load
+			lastLoad[addr] = args[0]
+			addrModified[addrReg] = false
+		}
+
+		// Track modifications to registers (including LOAD dst itself)
 		dstIdx := -1
 		switch op {
 		case "MOVI", "MOV", "ADD", "SUB", "MUL", "LOAD", "LEA", "POP":
@@ -1419,23 +1475,9 @@ func redundantLoadBlock(lines []string) []string {
 			}
 		}
 		if dstIdx >= 0 {
-			modified[args[dstIdx]] = true
-		}
-
-		if op == "LOAD" && len(args) >= 2 {
-			addr := args[1]
-			// If the address is a register, check if it's been modified since last load
-			if prevDst, ok := lastLoad[addr]; ok && !modified[prevDst] {
-				// Same address, no intervening modification — reuse previous value
-				comment := ""
-				if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-					comment = " " + trimmed[idx:]
-				}
-				result[i] = fmt.Sprintf("\tMOV\t%s, %s%s", args[0], prevDst, comment)
-				continue
-			}
-			// Record this load
-			lastLoad[addr] = args[0]
+			modifiedReg := strings.TrimRight(args[dstIdx], ",")
+			// Mark this register as modified (may be used as address in future loads)
+			addrModified[modifiedReg] = true
 		}
 
 		// STORE to an address invalidates loads from that address
@@ -1502,16 +1544,18 @@ func pushPopBlock(lines []string) []string {
 				continue
 			}
 			jOp := strings.ToUpper(jFields[0])
+			jReg := strings.TrimRight(jFields[1], ",")
 
-			// If reg is modified between PUSH and POP, abort
-			if d := dstReg(jOp, jFields[1:]); d >= 0 && jFields[1] == reg {
-				break
-			}
-
-			if jOp == "POP" && jFields[1] == reg {
+			// If this is a POP of the same register, we found our match
+			if jOp == "POP" && jReg == reg {
 				// Found matching POP — remove both
 				remove[i] = true
 				remove[j] = true
+				break
+			}
+
+			// If reg is modified between PUSH and POP, abort
+			if d := dstReg(jOp, jFields[1:]); d >= 0 && jReg == reg {
 				break
 			}
 
@@ -1621,6 +1665,14 @@ func pushPopMov(lines []string) []string {
 func xorMovElim(lines []string) []string {
 	xorRe := regexp.MustCompile(`^\txor\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
 
+	// Map 32-bit register names to 64-bit for matching against mov
+	to64 := map[string]string{
+		"eax": "rax", "ebx": "rbx", "ecx": "rcx", "edx": "rdx",
+		"esi": "rsi", "edi": "rdi", "ebp": "rbp", "esp": "rsp",
+		"r8d": "r8", "r9d": "r9", "r10d": "r10", "r11d": "r11",
+		"r12d": "r12", "r13d": "r13", "r14d": "r14", "r15d": "r15",
+	}
+
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
@@ -1628,12 +1680,16 @@ func xorMovElim(lines []string) []string {
 			m1 := xorRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
 			// Match xor r1, r1 (same register)
 			if m1 != nil && m1[1] == m1[2] {
-				reg := m1[1]
-				// Check if next line is "mov <reg>, something"
-				movAfterXor := regexp.MustCompile(fmt.Sprintf(`^\tmov\t%s,\s*([a-z][a-z0-9]+)$`, regexp.QuoteMeta(reg)))
+				reg32 := m1[1]
+				reg64 := reg32
+				if r, ok := to64[reg32]; ok {
+					reg64 = r
+				}
+				// Check if next line is "mov <reg64>, something"
+				movAfterXor := regexp.MustCompile(fmt.Sprintf(`^\tmov\t%s,\s*([a-z][a-z0-9]+)$`, regexp.QuoteMeta(reg64)))
 				m2 := movAfterXor.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil {
-					result = append(result, fmt.Sprintf("\tmov\t%s, %s", reg, m2[1]))
+					result = append(result, fmt.Sprintf("\tmov\t%s, %s", reg64, m2[1]))
 					i += 2
 					continue
 				}

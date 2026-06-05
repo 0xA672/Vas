@@ -790,3 +790,284 @@ func FuzzOptimize(f *testing.F) {
 		_ = Optimize(input, 1)
 	})
 }
+
+// --- -O2: CSE (common subexpression elimination) ---
+
+func TestCseSimple(t *testing.T) {
+	// Same MUL appears twice with different dst → second becomes MOV
+	lines := []string{"\tMUL\tv5, v3, 8", "\tMUL\tv6, v3, 8"}
+	result := cse(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[1], "MOV\tv6, v5") {
+		t.Errorf("second MUL should become MOV v6, v5: %q", result[1])
+	}
+}
+
+func TestCseDifferentOps(t *testing.T) {
+	// Different ops should NOT be CSE'd
+	lines := []string{"\tMUL\tv5, v3, 8", "\tADD\tv6, v3, 8"}
+	result := cse(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+	if strings.Contains(result[1], "MOV") {
+		t.Errorf("different ops should NOT be CSE'd: %q", result[1])
+	}
+}
+
+func TestCseKilled(t *testing.T) {
+	// If dst is overwritten, the CSE entry should be invalidated
+	lines := []string{"\tMUL\tv5, v3, 8", "\tMOVI\tv5, 0", "\tMUL\tv6, v3, 8"}
+	result := cse(lines)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %v", len(result), result)
+	}
+	// After MOVI v5, 0, the CSE entry for v5 is killed
+	// So the second MUL should NOT be replaced with MOV
+	if strings.Contains(result[2], "MOV") {
+		t.Errorf("CSE should be killed after dst overwrite: %q", result[2])
+	}
+}
+
+// --- -O2: LICM (loop invariant code motion) ---
+
+func TestLicmLEA(t *testing.T) {
+	// LEA v0, [data] inside loop → hoisted before loop header
+	lines := []string{
+		"loop:",
+		"\tLEA\tv0, [data]",
+		"\tADD\tv5, v0, v5",
+		"\tJMP\tloop",
+	}
+	result := licm(lines)
+	if len(result) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %v", len(result), result)
+	}
+	// LEA should be BEFORE the label
+	if !strings.Contains(result[0], "LEA") {
+		t.Errorf("LEA should be hoisted before loop label: %q", result[0])
+	}
+	if result[1] != "loop:" {
+		t.Errorf("label should follow hoisted LEA: %q", result[1])
+	}
+}
+
+func TestLicmNoLoop(t *testing.T) {
+	// No backward jump → no hoisting
+	lines := []string{
+		"\tLEA\tv0, [data]",
+		"\tADD\tv5, v0, v5",
+	}
+	result := licm(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+}
+
+// --- -O2: redundant load elimination ---
+
+func TestRedundantLoadElimSimple(t *testing.T) {
+	lines := []string{"\tLOAD\tv7, [v5]", "\tLOAD\tv8, [v5]"}
+	result := redundantLoadElim(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[1], "MOV\tv8, v7") {
+		t.Errorf("second LOAD should become MOV v8, v7: %q", result[1])
+	}
+}
+
+func TestRedundantLoadElimNoMatch(t *testing.T) {
+	// Different address → no elimination
+	lines := []string{"\tLOAD\tv7, [v5]", "\tLOAD\tv8, [v6]"}
+	result := redundantLoadElim(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+	if strings.Contains(result[1], "MOV") {
+		t.Errorf("different addresses should not be eliminated: %q", result[1])
+	}
+}
+
+func TestRedundantLoadElimStoreInvalidates(t *testing.T) {
+	// STORE between two LOADs → second LOAD should stay
+	lines := []string{"\tLOAD\tv7, [v5]", "\tSTORE\tv1, [v5]", "\tLOAD\tv8, [v5]"}
+	result := redundantLoadElim(lines)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %v", len(result), result)
+	}
+	if strings.Contains(result[2], "MOV") {
+		t.Errorf("LOAD after STORE should not be forwarded: %q", result[2])
+	}
+}
+
+// --- -O2: PUSH/POP elimination ---
+
+func TestPushPopElimSimple(t *testing.T) {
+	lines := []string{"\tPUSH\tv0", "\tPOP\tv0"}
+	result := pushPopElim(lines)
+	if len(result) != 0 {
+		t.Errorf("balanced PUSH/POP should be eliminated, got %d lines: %v", len(result), result)
+	}
+}
+
+func TestPushPopElimWithCode(t *testing.T) {
+	lines := []string{"\tPUSH\tv0", "\tMOVI\tv1, 1", "\tPOP\tv0"}
+	result := pushPopElim(lines)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 line (MOVI kept), got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[0], "MOVI") {
+		t.Errorf("MOVI should survive: %q", result[0])
+	}
+}
+
+func TestPushPopElimModifiedReg(t *testing.T) {
+	// PUSH v0; MOVI v0, 1; POP v0 → reg modified between, no elimination
+	lines := []string{"\tPUSH\tv0", "\tMOVI\tv0, 1", "\tPOP\tv0"}
+	result := pushPopElim(lines)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 lines (reg modified), got %d: %v", len(result), result)
+	}
+}
+
+func TestPushPopElimDifferentReg(t *testing.T) {
+	// PUSH v0; POP v1 → different reg, no elimination
+	lines := []string{"\tPUSH\tv0", "\tPOP\tv1"}
+	result := pushPopElim(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines (different reg), got %d: %v", len(result), result)
+	}
+}
+
+// --- -O2: tail call optimisation ---
+
+func TestTailCallOptSimple(t *testing.T) {
+	lines := []string{"\tCALL\tcompute", "\tRET"}
+	result := tailCallOpt(lines)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 line, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[0], "JMP") {
+		t.Errorf("CALL+RET should become JMP: %q", result[0])
+	}
+}
+
+func TestTailCallOptNoMatch(t *testing.T) {
+	// CALL without RET → keep as-is
+	lines := []string{"\tCALL\tcompute", "\tMOVI\tv0, 1"}
+	result := tailCallOpt(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[0], "CALL") {
+		t.Errorf("CALL without following RET should survive: %q", result[0])
+	}
+}
+
+// --- -O2 peephole: noopElim ---
+
+func TestNoopElimMovSame(t *testing.T) {
+	lines := []string{"\tmov\trax, rax", "\tmov\trbx, rcx"}
+	result := noopElim(lines)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 line, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[0], "mov\trbx, rcx") {
+		t.Errorf("non-noop mov should survive: %q", result[0])
+	}
+}
+
+func TestNoopElimAddZero(t *testing.T) {
+	lines := []string{"\tadd\trax, 0", "\tsub\trax, 0", "\timul\trax, 1", "\tmov\trax, rbx"}
+	result := noopElim(lines)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 line (all noops removed), got %d: %v", len(result), result)
+	}
+}
+
+func TestNoopElimNotNoop(t *testing.T) {
+	lines := []string{"\tadd\trax, 1", "\tsub\trax, 2", "\timul\trax, 3"}
+	result := noopElim(lines)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 lines (non-zero operands kept), got %d: %v", len(result), result)
+	}
+}
+
+// --- -O2 peephole: pushPopMov ---
+
+func TestPushPopMovSimple(t *testing.T) {
+	lines := []string{"\tpush\trax", "\tpop\trbx"}
+	result := pushPopMov(lines)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 line, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[0], "mov\trbx, rax") {
+		t.Errorf("push+pop should become mov: %q", result[0])
+	}
+}
+
+func TestPushPopMovNotPair(t *testing.T) {
+	lines := []string{"\tpush\trax", "\tadd\trax, 1"}
+	result := pushPopMov(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines (not a push+pop pair), got %d: %v", len(result), result)
+	}
+}
+
+// --- -O2 peephole: xorMovElim ---
+
+func TestXorMovElimSimple(t *testing.T) {
+	lines := []string{"\txor\teax, eax", "\tmov\trax, rbx"}
+	result := xorMovElim(lines)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 line, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[0], "mov\trax, rbx") {
+		t.Errorf("xor+mov should become single mov: %q", result[0])
+	}
+	// Should NOT contain xor
+	if strings.Contains(result[0], "xor") {
+		t.Errorf("xor should be eliminated: %q", result[0])
+	}
+}
+
+func TestXorMovElimDifferentReg(t *testing.T) {
+	// xor rax, rax; mov rbx, rcx → different regs, keep both
+	lines := []string{"\txor\teax, eax", "\tmov\trbx, rcx"}
+	result := xorMovElim(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines (different regs), got %d: %v", len(result), result)
+	}
+}
+
+func TestXorMovElimNotXor(t *testing.T) {
+	// add rax, rbx; mov rax, rcx → not xor, keep both
+	lines := []string{"\tadd\trax, rbx", "\tmov\trax, rcx"}
+	result := xorMovElim(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines (not xor), got %d: %v", len(result), result)
+	}
+}
+
+// --- -O2 integration: full pipeline test ---
+
+func TestOptimizeLevel2(t *testing.T) {
+	// Verify -O2 pipeline runs without error on typical input
+	input := "\tMOVI\tv1, 0\nloop:\n\tLEA\tv0, [data]\n\tADD\tv1, v1, 1\n\tCMP\tv1, 10\n\tJLE\tloop"
+	output := Optimize(input, 2)
+	// -O2 should run and produce output
+	if len(output) == 0 {
+		t.Errorf("expected non-empty -O2 output")
+	}
+	// LICM should hoist LEA before loop
+	if strings.Contains(output, "loop:") {
+		loopIdx := strings.Index(output, "loop:")
+		leaIdx := strings.Index(output, "LEA")
+		if leaIdx > loopIdx {
+			t.Errorf("LEA should be hoisted before 'loop:' label by LICM")
+		}
+	}
+}
