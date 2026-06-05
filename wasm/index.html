@@ -205,8 +205,9 @@
     </label>
 <label>Optimization
       <select id="opt">
-<option value="0">O0 (none)</option>
-<option value="1">O1 (constant folding)</option>
+        <option value="0">O0 (none)</option>
+        <option value="1">O1 (const fold, DCE, peephole)</option>
+        <option value="2">O2 (+ CSE, LICM, tail call, …)</option>
       </select>
     </label>
 <button class="primary" id="runBtn" disabled onclick="run()">▶ Assemble</button>
