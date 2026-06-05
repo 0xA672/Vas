@@ -4,6 +4,7 @@
 // to provide register mapping, instruction expansion, and target-specific
 // boilerplate generation. This allows VAS to support multiple assembly
 // syntaxes with a single binary.
+
 package arch
 
 // Architecture defines the interface that each target backend must implement.
