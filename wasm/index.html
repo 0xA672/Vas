@@ -249,7 +249,8 @@ _start:
 <button onclick="loadExample('fact')">Factorial</button>
 <button onclick="loadExample('calc')">Calculator</button>
 <button onclick="loadExample('sort')">Sort</button>
-  <button onclick="loadExample('win-edge')">Windows GUI</button>
+<button onclick="loadExample('win-edge')">Windows GUI</button>
+<button onclick="loadExample('opt_showcase')">-O2 Showcase</button>
 </div>
 
 <div class="status-bar">
@@ -385,7 +386,7 @@ function escapeHtml(s) {
 
 // ── Fetch examples from server ──
 async function loadExamples() {
-  const names = ['hello', 'fib', 'fact', 'calc', 'sort', 'win-edge'];
+  const names = ['hello', 'fib', 'fact', 'calc', 'sort', 'win-edge', 'opt_showcase'];
   for (const name of names) {
     try {
       const resp = await fetch('examples/' + name + '.vas');

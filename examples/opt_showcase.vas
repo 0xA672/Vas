@@ -1,0 +1,41 @@
+; opt_showcase.vas -- demonstrates -O2 optimizations
+; Compare: vas -O1 examples/opt_showcase.vas vs vas -O2 examples/opt_showcase.vas
+; -O2 should produce shorter output (CSE + LICM)
+
+    MOVI v3, 10          ; n = 10
+    MOVI v1, 0           ; sum = 0
+    MOVI v2, 0           ; i = 0
+
+loop:
+    ; LICM test: LEA v0, [data] is loop-invariant
+    ; -O2 hoists it before the loop
+    LEA v0, [data]
+
+    ; CSE test: j*8 appears multiple times
+    ; -O2 computes it once and reuses
+    MOV v5, v2
+    MUL v5, v5, 8        ; j*8 (first time)
+    ADD v5, v0, v5
+    LOAD v6, [v5]
+
+    MOV v5, v2
+    MUL v5, v5, 8        ; j*8 (second time -- CSE!)
+    ADD v5, v0, v5
+    STORE v6, [v5]
+
+    ; PUSH/POP elimination test
+    PUSH v1
+    ADD v1, v1, v6       ; sum += data[i]
+    POP v1               ; balanced push/pop eliminated by -O2
+
+    ADD v2, 1            ; i++
+    CMP v2, v3
+    JLE loop
+
+    MOV v5, v1
+    MOVI v0, 60
+    SYSCALL
+
+.data
+data:
+    dq 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
