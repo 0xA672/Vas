@@ -443,7 +443,8 @@ func expandCmp(args []string) ([]string, error) {
 	}
 	b, err := mapReg(args[1])
 	if err != nil {
-		return nil, err
+		// Try parsing as immediate instead
+		b = args[1]
 	}
 	return []string{fmt.Sprintf("\tcmp\t%s, %s", a, b)}, nil
 }
