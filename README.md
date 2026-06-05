@@ -274,11 +274,7 @@ VAS's optimization passes have been formally verified using **ExaPO**, an exhaus
 
 This provides **window-level completeness**: for any straight-line code of ≤2 instructions, VAS's optimizer does not miss any valid optimization.
 
-The verification toolchain is open-source:
-- **ExaPO**: [https://github.com/0xA672/Vas/tree/main/exapo](https://github.com/0xA672/Vas/tree/main/exapo)
-- **x7a7** (random sampling + Z3 cross-check): [https://github.com/0xA672/Vas/tree/main/x7a7](https://github.com/0xA672/Vas/tree/main/x7a7)
-
-All discovered rules were additionally validated on real x86-64 hardware via NASM test programs.
+The verification toolchain (ExaPO + x7a7) is currently closed-source and will be open-sourced after paper publication.
 
 ---
 ## Syntax Details
