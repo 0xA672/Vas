@@ -1,0 +1,79 @@
+; sort.vas -- bubble sort an array of 8 qwords
+; Tests: LOAD/STORE with computed address, nested loops, CMP/conditional jumps
+
+	global _start
+
+	mov	rax, 8
+	push	rax
+
+outer:
+	pop	rax
+	push	rax
+	mov	rax, 1
+	xor	esi, esi
+	sub	rsi, rbx
+	xor	ecx, ecx
+	xor	edx, edx
+
+inner:
+	cmp	rdx, rsi
+	jge	check_swap
+
+    ; addr of a[j] = data + j*8
+	mov	rdi, rdx
+	shl	rdi, 3
+	lea	rax, [data]
+	add	rdi, rax
+	mov	r9, [rdi]
+
+    ; addr of a[j+1] = data + (j+1)*8
+	mov	rdi, rdx
+	mov	r8, 1
+	lea	rdi, [rdx+r8]
+	shl	rdi, 3
+	lea	rax, [data]
+	add	rdi, rax
+	mov	r8, [rdi]
+
+    ; if a[j] > a[j+1], swap
+	cmp	r9, r8
+	jle	no_swap
+
+; swap: STORE a[j+1] (v6) to a[j], a[j] (v7) to a[j+1]
+	mov	rdi, rdx
+	shl	rdi, 3
+	lea	rax, [data]
+	add	rdi, rax
+	mov	[rdi], r8
+
+	mov	rdi, rdx
+	mov	rax, 1
+	lea	rdi, [rdx+rax]
+	shl	rdi, 3
+	lea	rax, [data]
+	add	rdi, rax
+	mov	[rdi], r9
+
+	mov	rcx, 1
+
+no_swap:
+	mov	rax, 1
+	add	rdx, rax
+	jmp	inner
+
+check_swap:
+	test	ecx, ecx
+	je	done
+	mov	rax, 1
+	add	rbx, rax
+	jmp	outer
+
+done:
+	pop	rax
+	lea	rax, [data]
+	mov	rax, [rax]
+	ret
+
+	section .data
+data:
+	dq 5, 3, 8, 1, 9, 2, 7, 4

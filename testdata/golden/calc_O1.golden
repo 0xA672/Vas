@@ -1,0 +1,28 @@
+; calc.vas -- simple calculator CLI (sum 1..n)
+; computes 1+2+...+n and returns the result as exit code
+;
+; build:
+;   vas -o calc.s calc.vas
+;   nasm -f elf64 calc.s -o calc.o
+;   ld calc.o -o calc
+;   ./calc; echo $?    -> should output 55
+
+	section .text
+	global _start
+
+_start:
+	xor	ebx, ebx
+	mov	rcx, 1
+	mov	rdx, 10
+
+loop:
+	add	rbx, rcx
+	add	rcx, 1
+
+	cmp	rcx, rdx
+	jle	loop
+
+    ; exit code = sum
+	mov	rdi, rbx
+	mov	rax, 60
+	syscall
