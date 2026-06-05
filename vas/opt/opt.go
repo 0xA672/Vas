@@ -436,8 +436,16 @@ func propagateBlock(lines []string) []string {
 		dst := dstReg(op, args)
 
 		// Step 1: replace source operands with their propagated alias
+		// Don't propagate the destination register (args[0]) — doing so
+		// would make the instruction write to the aliased register instead,
+		// potentially clobbering a live value (e.g., loop counter).
 		propagated := make([]string, len(args))
 		for j, a := range args {
+			// Skip destination register
+			if j == 0 && dst >= 0 {
+				propagated[j] = a
+				continue
+			}
 			ri := regIndex(a)
 			resolved := resolve(ri)
 			if resolved >= 0 && resolved != ri {
