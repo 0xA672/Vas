@@ -921,7 +921,6 @@ func decomposeMul3Op(dst, src string, C int64, trimmed string) string {
 	return ""
 }
 
-
 func isPowerOf2(n int64) bool {
 	return n > 0 && (n&(n-1)) == 0
 }
