@@ -488,8 +488,9 @@ func constPropagate(lines []string) []string {
 }
 
 func constBlock(lines []string) []string {
-	// const[v] = known constant value (nil = unknown)
-	constVal := make([]*int64, 13)
+	// const[v] = known constant value (false = unknown)
+	constVal := make([]int64, 13)
+	constKnown := make([]bool, 13)
 	// used[reg] tracks registers whose value is read after the last MOVI to them
 	used := map[int]bool{}
 	// moviLine[reg] = line index of the last MOVI to this register in this block
@@ -499,8 +500,8 @@ func constBlock(lines []string) []string {
 	parseArg := func(a string) (int64, bool) {
 		a = strings.TrimRight(a, ",")
 		ri := regIndex(a)
-		if ri >= 0 && constVal[ri] != nil {
-			return *constVal[ri], true
+		if ri >= 0 && constKnown[ri] {
+			return constVal[ri], true
 		}
 		n, err := strconv.ParseInt(a, 0, 64)
 		if err == nil {
@@ -529,8 +530,6 @@ func constBlock(lines []string) []string {
 		op := strings.ToUpper(tokens[0])
 		args := tokens[1:]
 
-		// Mark source registers as used (before folding, so folded instructions
-		// can suppress this by not adding their sources to used).
 		reads := readRegs(op, args)
 		folded := false
 
@@ -541,44 +540,42 @@ func constBlock(lines []string) []string {
 				dstRi := regIndex(dst)
 				imm, err := strconv.ParseInt(args[1], 0, 64)
 				if dstRi >= 0 && err == nil {
-					constVal[dstRi] = &imm
+					constVal[dstRi] = imm
+					constKnown[dstRi] = true
 					moviLine[dstRi] = i
-					// Clear used flag: the previous value is overwritten by this MOVI
 					delete(used, dstRi)
 				}
 			}
-			// MOVI doesn't read any register (immediate source), don't mark reads
 			reads = nil
 		case "ADD", "SUB":
 			if len(args) == 2 {
-				// 2-op: ADD dst, src  (dst += src)
 				dst := args[0]
 				dstRi := regIndex(dst)
 				if dstRi >= 0 {
-					// Try 2-op constant folding: OP dst, imm where dst is known
-					if constVal[dstRi] != nil {
+					if constKnown[dstRi] {
 						if imm, ok := parseArg(args[1]); ok {
 							var val int64
 							switch op {
 							case "ADD":
-								val = *constVal[dstRi] + imm
+								val = constVal[dstRi] + imm
 							case "SUB":
-								val = *constVal[dstRi] - imm
+								val = constVal[dstRi] - imm
 							}
-							constVal[dstRi] = &val
+							constVal[dstRi] = val
+							constKnown[dstRi] = true
 							comment := ""
 							if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
 								comment = " " + trimmed[idx:]
 							}
 							result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
-							reads = nil // already folded, don't mark reads
+							reads = nil
+							folded = true
 							continue
 						}
 					}
-					constVal[dstRi] = nil // unknown after 2-op
+					constKnown[dstRi] = false
 				}
 			} else if len(args) == 3 {
-				// 3-op: ADD dst, src1, src2
 				dst := args[0]
 				dstRi := regIndex(dst)
 				if dstRi < 0 {
@@ -595,39 +592,39 @@ func constBlock(lines []string) []string {
 					case "SUB":
 						val = v1 - v2
 					}
-					constVal[dstRi] = &val
+					constVal[dstRi] = val
+					constKnown[dstRi] = true
 					comment := ""
 					if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
 						comment = " " + trimmed[idx:]
 					}
 					result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
+					folded = true
 					continue
 				}
-				// If src1 is a known constant but src2 is a reg, try folding anyway
-				// Only fold if the instruction is ADD/SUB with one constant and one reg
-				// This is handled by leaving it for the next pass.
-				constVal[dstRi] = nil
+				constKnown[dstRi] = false
 			}
 		case "MUL":
 			if len(args) == 2 {
 				dst := args[0]
 				dstRi := regIndex(dst)
 				if dstRi >= 0 {
-					// Try 2-op constant folding: MUL dst, imm where dst is known
-					if constVal[dstRi] != nil {
+					if constKnown[dstRi] {
 						if imm, ok := parseArg(args[1]); ok {
-							val := *constVal[dstRi] * imm
-							constVal[dstRi] = &val
+							val := constVal[dstRi] * imm
+							constVal[dstRi] = val
+							constKnown[dstRi] = true
 							comment := ""
 							if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
 								comment = " " + trimmed[idx:]
 							}
 							result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
-							reads = nil // already folded, don't mark reads
+							reads = nil
+							folded = true
 							continue
 						}
 					}
-					constVal[dstRi] = nil
+					constKnown[dstRi] = false
 				}
 			} else if len(args) == 3 {
 				dst := args[0]
@@ -637,15 +634,17 @@ func constBlock(lines []string) []string {
 					v2, ok2 := parseArg(args[2])
 					if ok1 && ok2 {
 						val := v1 * v2
-						constVal[dstRi] = &val
+						constVal[dstRi] = val
+						constKnown[dstRi] = true
 						comment := ""
 						if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
 							comment = " " + trimmed[idx:]
 						}
 						result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
+						folded = true
 						continue
 					}
-					constVal[dstRi] = nil
+					constKnown[dstRi] = false
 				}
 			}
 		case "MOV":
@@ -655,35 +654,33 @@ func constBlock(lines []string) []string {
 				if dstRi >= 0 {
 					src := strings.TrimRight(args[1], ",")
 					srcRi := regIndex(src)
-					if srcRi >= 0 && constVal[srcRi] != nil {
-						// MOV vX, vY where vY is known constant -> MOVI vX, const
-						cp := *constVal[srcRi]
-						constVal[dstRi] = &cp
+					if srcRi >= 0 && constKnown[srcRi] {
+						cp := constVal[srcRi]
+						constVal[dstRi] = cp
+						constKnown[dstRi] = true
 						comment := ""
 						if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
 							comment = " " + trimmed[idx:]
 						}
 						result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, cp, comment)
-						reads = nil // folded, don't mark reads
+						reads = nil
+						folded = true
 						continue
 					} else {
-						constVal[dstRi] = nil
+						constKnown[dstRi] = false
 					}
 				}
 			}
 		case "SYSCALL", "INT":
-			// Syscall/INT clobber all ABI registers: v0(eax/rax), v3(rdx), v4(rsi), v5(rdi), v6(r8), v7(r9), v8(r10)
 			for _, r := range []int{0, 3, 4, 5, 6, 7, 8} {
-				constVal[r] = nil
+				constKnown[r] = false
 			}
 		default:
-			// Any other instruction that writes to a register clears its const
 			dst := dstReg(op, args)
 			if dst >= 0 {
-				constVal[dst] = nil
+				constKnown[dst] = false
 			}
 		}
-		// Mark source registers as used (unless the instruction was folded).
 		if !folded {
 			for _, r := range reads {
 				used[r] = true
@@ -693,10 +690,6 @@ func constBlock(lines []string) []string {
 	}
 	return result
 }
-
-// ---------------------------------------------------------------------------
-// Pre-expansion: dead STORE elimination
-// ---------------------------------------------------------------------------
 
 // deadStoreElim removes STORE instructions whose target label is stored again
 // before any LOAD within the same basic block.
@@ -730,6 +723,10 @@ func elimDeadStoreBlock(lines []string) []string {
 		}
 		op := strings.ToUpper(fields[0])
 		if op != "STORE" && op != "LOAD" {
+			// Calls, syscalls, and interrupts may write memory — clear all access state
+			if op == "CALL" || op == "SYSCALL" || op == "INT" {
+				lastAccess = map[string]string{}
+			}
 			continue
 		}
 		args := fields[1:]
@@ -805,31 +802,125 @@ func reduceLine(line string) string {
 		// 2-op: MUL dst, imm
 		dst := arg(1)
 		imm, err := strconv.ParseInt(arg(2), 0, 64)
-		if err == nil && isPowerOf2(imm) && imm > 0 && imm <= 0x80000000 {
-			shift := log2(imm)
-			comment := ""
-			if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-				comment = " " + trimmed[idx:]
-			}
-			return fmt.Sprintf("\tshl\t%s, %d%s", dst, shift, comment)
+		if err != nil || imm <= 0 {
+			return line
 		}
+		if result := decomposeMul2Op(dst, imm, trimmed); result != "" {
+			return result
+		}
+		return line
 	} else if len(fields) == 4 {
 		// 3-op: MUL dst, src, imm  (or MUL dst, src, reg)
 		dst := arg(1)
 		src := arg(2)
 		imm, err := strconv.ParseInt(arg(3), 0, 64)
-		if err == nil && isPowerOf2(imm) && imm > 0 && imm <= 0x80000000 {
-			shift := log2(imm)
-			comment := ""
-			if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-				comment = " " + trimmed[idx:]
-			}
-			// MOV dst, src; SHL dst, shift
-			return fmt.Sprintf("\tMOV\t%s, %s%s\n\tshl\t%s, %d%s", dst, src, comment, dst, shift, comment)
+		if err != nil || imm <= 0 {
+			return line
 		}
+		if result := decomposeMul3Op(dst, src, imm, trimmed); result != "" {
+			return result
+		}
+		return line
 	}
 	return line
 }
+
+// decomposeMul2Op emits VAS-level instructions for dst *= C.
+func decomposeMul2Op(dst string, C int64, trimmed string) string {
+	comment := ""
+	if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+		comment = " " + trimmed[idx:]
+	}
+
+	// 1. Power of 2: SHL
+	if isPowerOf2(C) && C <= 0x80000000 {
+		shift := log2(C)
+		return fmt.Sprintf("\tshl\t%s, %d%s", dst, shift, comment)
+	}
+
+	// 2. LEA-decomposable: C = 1 + scale where scale ∈ {1,2,4,8} → C ∈ {2,3,5,9}
+	scale := C - 1
+	switch scale {
+	case 1, 2, 4, 8:
+		return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s", dst, dst, dst, scale, comment)
+	}
+
+	// 3. Factor out powers of 2: C = odd * 2^k
+	shift := int64(0)
+	odd := C
+	for odd%2 == 0 {
+		odd /= 2
+		shift++
+	}
+
+	// Only decompose if odd is small enough for a single LEA
+	if shift > 0 {
+		oddScale := odd - 1
+		switch oddScale {
+		case 1, 2, 4, 8:
+			// LEA dst, [dst+dst*oddScale] ; dst *= odd
+			// Then SHL dst, shift            ; dst *= 2^shift
+			// Total: dst *= odd * 2^shift = C
+			return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s\n\tshl\t%s, %d%s",
+				dst, dst, dst, oddScale, comment, dst, shift, comment)
+		}
+	}
+
+	// No decomposition found
+	return ""
+}
+
+// decomposeMul3Op emits VAS-level instructions for dst = src * C.
+func decomposeMul3Op(dst, src string, C int64, trimmed string) string {
+	comment := ""
+	if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+		comment = " " + trimmed[idx:]
+	}
+
+	// 1. Power of 2: MOV dst, src; SHL dst, shift
+	if isPowerOf2(C) && C <= 0x80000000 {
+		shift := log2(C)
+		return fmt.Sprintf("\tMOV\t%s, %s%s\n\tshl\t%s, %d%s", dst, src, comment, dst, shift, comment)
+	}
+
+	// 2. LEA-decomposable: C = 1 + scale → dst = src * (1+scale)
+	scale := C - 1
+	switch scale {
+	case 1, 2, 4, 8:
+		return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s", dst, src, src, scale, comment)
+	}
+
+	// 3. C = (1+scale) * 2^k → LEA then SHL
+	shift := int64(0)
+	odd := C
+	for odd%2 == 0 {
+		odd /= 2
+		shift++
+	}
+	if shift > 0 {
+		oddScale := odd - 1
+		switch oddScale {
+		case 1, 2, 4, 8:
+			return fmt.Sprintf("\tMOV\t%s, %s%s\n\tLEA\t%s, [%s+%s*%d]%s\n\tshl\t%s, %d%s",
+				dst, src, comment, dst, dst, dst, oddScale, comment, dst, shift, comment)
+		}
+	}
+
+	// 4. C = (2^k) - 1 → LEA then SUB (e.g., 3 = 4-1, 7 = 8-1)
+	// dst = src * (2^k - 1)
+	// LEA dst, [src*2^k]  → dst = src * 2^k
+	// SUB dst, src          → dst = src * 2^k - src = src*(2^k-1)
+	for k := int64(2); k <= 3; k++ {
+		if C == (1<<k)-1 {
+			return fmt.Sprintf("\tLEA\t%s, [%s*%d]%s\n\tSUB\t%s, %s%s",
+				dst, src, 1<<k, comment, dst, src, comment)
+		}
+	}
+
+	// No decomposition found
+	return ""
+}
+
 
 func isPowerOf2(n int64) bool {
 	return n > 0 && (n&(n-1)) == 0
@@ -919,7 +1010,9 @@ func fwdBlock(lines []string) []string {
 		default:
 			// Any non-STORE/LOAD instruction that could modify memory
 			// clears the store map for safety.
-			if len(fields) >= 2 {
+			if op == "CALL" || op == "SYSCALL" || op == "INT" {
+				lastStore = map[string]int{}
+			} else if len(fields) >= 2 {
 				firstArg := strings.TrimRight(args[0], ",")
 				if strings.HasPrefix(firstArg, "[") {
 					// Writing to memory (e.g., passthrough). Clear all.

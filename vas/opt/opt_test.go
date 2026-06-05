@@ -505,13 +505,50 @@ func TestStrengthReduceMul3Op(t *testing.T) {
 }
 
 func TestStrengthReduceNonPowerOf2(t *testing.T) {
+	// MUL by 3 → LEA v1, [v1+v1*2]
 	lines := []string{"\tMUL\tv1, 3"}
 	result := strengthReduce(lines)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 line, got %d: %v", len(result), result)
 	}
+	if !strings.Contains(result[0], "LEA") {
+		t.Errorf("MUL by 3 should be decomposed to LEA, got %q", result[0])
+	}
+}
+
+func TestStrengthReduceBy7(t *testing.T) {
+	// 3-op MUL v1, v0, 7 → LEA v1, [v0*8]; SUB v1, v0
+	lines := []string{"\tMUL\tv1, v0, 7"}
+	result := strengthReduce(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines (LEA + SUB), got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[0], "LEA") || !strings.Contains(result[1], "SUB") {
+		t.Errorf("MUL by 7 should decompose to LEA + SUB, got %q, %q", result[0], result[1])
+	}
+}
+
+func TestStrengthReduceBy6(t *testing.T) {
+	// MUL v1, 6 → LEA v1, [v1+v1*2]; SHL v1, 1  (6 = 3*2)
+	lines := []string{"\tMUL\tv1, 6"}
+	result := strengthReduce(lines)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
+	}
+	if !strings.Contains(result[0], "LEA") || !strings.Contains(result[1], "shl") {
+		t.Errorf("MUL by 6 should decompose to LEA + SHL, got %q, %q", result[0], result[1])
+	}
+}
+
+func TestStrengthReduceLargeNonDecomposable(t *testing.T) {
+	// MUL by a large non-decomposable constant → unchanged
+	lines := []string{"\tMUL\tv1, 11"}
+	result := strengthReduce(lines)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 line unchanged, got %d: %v", len(result), result)
+	}
 	if result[0] != lines[0] {
-		t.Errorf("non-power-of-2 MUL should be unchanged, got %q", result[0])
+		t.Errorf("non-decomposable MUL should be unchanged, got %q", result[0])
 	}
 }
 
