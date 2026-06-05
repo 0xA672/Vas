@@ -65,6 +65,8 @@ func cmdAssemble(args []string) {
 			i++
 		case args[i] == "-O1":
 			optLevel = 1
+		case args[i] == "-O2":
+			optLevel = 2
 		case args[i] == "-h" || args[i] == "--help":
 			fmt.Print(helpText)
 			return
@@ -149,6 +151,8 @@ func cmdBuild(args []string) {
 			i++
 		case args[i] == "-O1":
 			optLevel = 1
+		case args[i] == "-O2":
+			optLevel = 2
 		case args[i] == "--keep-temps":
 			keepTemps = true
 		case args[i] == "-v" || args[i] == "--verbose":
@@ -275,7 +279,8 @@ Build a .vas file into an executable (via nasm + ld).
 Options:
   -o <file>         Output filename (default: <input>.exe on win64, <input> on elf64)
   -target <arch>    Target platform: elf64 (default) or win64
-  -O1               Enable optimizations (constant folding, dead code elim, peephole)
+  -O1               Enable -O1 optimisations (const folding, DCE, peephole)
+  -O2               Enable -O2 optimisations (CSE, LICM, redundant load elim, …)
   --keep-temps      Keep intermediate .asm and .o/.obj files
   -v, --verbose     Print tool commands and progress
   -h, --help        Show this help message
@@ -283,6 +288,7 @@ Options:
 Examples:
   vas build hello.vas           ->  ./hello (ELF64)
   vas build hello.vas -O1       ->  ./hello (optimised)
+  vas build hello.vas -O2       ->  ./hello (more optimised)
   vas build app.vas -target win64 ->  ./app.exe (Windows PE)
 `
 
@@ -612,7 +618,8 @@ Options:
 Build options (for "vas build"):
   -o <file>         Output filename
   -target <arch>    Target platform: elf64 (default) or win64
-  -O1               Enable optimizations
+  -O1               Enable -O1 optimisations (const folding, DCE, peephole)
+  -O2               Enable -O2 optimisations (CSE, LICM, redundant load elim, …)
   --keep-temps      Keep intermediate .asm and .o/.obj files
   -v, --verbose     Print tool commands and progress
 

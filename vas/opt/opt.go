@@ -34,7 +34,19 @@ func Optimize(input string, level int) string {
 	lines = storeLoadFwd(lines)
 	lines = deadStoreElim(lines)
 	lines = deadCodeElim(lines)
+
+	// Peephole runs post-expansion too, so keep it last.
 	lines = peephole(lines)
+
+	// -O2: more aggressive optimizations
+	if level >= 2 {
+		lines = cse(lines)
+		lines = licm(lines)
+		lines = redundantLoadElim(lines)
+		lines = pushPopElim(lines)
+		lines = tailCallOpt(lines)
+	}
+
 	return strings.Join(lines, "\n")
 }
 
@@ -984,6 +996,9 @@ func peephole(lines []string) []string {
 	lines = testCmp(lines)
 	lines = nopMerge(lines)
 	lines = leaFuse(lines)
+	lines = noopElim(lines)
+	lines = pushPopMov(lines)
+	lines = xorMovElim(lines)
 	return lines
 }
 
@@ -1126,6 +1141,508 @@ func tryLeaFuse(line1, line2 string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// ---------------------------------------------------------------------------
+// -O2 optimizations
+// ---------------------------------------------------------------------------
+
+// cse eliminates common subexpressions within each basic block.
+// If the same (op, arg1, arg2) appears twice, the second is replaced
+// with a MOV from the first result.
+func cse(lines []string) []string {
+	blocks := splitBlocks(lines)
+	var result []string
+	for _, block := range blocks {
+		result = append(result, cseBlock(block)...)
+	}
+	return result
+}
+
+type cseKey struct {
+	op   string
+	args string // joined args (without dst)
+}
+
+func cseBlock(lines []string) []string {
+	seen := map[cseKey]string{} // key → dst register name
+	// Track which registers are overwritten (kill entries that use them)
+	regVals := map[string]cseKey{} // reg → last key it computed
+
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		code := trimmed
+		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+			code = strings.TrimSpace(code[:idx])
+		}
+		if code == "" {
+			result = append(result, line)
+			continue
+		}
+		tokens := strings.Fields(code)
+		if len(tokens) < 2 {
+			result = append(result, line)
+			continue
+		}
+		op := strings.ToUpper(tokens[0])
+		args := tokens[1:]
+
+		// Clear entries whose source registers have been overwritten
+		dst := dstReg(op, args)
+		if dst >= 0 {
+			dstName := args[0]
+			// If this dst was tracking a previous expression, remove that expression from seen
+			if prevKey, ok := regVals[dstName]; ok {
+				delete(seen, prevKey)
+			}
+		}
+
+		// For 2- or 3-operand arithmetic: check if this computation is already seen
+		if len(args) >= 2 && (op == "ADD" || op == "SUB" || op == "MUL") {
+			// Key = (op, remaining args after dst)
+			key := cseKey{op: op, args: strings.Join(args[1:], " ")}
+			if prevDst, ok := seen[key]; ok && prevDst != args[0] {
+				// Same computation exists — emit MOV instead
+				comment := ""
+				if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+					comment = trimmed[idx:]
+				}
+				result = append(result, fmt.Sprintf("\tMOV\t%s, %s%s", args[0], prevDst, comment))
+				// Track that args[0] now holds the same value as prevDst
+				regVals[args[0]] = key
+				continue
+			}
+			// First time seeing this computation — record it
+			seen[key] = args[0]
+			if dst >= 0 {
+				regVals[args[0]] = key
+			}
+		}
+
+		result = append(result, line)
+	}
+	return result
+}
+
+// licm hoists loop-invariant instructions before the loop header.
+// A loop is identified as a label targeted by a backward JMP/JE/etc.
+func licm(lines []string) []string {
+	// Collect label positions: label → line index
+	labelIdx := map[string]int{}
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+			trimmed = strings.TrimSpace(trimmed[:idx])
+		}
+		if strings.HasSuffix(trimmed, ":") {
+			name := strings.TrimSuffix(trimmed, ":")
+			labelIdx[name] = i
+		}
+	}
+
+	// Find backward jumps: JMP/JE/etc. to a label before the jump
+	type loop struct {
+		header int // label line index
+		back   int // jump line index
+	}
+	var loops []loop
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		code := trimmed
+		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+			code = strings.TrimSpace(code[:idx])
+		}
+		if code == "" {
+			continue
+		}
+		fields := strings.Fields(code)
+		if len(fields) != 2 {
+			continue
+		}
+		op := strings.ToUpper(fields[0])
+		switch op {
+		case "JMP", "JE", "JNE", "JG", "JL", "JGE", "JLE":
+			target := fields[1]
+			if idx, ok := labelIdx[target]; ok && idx < i {
+				loops = append(loops, loop{header: idx, back: i})
+			}
+		}
+	}
+
+	if len(loops) == 0 {
+		return lines
+	}
+
+	// For each loop (innermost first), hoist invariant instructions
+	// Sort loops so innermost (largest header) comes first
+	// Simple approach: process in reverse order of header
+	for li := len(loops) - 1; li >= 0; li-- {
+		l := loops[li]
+		// Check if this loop is inside another (nested) — skip, outer pass handles it
+		isNested := false
+		for _, outer := range loops {
+			if outer.header < l.header && outer.back > l.back {
+				isNested = true
+				break
+			}
+		}
+		if isNested {
+			continue
+		}
+
+		// Determine which registers are modified inside the loop body
+		modified := map[string]bool{}
+		for j := l.header + 1; j <= l.back; j++ {
+			trimmed := strings.TrimSpace(lines[j])
+			code := trimmed
+			if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+				code = strings.TrimSpace(code[:idx])
+			}
+			if code == "" {
+				continue
+			}
+			fields := strings.Fields(code)
+			if len(fields) < 2 {
+				continue
+			}
+			op := strings.ToUpper(fields[0])
+			args := fields[1:]
+			// Simple check: any register that appears as arg[0] of a non-MOVI instruction is modified
+			if op == "MOVI" && len(args) >= 1 {
+				modified[args[0]] = true
+			} else if dst := dstReg(op, args); dst >= 0 {
+				modified[args[0]] = true
+			}
+		}
+
+		// Scan the loop body for instructions to hoist (currently only LEA with label operand)
+		var hoisted []int
+		for j := l.header + 1; j < l.back; j++ {
+			trimmed := strings.TrimSpace(lines[j])
+			code := trimmed
+			if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+				code = strings.TrimSpace(code[:idx])
+			}
+			if code == "" {
+				continue
+			}
+			fields := strings.Fields(code)
+			if len(fields) < 2 {
+				continue
+			}
+			op := strings.ToUpper(fields[0])
+			args := fields[1:]
+
+			// Hoist LEA with label operand if its dst is not modified in the loop
+			if op == "LEA" && len(args) >= 2 {
+				dst := args[0]
+				if !modified[dst] {
+					// Check that the source operand references a label, not a v-reg
+					src := args[1]
+					if !strings.HasPrefix(src, "[v") && strings.HasPrefix(src, "[") {
+						hoisted = append(hoisted, j)
+					}
+				}
+			}
+		}
+
+		if len(hoisted) == 0 {
+			continue
+		}
+
+		// Build new lines with hoisted instructions moved before the loop header
+		newLines := make([]string, 0, len(lines)+len(hoisted))
+		hoistSet := map[int]bool{}
+		for _, h := range hoisted {
+			hoistSet[h] = true
+		}
+		for i, line := range lines {
+			if i == l.header {
+				// Insert hoisted instructions just before the label
+				for _, h := range hoisted {
+					newLines = append(newLines, lines[h])
+				}
+			}
+			if !hoistSet[i] {
+				newLines = append(newLines, line)
+			}
+		}
+		lines = newLines
+	}
+
+	return lines
+}
+
+// redundantLoadElim replaces LOAD from an address that was recently loaded
+// from the same address (without intervening STORE) with a MOV from the earlier dst.
+func redundantLoadElim(lines []string) []string {
+	blocks := splitBlocks(lines)
+	var result []string
+	for _, block := range blocks {
+		result = append(result, redundantLoadBlock(block)...)
+	}
+	return result
+}
+
+func redundantLoadBlock(lines []string) []string {
+	// lastLoad[operand_string] = dst_register that holds the loaded value
+	lastLoad := map[string]string{}
+	// Track which registers have been modified
+	modified := map[string]bool{}
+
+	result := make([]string, len(lines))
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		code := trimmed
+		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+			code = strings.TrimSpace(code[:idx])
+		}
+		if code == "" {
+			result[i] = line
+			continue
+		}
+		fields := strings.Fields(code)
+		if len(fields) < 2 {
+			result[i] = line
+			continue
+		}
+		op := strings.ToUpper(fields[0])
+		args := fields[1:]
+
+		// Track modified registers
+		dstIdx := -1
+		switch op {
+		case "MOVI", "MOV", "ADD", "SUB", "MUL", "LOAD", "LEA", "POP":
+			if len(args) >= 1 {
+				dstIdx = 0
+			}
+		}
+		if dstIdx >= 0 {
+			modified[args[dstIdx]] = true
+		}
+
+		if op == "LOAD" && len(args) >= 2 {
+			addr := args[1]
+			// If the address is a register, check if it's been modified since last load
+			if prevDst, ok := lastLoad[addr]; ok && !modified[prevDst] {
+				// Same address, no intervening modification — reuse previous value
+				comment := ""
+				if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+					comment = " " + trimmed[idx:]
+				}
+				result[i] = fmt.Sprintf("\tMOV\t%s, %s%s", args[0], prevDst, comment)
+				continue
+			}
+			// Record this load
+			lastLoad[addr] = args[0]
+		}
+
+		// STORE to an address invalidates loads from that address
+		if op == "STORE" && len(args) >= 2 {
+			delete(lastLoad, args[1])
+		}
+
+		result[i] = line
+	}
+	return result
+}
+
+// pushPopElim removes balanced PUSH/POP pairs within a basic block
+// when the pushed register is not modified between them.
+func pushPopElim(lines []string) []string {
+	blocks := splitBlocks(lines)
+	var result []string
+	for _, block := range blocks {
+		result = append(result, pushPopBlock(block)...)
+	}
+	return result
+}
+
+func pushPopBlock(lines []string) []string {
+	// Match PUSH vX followed by POP vX with no modification of vX in between
+	remove := make([]bool, len(lines))
+	for i, line := range lines {
+		if remove[i] {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		code := trimmed
+		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+			code = strings.TrimSpace(code[:idx])
+		}
+		if code == "" {
+			continue
+		}
+		fields := strings.Fields(code)
+		if len(fields) < 2 {
+			continue
+		}
+		op := strings.ToUpper(fields[0])
+		if op != "PUSH" {
+			continue
+		}
+		reg := fields[1]
+
+		// Scan forward for matching POP
+		for j := i + 1; j < len(lines); j++ {
+			if remove[j] {
+				continue
+			}
+			jTrimmed := strings.TrimSpace(lines[j])
+			jCode := jTrimmed
+			if idx := strings.IndexAny(jCode, ";#"); idx >= 0 {
+				jCode = strings.TrimSpace(jCode[:idx])
+			}
+			if jCode == "" {
+				continue
+			}
+			jFields := strings.Fields(jCode)
+			if len(jFields) < 2 {
+				continue
+			}
+			jOp := strings.ToUpper(jFields[0])
+
+			// If reg is modified between PUSH and POP, abort
+			if d := dstReg(jOp, jFields[1:]); d >= 0 && jFields[1] == reg {
+				break
+			}
+
+			if jOp == "POP" && jFields[1] == reg {
+				// Found matching POP — remove both
+				remove[i] = true
+				remove[j] = true
+				break
+			}
+
+			// CALL might modify any register, so abort
+			if jOp == "CALL" || jOp == "SYSCALL" || jOp == "INT" {
+				break
+			}
+		}
+	}
+
+	var result []string
+	for i, line := range lines {
+		if !remove[i] {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+// tailCallOpt replaces "CALL label; RET" with "JMP label" when the
+// caller's return value is passed through directly.
+func tailCallOpt(lines []string) []string {
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		if i+1 < len(lines) {
+			trimmed := strings.TrimSpace(lines[i])
+			code := trimmed
+			if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+				code = strings.TrimSpace(code[:idx])
+			}
+			if code != "" {
+				fields := strings.Fields(code)
+				if len(fields) == 2 && strings.ToUpper(fields[0]) == "CALL" {
+					nextTrimmed := strings.TrimSpace(lines[i+1])
+					nextCode := nextTrimmed
+					if idx := strings.IndexAny(nextCode, ";#"); idx >= 0 {
+						nextCode = strings.TrimSpace(nextCode[:idx])
+					}
+					nextFields := strings.Fields(nextCode)
+					if len(nextFields) == 1 && strings.ToUpper(nextFields[0]) == "RET" {
+						// CALL label + RET → JMP label
+						target := fields[1]
+						comment := ""
+						if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+							comment = " " + trimmed[idx:]
+						}
+						result = append(result, fmt.Sprintf("\tJMP\t%s%s", target, comment))
+						i += 2
+						continue
+					}
+				}
+			}
+		}
+		result = append(result, lines[i])
+		i++
+	}
+	return result
+}
+
+// noopElim removes no-op instructions: mov r1,r1, add r1,0, sub r1,0, imul r1,1
+func noopElim(lines []string) []string {
+	movRe := regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+	addZero := regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*0$`)
+	subZero := regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*0$`)
+	imulOne := regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*1$`)
+
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, " \t\r")
+		// mov r1, r1 → remove (same src and dst)
+		if m := movRe.FindStringSubmatch(trimmed); m != nil && m[1] == m[2] {
+			continue
+		}
+		if addZero.MatchString(trimmed) || subZero.MatchString(trimmed) || imulOne.MatchString(trimmed) {
+			continue
+		}
+		result = append(result, line)
+	}
+	return result
+}
+
+// pushPopMov replaces "push r1; pop r2" with "mov r2, r1".
+func pushPopMov(lines []string) []string {
+	pushRe := regexp.MustCompile(`^\tpush\t([a-z][a-z0-9]+)$`)
+	popRe := regexp.MustCompile(`^\tpop\t([a-z][a-z0-9]+)$`)
+
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		if i+1 < len(lines) {
+			m1 := pushRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			m2 := popRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+			if m1 != nil && m2 != nil {
+				result = append(result, fmt.Sprintf("\tmov\t%s, %s", m2[1], m1[1]))
+				i += 2
+				continue
+			}
+		}
+		result = append(result, lines[i])
+		i++
+	}
+	return result
+}
+
+// xorMovElim replaces "xor r1,r1; mov r1,r2" with "mov r1, r2".
+func xorMovElim(lines []string) []string {
+	xorRe := regexp.MustCompile(`^\txor\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		if i+1 < len(lines) {
+			m1 := xorRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			// Match xor r1, r1 (same register)
+			if m1 != nil && m1[1] == m1[2] {
+				reg := m1[1]
+				// Check if next line is "mov <reg>, something"
+				movAfterXor := regexp.MustCompile(fmt.Sprintf(`^\tmov\t%s,\s*([a-z][a-z0-9]+)$`, regexp.QuoteMeta(reg)))
+				m2 := movAfterXor.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+				if m2 != nil {
+					result = append(result, fmt.Sprintf("\tmov\t%s, %s", reg, m2[1]))
+					i += 2
+					continue
+				}
+			}
+		}
+		result = append(result, lines[i])
+		i++
+	}
+	return result
 }
 
 // regTo32 converts a 64-bit register name to 32-bit (for XOR/TEST).
