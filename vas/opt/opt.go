@@ -1092,6 +1092,8 @@ func peephole(lines []string) []string {
 	lines = pushPopMov(lines)
 	lines = xorMovElim(lines)
 	lines = shlAddFuse(lines)
+	lines = addNegFuse(lines)
+	lines = cancelPairElim(lines)
 	return lines
 }
 
@@ -1840,6 +1842,91 @@ func shlAddFuse(lines []string) []string {
 			result = append(result, fmt.Sprintf("\tlea\t%s, [%s+%s*%d]", movDst, movSrc, movSrc, scale))
 			i += 3
 			continue
+		}
+		result = append(result, lines[i])
+		i++
+	}
+	return result
+}
+
+// addNegFuse replaces "add r1, 1; neg r1" with "not r1".
+// Verified: -(x+1) = ~x for all 64-bit values.
+func addNegFuse(lines []string) []string {
+	add1Re := regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*1$`)
+	negRe := regexp.MustCompile(`^\tneg\t([a-z][a-z0-9]+)$`)
+
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		if i+1 < len(lines) {
+			m1 := add1Re.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			if m1 == nil {
+				result = append(result, lines[i])
+				i++
+				continue
+			}
+			reg := m1[1]
+
+			m2 := negRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+			if m2 != nil && m2[1] == reg {
+				// add r1, 1; neg r1 → not r1
+				result = append(result, fmt.Sprintf("\tnot\t%s", reg))
+				i += 2
+				continue
+			}
+		}
+		result = append(result, lines[i])
+		i++
+	}
+	return result
+}
+
+// cancelPairElim removes instruction pairs that cancel each other out.
+// Patterns:
+//   not r1; not r1  →  <delete>
+//   neg r1; neg r1  →  <delete>
+//   inc r1; dec r1  →  <delete>
+//   dec r1; inc r1  →  <delete>
+func cancelPairElim(lines []string) []string {
+	notRe := regexp.MustCompile(`^\tnot\t([a-z][a-z0-9]+)$`)
+	negRe := regexp.MustCompile(`^\tneg\t([a-z][a-z0-9]+)$`)
+	incRe := regexp.MustCompile(`^\tinc\t([a-z][a-z0-9]+)$`)
+	decRe := regexp.MustCompile(`^\tdec\t([a-z][a-z0-9]+)$`)
+
+	// Helper: check if line matches a pattern and returns the register.
+	matchReg := func(re *regexp.Regexp, line string) string {
+		m := re.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
+		if m != nil { return m[1] }
+		return ""
+	}
+
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		if i+1 < len(lines) {
+			reg := matchReg(notRe, lines[i])
+			if reg != "" && matchReg(notRe, lines[i+1]) == reg {
+				i += 2 // not; not → delete both
+				continue
+			}
+
+			reg = matchReg(negRe, lines[i])
+			if reg != "" && matchReg(negRe, lines[i+1]) == reg {
+				i += 2 // neg; neg → delete both
+				continue
+			}
+
+			reg = matchReg(incRe, lines[i])
+			if reg != "" && matchReg(decRe, lines[i+1]) == reg {
+				i += 2 // inc; dec → delete both
+				continue
+			}
+
+			reg = matchReg(decRe, lines[i])
+			if reg != "" && matchReg(incRe, lines[i+1]) == reg {
+				i += 2 // dec; inc → delete both
+				continue
+			}
 		}
 		result = append(result, lines[i])
 		i++
