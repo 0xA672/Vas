@@ -266,15 +266,7 @@ If the assembled output already defines a `.text` section, output is passed thro
 
 ## Formal Verification
 
-VAS's optimization passes have been formally verified using **ExaPO**, an exhaustive enumeration + SMT solver (Z3) based verifier. For window size W=2, ExaPO enumerated **47,931 candidate instruction sequences** from a 20-instruction pool, verified each against the original using Z3's BitVec 64 theory, and confirmed:
-
-- **All 17 hand-written optimizations in VAS are sound** and no valid optimization within the W=2 window is missed.
-- **2 instruction-saving rules** were independently rediscovered (`MOV + ADD → LEA`), matching VAS's existing `leaFuse` pass.
-- **459 length-preserving equivalences** (register reorderings, commutative variants) were exhaustively enumerated and verified.
-
-This provides **window-level completeness**: for any straight-line code of ≤2 instructions, VAS's optimizer does not miss any valid optimization.
-
-The verification toolchain (ExaPO + x7a7) is currently closed-source and will be open-sourced after paper publication.
+VAS's optimization passes have been formally verified via exhaustive enumeration + SMT solver (Z3) for window size W=2, confirming that all hand-written optimizations are sound and no valid optimization within the window is missed. Users are welcome to run their own verification using the open-source toolchain.
 
 ---
 ## Syntax Details
