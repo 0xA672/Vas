@@ -1091,6 +1091,7 @@ func peephole(lines []string) []string {
 	lines = noopElim(lines)
 	lines = pushPopMov(lines)
 	lines = xorMovElim(lines)
+	lines = shlAddFuse(lines)
 	return lines
 }
 
@@ -1786,6 +1787,59 @@ func xorMovElim(lines []string) []string {
 					continue
 				}
 			}
+		}
+		result = append(result, lines[i])
+		i++
+	}
+	return result
+}
+
+// shlAddFuse replaces "mov r1, r2; shl r1, k; add r1, r2" with
+// "lea r1, [r2+r2*2^k]" for k ∈ {1,2,3} (scale 2,4,8).
+// This computes r1 = r2 * (2^k + 1) in one instruction.
+func shlAddFuse(lines []string) []string {
+	movRe := regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+	shlRe := regexp.MustCompile(`^\tshl\t([a-z][a-z0-9]+),\s*(\d+)$`)
+	addRe := regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		if i+2 < len(lines) {
+			m1 := movRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			if m1 == nil {
+				result = append(result, lines[i])
+				i++
+				continue
+			}
+			movDst, movSrc := m1[1], m1[2]
+
+			m2 := shlRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+			if m2 == nil || m2[1] != movDst {
+				result = append(result, lines[i])
+				i++
+				continue
+			}
+			shiftStr := m2[2]
+
+			m3 := addRe.FindStringSubmatch(strings.TrimRight(lines[i+2], " \t\r"))
+			if m3 == nil || m3[1] != movDst || m3[2] != movSrc {
+				result = append(result, lines[i])
+				i++
+				continue
+			}
+
+			shift, err := strconv.Atoi(shiftStr)
+			if err != nil || shift < 1 || shift > 3 {
+				result = append(result, lines[i])
+				i++
+				continue
+			}
+			scale := 1 << uint(shift) // 2, 4, 8
+
+			result = append(result, fmt.Sprintf("\tlea\t%s, [%s+%s*%d]", movDst, movSrc, movSrc, scale))
+			i += 3
+			continue
 		}
 		result = append(result, lines[i])
 		i++

@@ -1108,3 +1108,56 @@ func TestOptimizeLevel2(t *testing.T) {
 		}
 	}
 }
+
+// --- shlAddFuse ---
+
+func TestShlAddFuseK1(t *testing.T) {
+	// mov rax, rcx; shl rax, 1; add rax, rcx  →  lea rax, [rcx+rcx*2]
+	lines := []string{"\tmov\trax, rcx", "\tshl\trax, 1", "\tadd\trax, rcx"}
+	result := shlAddFuse(lines)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 line, got %d: %v", len(result), result)
+	}
+	expected := "\tlea\trax, [rcx+rcx*2]"
+	if result[0] != expected {
+		t.Errorf("shlAddFuse = %q, want %q", result[0], expected)
+	}
+}
+
+func TestShlAddFuseK2(t *testing.T) {
+	// mov rax, rcx; shl rax, 2; add rax, rcx  →  lea rax, [rcx+rcx*4]
+	lines := []string{"\tmov\trax, rcx", "\tshl\trax, 2", "\tadd\trax, rcx"}
+	result := shlAddFuse(lines)
+	expected := "\tlea\trax, [rcx+rcx*4]"
+	if len(result) != 1 || result[0] != expected {
+		t.Errorf("shlAddFuse = %q, want %q", result[0], expected)
+	}
+}
+
+func TestShlAddFuseK3(t *testing.T) {
+	// mov rax, rcx; shl rax, 3; add rax, rcx  →  lea rax, [rcx+rcx*8]
+	lines := []string{"\tmov\trax, rcx", "\tshl\trax, 3", "\tadd\trax, rcx"}
+	result := shlAddFuse(lines)
+	expected := "\tlea\trax, [rcx+rcx*8]"
+	if len(result) != 1 || result[0] != expected {
+		t.Errorf("shlAddFuse = %q, want %q", result[0], expected)
+	}
+}
+
+func TestShlAddFuseNoMatchDifferentSrc(t *testing.T) {
+	// mov rax, rcx; shl rax, 2; add rax, rdx  →  different add source, no fuse
+	lines := []string{"\tmov\trax, rcx", "\tshl\trax, 2", "\tadd\trax, rdx"}
+	result := shlAddFuse(lines)
+	if len(result) != 3 {
+		t.Errorf("expected 3 lines unchanged (different add src), got %d", len(result))
+	}
+}
+
+func TestShlAddFuseNoMatchDifferentDst(t *testing.T) {
+	// mov rax, rcx; shl rax, 2; add rbx, rcx  →  different add dst, no fuse
+	lines := []string{"\tmov\trax, rcx", "\tshl\trax, 2", "\tadd\trbx, rcx"}
+	result := shlAddFuse(lines)
+	if len(result) != 3 {
+		t.Errorf("expected 3 lines unchanged (different add dst), got %d", len(result))
+	}
+}
