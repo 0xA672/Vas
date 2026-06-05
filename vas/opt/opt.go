@@ -1883,10 +1883,11 @@ func addNegFuse(lines []string) []string {
 
 // cancelPairElim removes instruction pairs that cancel each other out.
 // Patterns:
-//   not r1; not r1  →  <delete>
-//   neg r1; neg r1  →  <delete>
-//   inc r1; dec r1  →  <delete>
-//   dec r1; inc r1  →  <delete>
+//
+//	not r1; not r1  →  <delete>
+//	neg r1; neg r1  →  <delete>
+//	inc r1; dec r1  →  <delete>
+//	dec r1; inc r1  →  <delete>
 func cancelPairElim(lines []string) []string {
 	notRe := regexp.MustCompile(`^\tnot\t([a-z][a-z0-9]+)$`)
 	negRe := regexp.MustCompile(`^\tneg\t([a-z][a-z0-9]+)$`)
@@ -1896,7 +1897,9 @@ func cancelPairElim(lines []string) []string {
 	// Helper: check if line matches a pattern and returns the register.
 	matchReg := func(re *regexp.Regexp, line string) string {
 		m := re.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
-		if m != nil { return m[1] }
+		if m != nil {
+			return m[1]
+		}
 		return ""
 	}
 
