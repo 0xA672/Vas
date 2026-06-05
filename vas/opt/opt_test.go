@@ -819,12 +819,19 @@ func FuzzOptimize(f *testing.F) {
 		"\tADD\tv1, 1, 2\n\tSUB\tv2, v1, 1",
 		"\tMUL\tv1, v0, 8\n\tSTORE\tv1, [x]\n\tLOAD\tv2, [x]",
 		"\tNOP\n\tNOP\n\tNOP",
+		"\tMOVI\tv0, 0\n\tMOVI\tv1, 0\n\tADD\tv2, v0, v1",
+		"\tMOVI\tv1, 3\n\tADD\tv1, 5\n\tSUB\tv1, 1\n\tMUL\tv1, v1, 4\n\tSYSCALL",
+		"\tLEA\tv0, [data]\n\tADD\tv5, v0, v5\n\tLOAD\tv6, [v5]",
+		"\tPUSH\tv0\n\tADD\tv1, v1, v2\n\tPOP\tv0",
+		"\tNOT\tv1\n\tNOT\tv1",
+		"\tADD\tv0, 1\n\tNEG\tv0",
 	}
 	for _, s := range seeds {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, input string) {
 		_ = Optimize(input, 1)
+		_ = Optimize(input, 2)
 	})
 }
 

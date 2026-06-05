@@ -938,6 +938,9 @@ func FuzzAssemble(f *testing.F) {
 		"",
 		"ADD v0, v1, v2",
 		"MOVI v0, 42\nSYSCALL",
+		"MOVI v0, 1\nMOVI v1, 2\nADD v0, v0, v1",
+		"SUB v0, v1, v2\nLOAD v3, [v0]",
+		"STORE v0, [x]\nLOAD v1, [x]",
 		"section .text\nglobal _start\n_start:\nMOVI v0, 60\nSYSCALL",
 		"NOP\nNOP\nNOP",
 		"; comment\n# hash comment",
@@ -947,12 +950,16 @@ func FuzzAssemble(f *testing.F) {
 		"INT 0x80",
 		"\t\n  ",
 		"v13:\nNOP",
+		"LEA v0, [data]\n.data\ndata: dq 0",
+		"MUL v0, v1, 2\nADD v0, v0, v2",
+		"CMP v0, 42\nJGT label\nlabel:\nMOVI v0, 60\nSYSCALL",
+		"MOVI v0, 0xFF\nMOV v5, v0\nMOVI v0, 60\nSYSCALL",
+		".globl main\n.data\nmsg: db \"hello\", 0\n.text\nMOVI v0, 60\nSYSCALL",
 	}
 	for _, s := range seeds {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, input string) {
-		// Assemble should never panic (errors are acceptable)
 		_, _ = vas.Assemble(input)
 	})
 }
@@ -963,12 +970,36 @@ func FuzzAssembleWithOpt(f *testing.F) {
 		"ADD v1, 1, 2\nSUB v2, v1, 1",
 		"MUL v1, v0, 8\nSTORE v1, [x]\nLOAD v2, [x]",
 		"section .data\nx: dq 0\nsection .text\nMOVI v0, 60\nSYSCALL",
+		"MOVI v0, 0\nMOV v1, v0\nADD v2, v1, v0\nMUL v2, v2, 8\nSYSCALL",
+		"MOVI v1, 3\nADD v1, 5\nSUB v1, 1\nMUL v1, v1, 4\nSYSCALL",
+		"loop:\nADD v0, v0, 1\nCMP v0, 10\nJLE loop\nMOVI v0, 60\nSYSCALL",
 	}
 	for _, s := range seeds {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, input string) {
 		_, _ = vas.AssembleWithOpt(input, 1)
+		_, _ = vas.AssembleWithOpt(input, 2)
+	})
+}
+
+func FuzzAssembleStandalone(f *testing.F) {
+	seeds := []string{
+		"MOVI v0, 60\nSYSCALL",
+		"MOVI v0, 42\nMOV v5, v0\nMOVI v0, 60\nSYSCALL",
+		"ADD v0, v1, v2\nMOV v5, v0\nMOVI v0, 60\nSYSCALL",
+		"MUL v0, v1, 8\nMOV v5, v0\nMOVI v0, 60\nSYSCALL",
+		"PUSH v0\nPOP v1\nMOVI v0, 60\nSYSCALL",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		for _, opt := range []int{0, 1, 2} {
+			for _, target := range []string{"elf64", "win64"} {
+				_, _ = vas.AssembleStandaloneTargetOpt(input, target, opt)
+			}
+		}
 	})
 }
 
