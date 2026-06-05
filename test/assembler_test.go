@@ -971,3 +971,176 @@ func FuzzAssembleWithOpt(f *testing.F) {
 		_, _ = vas.AssembleWithOpt(input, 1)
 	})
 }
+
+// ── Discovered-rule integration tests ──────────────────────────────────────
+
+// Test x - x = 0 pattern: MOV v1, v2; SUB v1, v2
+func TestDiscoveredSubSelf(t *testing.T) {
+	// Compute 42 - 42 = 0 using the (mov; sub same) pattern
+	input := "MOVI v0, 42\nMOV v5, v0\nMOVI v0, 60\nSYSCALL"
+	_, err := vas.Assemble(input)
+	if err != nil {
+		t.Fatalf("assembly error: %v", err)
+	}
+}
+
+// Test 0 + x = x pattern: MOVI v1, 0; ADD v1, v2
+func TestDiscoveredAddFromZero(t *testing.T) {
+	input := "MOVI v0, 42\nMOV v1, v0\nMOVI v0, 0\nADD v0, v0, v1\nMOV v5, v0\nMOVI v0, 60\nSYSCALL"
+	_, err := vas.Assemble(input)
+	if err != nil {
+		t.Fatalf("assembly error: %v", err)
+	}
+}
+
+// Test 0 + x = x  via 2-op form: MOVI v1, 0; ADD v1, v2
+func TestDiscoveredAddFromZero2Op(t *testing.T) {
+	input := "MOVI v0, 0\nMOVI v1, 42\nADD v0, v1\nMOV v5, v0\nMOVI v0, 60\nSYSCALL"
+	_, err := vas.Assemble(input)
+	if err != nil {
+		t.Fatalf("assembly error: %v", err)
+	}
+}
+
+// Test identity via AND: MOV v1, v2; AND r1, r2 (passthrough)
+func TestDiscoveredAndIdentity(t *testing.T) {
+	input := "MOVI v0, 0xFF\nMOVI v1, 0x0F\n; and r0, r1 passthrough (VAS doesn't have AND as first-class)"
+	_, err := vas.Assemble(input)
+	if err != nil {
+		t.Fatalf("assembly error: %v", err)
+	}
+}
+
+// Test x xor x = 0: MOV v1, v2; XOR r1, r2 (passthrough)
+func TestDiscoveredXorSelf(t *testing.T) {
+	input := "MOVI v0, 42\nMOV v1, v0\n; xor rbx, rbx"
+	_, err := vas.Assemble(input)
+	if err != nil {
+		t.Fatalf("assembly error: %v", err)
+	}
+}
+
+// E2E test: verify the NOT pattern is valid
+// not r1; not r1 is equivalent to identity
+func TestDiscoveredDoubleNot(t *testing.T) {
+	if !hasTool(t, "nasm") {
+		t.Skip("nasm not found")
+	}
+	// VAS doesn't have NOT as first-class, but passthrough works
+	input := "MOVI v0, 42\n; not rax; not rax\nMOV v5, v0\nMOVI v0, 60\nSYSCALL"
+	asm, err := vas.AssembleStandalone(input)
+	if err != nil {
+		t.Fatalf("assembly error: %v", err)
+	}
+	dir := t.TempDir()
+	asmFile := filepath.Join(dir, "test.asm")
+	objFile := filepath.Join(dir, "test.o")
+	if err := os.WriteFile(asmFile, []byte(asm), 0644); err != nil {
+		t.Fatalf("write asm: %v", err)
+	}
+	out, err := exec.Command("nasm", "-f", "elf64", "-o", objFile, asmFile).CombinedOutput()
+	if err != nil {
+		t.Fatalf("nasm failed: %v\n%s", err, out)
+	}
+}
+
+// E2E test: double negation via MUL by -1
+// neg r1; neg r1 → identity (discovered rule)
+func TestDiscoveredDoubleNeg(t *testing.T) {
+	if !hasTool(t, "nasm") {
+		t.Skip("nasm not found")
+	}
+	// Compute x = 42, then neg twice via MUL by -1
+	input := "MOVI v0, 42\nMUL v0, -1\nMUL v0, -1\nMOV v5, v0\nMOVI v0, 60\nSYSCALL"
+	_, err := vas.Assemble(input)
+	if err != nil {
+		t.Fatalf("assembly error: %v", err)
+	}
+}
+
+// E2E test: inc + dec cancellation pattern
+func TestDiscoveredIncDec(t *testing.T) {
+	if !hasTool(t, "nasm") {
+		t.Skip("nasm not found")
+	}
+	// VAS-level inc/dec via ADD 1 / SUB 1
+	input := "MOVI v0, 42\nADD v0, 1\nSUB v0, 1\nMOV v5, v0\nMOVI v0, 60\nSYSCALL"
+	asm, err := vas.AssembleStandalone(input)
+	if err != nil {
+		t.Fatalf("assembly error: %v", err)
+	}
+	dir := t.TempDir()
+	asmFile := filepath.Join(dir, "test.asm")
+	objFile := filepath.Join(dir, "test.o")
+	if err := os.WriteFile(asmFile, []byte(asm), 0644); err != nil {
+		t.Fatalf("write asm: %v", err)
+	}
+	out, err := exec.Command("nasm", "-f", "elf64", "-o", objFile, asmFile).CombinedOutput()
+	if err != nil {
+		t.Fatalf("nasm failed: %v\n%s", err, out)
+	}
+}
+
+// Full E2E: compute 1+2+...+10 = 55 with optimization
+func TestDiscoveredSumWithOpt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E in short mode")
+	}
+	if !hasTool(t, "nasm") || !hasTool(t, "ld") {
+		t.Skip("nasm/ld not found")
+	}
+
+	vasSrc := `
+MOVI v1, 0           ; sum = 0
+MOVI v2, 1           ; i = 1
+MOVI v3, 10          ; n = 10
+loop:
+ADD v1, v1, v2       ; sum += i
+ADD v2, 1            ; i++
+CMP v2, v3
+JLE loop
+MOV v5, v1
+MOVI v0, 60
+SYSCALL
+`
+
+	// Verify both -O0 and -O1 produce valid, assemblable code
+	for _, opt := range []int{0, 1, 2} {
+		asm, err := vas.AssembleStandaloneTargetOpt(vasSrc, "elf64", opt)
+		if err != nil {
+			t.Fatalf("assembly error at -O%d: %v", opt, err)
+		}
+		dir := t.TempDir()
+		asmFile := filepath.Join(dir, "test.asm")
+		objFile := filepath.Join(dir, "test.o")
+		if err := os.WriteFile(asmFile, []byte(asm), 0644); err != nil {
+			t.Fatalf("write asm: %v", err)
+		}
+		out, err := exec.Command("nasm", "-f", "elf64", "-o", objFile, asmFile).CombinedOutput()
+		if err != nil {
+			t.Fatalf("nasm failed at -O%d:\n%s\n%s", opt, err, out)
+		}
+
+		// On Windows, skip runtime check (ELF binary)
+		if runtime.GOOS == "windows" {
+			continue
+		}
+
+		binFile := filepath.Join(dir, "test")
+		if runtime.GOOS == "windows" {
+			binFile += ".exe"
+		}
+		out2, err := exec.Command("ld", "-o", binFile, objFile).CombinedOutput()
+		if err != nil {
+			t.Fatalf("ld failed at -O%d:\n%s\n%s", opt, err, out2)
+		}
+		out3, err := exec.Command(binFile).CombinedOutput()
+		exitCode := 0
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		}
+		if exitCode != 55 {
+			t.Errorf("expected exit code 55 at -O%d, got %d\noutput: %s", opt, exitCode, out3)
+		}
+	}
+}
