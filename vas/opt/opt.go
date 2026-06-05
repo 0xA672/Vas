@@ -334,7 +334,8 @@ func readRegs(op string, args []string) []int {
 		}
 	case "LOAD", "LEA":
 		if len(args) >= 2 {
-			if r := regIndex(args[1]); r >= 0 {
+			a := trimBrackets(args[1])
+			if r := regIndex(a); r >= 0 {
 				regs = append(regs, r)
 			}
 		}
@@ -343,7 +344,8 @@ func readRegs(op string, args []string) []int {
 			if r := regIndex(args[0]); r >= 0 {
 				regs = append(regs, r)
 			}
-			if r := regIndex(args[1]); r >= 0 {
+			a := trimBrackets(args[1])
+			if r := regIndex(a); r >= 0 {
 				regs = append(regs, r)
 			}
 		}
@@ -1085,6 +1087,13 @@ func regIndex(s string) int {
 		}
 	}
 	return -1
+}
+
+// trimBrackets strips surrounding brackets from a memory operand like "[v5]" -> "v5".
+func trimBrackets(s string) string {
+	s = strings.TrimLeft(s, "[")
+	s = strings.TrimRight(s, "]")
+	return s
 }
 
 // ---------------------------------------------------------------------------

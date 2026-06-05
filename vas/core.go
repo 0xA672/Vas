@@ -82,7 +82,6 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 	if optLevel >= 1 {
 		input = opt.Optimize(input, optLevel)
 	}
-	// -O2: additional passes run inside Optimize when level >= 2
 
 	lines = strings.Split(input, "\n")
 	var outLines []string
