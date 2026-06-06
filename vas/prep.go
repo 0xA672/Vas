@@ -32,7 +32,7 @@ type prepContext struct {
 
 	consts  map[string]string // .const NAME = value
 	macros  map[string]macroDef
-	defines map[string]bool   // defined names (for .ifdef)
+	defines map[string]bool // defined names (for .ifdef)
 
 	ifStack []ifState
 
