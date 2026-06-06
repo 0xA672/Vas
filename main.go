@@ -40,6 +40,8 @@ func main() {
 		cmdCheck(args[1:])
 	case "build":
 		cmdBuild(args[1:])
+	case "prep":
+		cmdPrep(args[1:])
 	case "-v", "--version":
 		fmt.Println("vas " + Version)
 	case "-h", "--help":
@@ -258,8 +260,16 @@ func cmdBuild(args []string) {
 	}
 	input := string(data)
 
+	// Resolve .include directives before assembling
+	baseDir := filepath.Dir(inputFile)
+	prepped, err := vas.Preprocess(input, baseDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "preprocess error: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Assemble
-	asm, err := vas.AssembleStandaloneTargetOpt(input, target, optLevel)
+	asm, err := vas.AssembleStandaloneTargetOpt(prepped, target, optLevel)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
 		os.Exit(1)
@@ -336,6 +346,73 @@ func cmdBuild(args []string) {
 		fmt.Fprintf(os.Stderr, "→ %s\n", binFile)
 	}
 }
+
+// ── prep subcommand ────────────────────────────────────────────────────────
+
+func cmdPrep(args []string) {
+	var inputFile, outFile string
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-o" && i+1 < len(args):
+			outFile = args[i+1]
+			i++
+		case args[i] == "-h" || args[i] == "--help":
+			fmt.Print(prepHelpText)
+			return
+		case !strings.HasPrefix(args[i], "-"):
+			inputFile = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			os.Exit(1)
+		}
+	}
+
+	var input string
+	var baseDir string
+
+	if inputFile != "" {
+		data, err := os.ReadFile(inputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read file: %v\n", err)
+			os.Exit(1)
+		}
+		input = string(data)
+		baseDir = filepath.Dir(inputFile)
+	} else {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
+			os.Exit(1)
+		}
+		input = string(data)
+		baseDir, _ = os.Getwd()
+	}
+
+	output, err := vas.Preprocess(input, baseDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "preprocess error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if outFile != "" {
+		if err := os.WriteFile(outFile, []byte(output), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "write file: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Print(output)
+	}
+}
+
+const prepHelpText = `usage: vas prep [options] <input.vas>
+
+Resolves .include directives and prints the flattened source.
+
+Options:
+  -o <file>   Write output to file instead of stdout
+  -h, --help  Show this help message
+`
 
 const buildHelpText = `usage: vas build <input.vas> [options]
 
@@ -653,6 +730,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: vas [options] <input.asm|.vas>")
 	fmt.Fprintln(os.Stderr, "       cat input.vas | vas [options]")
 	fmt.Fprintln(os.Stderr, "       vas diff <input.vas>")
+	fmt.Fprintln(os.Stderr, "       vas prep <input.vas>")
 	fmt.Fprintln(os.Stderr, "       vas stats <input.vas>")
 	fmt.Fprintln(os.Stderr, "       vas check <input.vas>")
 	fmt.Fprintln(os.Stderr, "       vas build <input.vas> [build-options]")
@@ -667,6 +745,7 @@ Usage:
   vas [options] <input file>
   cat <input> | vas [options]
   vas diff <input.vas>      Show VAS source vs NASM output side-by-side
+  vas prep <input.vas>      Resolve .include directives (print flattened source)
   vas stats <input.vas>     Show instruction and register statistics
   vas check <input.vas>     Validate VAS syntax (exit code: 0=ok, 1=error)
   vas build <input.vas>     Build a .vas file into an executable
