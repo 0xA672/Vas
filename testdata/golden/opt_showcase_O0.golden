@@ -1,6 +1,6 @@
 ; opt_showcase.vas -- demonstrates -O2 optimizations
 ; Compare: vas -O1 examples/opt_showcase.vas vs vas -O2 examples/opt_showcase.vas
-; -O2 should produce shorter output (CSE + LICM)
+; -O2 should produce shorter output (CSE + LICM + PUSH/POP elimination)
 
 	mov	rdx, 10
 	mov	rbx, 0
@@ -24,13 +24,14 @@ loop:
 	mov	[rdi], r8
 
     ; PUSH/POP elimination test
+    ; (PUSH v1 / POP v1 around ADD is a no-op; -O2 removes both)
 	push	rbx
 	add	rbx, r8
 	pop	rbx
 
 	add	rcx, 1
 	cmp	rcx, rdx
-	jle	loop
+	jl	loop
 
 	mov	rdi, rbx
 	mov	rax, 60
