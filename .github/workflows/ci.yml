@@ -26,11 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Strip CRLF (Windows)
+      - name: Normalize line endings (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          sed -i 's/\r$//' main.go test/assembler_test.go vas/arch/arch.go vas/core.go vas/opt/opt.go vas/opt/opt_test.go wasm/wasm.go wasm/wasm_test.go
+          git config core.autocrlf false
+          git rm --cached -r . >/dev/null 2>&1
+          git checkout -- .
           sed -i 's/\r$//' testdata/golden/*.golden
 
       - name: Setup Go
