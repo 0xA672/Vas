@@ -30,10 +30,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          git config core.autocrlf false
-          git rm --cached -r . >/dev/null 2>&1
-          git checkout -- .
-          sed -i 's/\r$//' testdata/golden/*.golden
+          find . -type f \( -name '*.go' -o -name '*.golden' -o -name '*.vas' -o -name '*.yml' -o -name '*.md' \) -exec sed -i 's/\r$//' {} +
 
       - name: Setup Go
         uses: actions/setup-go@v5
