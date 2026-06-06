@@ -57,6 +57,9 @@
       font-weight: 600;
     }
     .controls button.primary:hover { background: #3a7aaa; }
+    .copy-btn { background: none; border: 1px solid #3a3a5a; color: #889; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; transition: all 0.15s; line-height: 1.4; }
+    .copy-btn:hover { background: #2a2a4a; color: #dde; }
+    .copy-btn.copied { background: #2a5a3a; border-color: #4a8a5a; color: #8f8; }
 
     main {
       flex: 1;
@@ -219,6 +222,7 @@
     <div class="panel-header">
 <span>VAS Source</span>
 <span class="badge" id="inputLines">0 lines</span>
+<button class="copy-btn" onclick="copySource()" title="Copy VAS source">📋</button>
     </div>
     <textarea id="input" placeholder="; Enter VAS code here&#10;MOVI v0, 60&#10;SYSCALL">; A simple VAS program
 ; Equivalent to sys_exit(0)
@@ -235,6 +239,7 @@ _start:
     <div class="panel-header">
 <span>Generated x86-64 Assembly</span>
 <span class="badge" id="modeLabel">standalone</span>
+<button class="copy-btn" onclick="copyOutput()" title="Copy assembly output">📋</button>
     </div>
     <div class="output-area" id="output">
 <span class="info">; Click &quot;▶ Assemble&quot; to start</span>
@@ -405,6 +410,36 @@ document.getElementById('input').addEventListener('keydown', function(e) {
     run();
   }
 });
+
+// ── Copy buttons ──
+function copySource() {
+  const text = document.getElementById('input').value;
+  copyToClipboard(text, 'copySource');
+}
+function copyOutput() {
+  const el = document.getElementById('output');
+  const text = el.textContent || el.innerText;
+  copyToClipboard(text, 'copyOutput');
+}
+function copyToClipboard(text, btnId) {
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.querySelector(`[onclick="${btnId}()"]`);
+    btn.textContent = '✓';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = '📋';
+      btn.classList.remove('copied');
+    }, 1500);
+  }).catch(() => {
+    // Fallback for older browsers
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  });
+}
 </script>
 </body>
 </html>
