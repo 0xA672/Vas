@@ -19,3 +19,6 @@ calc
 
 # Personal test files
 test-*.asm
+
+# Internal docs
+HANDBOOK.md

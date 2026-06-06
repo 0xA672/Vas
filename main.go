@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -133,6 +134,65 @@ func cmdAssemble(args []string) {
 	}
 }
 
+// ── MinGW / linker detection ────────────────────────────────────────────────
+
+// findLinker locates a suitable linker for the target platform.
+// For win64 it searches common MinGW-w64 installations; for elf64 it looks for ld.
+// Returns the linker executable path and whether it was found.
+func findLinker(target string) (string, error) {
+	if target == "win64" {
+		// Candidate linker names in order of preference
+		candidates := []string{
+			"x86_64-w64-mingw32-gcc", // MinGW-w64 cross compiler (best)
+			"x86_64-w64-mingw32-ld",  // MinGW-w64 raw linker
+		}
+		// Check PATH first
+		for _, name := range candidates {
+			if p, err := exec.LookPath(name); err == nil {
+				return p, nil
+			}
+		}
+		// Search common MinGW installation paths on Windows
+		// (only searched when running on Windows — on Linux the cross compiler
+		//  must be in PATH or configured by the user)
+		if runtime.GOOS == "windows" {
+			commonRoots := []string{
+				"C:\\msys64\\mingw64\\bin",
+				"C:\\msys64\\ucrt64\\bin",
+				"C:\\msys64\\clang64\\bin",
+				"C:\\MinGW\\bin",
+				"C:\\mingw-w64\\x86_64-8.1.0-posix-seh-rt_v6-rev0\\mingw64\\bin",
+				"D:\\msys64\\mingw64\\bin",
+				"D:\\msys64\\ucrt64\\bin",
+			}
+			for _, root := range commonRoots {
+				for _, name := range candidates {
+					p := filepath.Join(root, name+".exe")
+					if _, err := os.Stat(p); err == nil {
+						return p, nil
+					}
+				}
+			}
+		}
+		return "", fmt.Errorf("MinGW-w64 not found\n" +
+			"  Install it:\n" +
+			"    - Via MSYS2:    pacman -S mingw-w64-ucrt-x86_64-gcc\n" +
+			"    - Via Chocolatey: choco install mingw\n" +
+			"    - Via winget:     winget install MSYS2.MSYS2 (then pacman inside)\n" +
+			"  Or add the MinGW bin/ directory to your PATH")
+	}
+
+	// elf64 (Linux): plain ld or gcc
+	if p, err := exec.LookPath("ld"); err == nil {
+		return p, nil
+	}
+	if p, err := exec.LookPath("gcc"); err == nil {
+		// gcc can serve as linker driver for elf64 via -nostdlib
+		return p, nil
+	}
+	return "", fmt.Errorf("linker not found — install binutils (ld) or gcc")
+}
+
 // ── build subcommand ──────────────────────────────────────────────────────
 
 func cmdBuild(args []string) {
@@ -184,8 +244,9 @@ func cmdBuild(args []string) {
 		fmt.Fprintln(os.Stderr, "error: nasm not found — install it from https://nasm.us")
 		os.Exit(1)
 	}
-	if _, err := exec.LookPath("ld"); err != nil {
-		fmt.Fprintln(os.Stderr, "error: ld not found — install a linker (e.g. MinGW or binutils)")
+	linker, err := findLinker(target)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 
@@ -249,15 +310,19 @@ func cmdBuild(args []string) {
 	// ld
 	var ldArgs []string
 	if target == "win64" {
-		ldArgs = []string{"-e", "main", "-o", binFile, objFile}
+		if strings.Contains(linker, "gcc") {
+			ldArgs = []string{"-o", binFile, objFile, "-nostdlib"}
+		} else {
+			ldArgs = []string{"-e", "main", "-o", binFile, objFile}
+		}
 	} else {
 		ldArgs = []string{"-o", binFile, objFile}
 	}
 	if verbose {
-		fmt.Fprintf(os.Stderr, "+ ld %s\n", strings.Join(ldArgs, " "))
+		fmt.Fprintf(os.Stderr, "+ %s %s\n", filepath.Base(linker), strings.Join(ldArgs, " "))
 	}
-	if out, err := exec.Command("ld", ldArgs...).CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "ld error:\n%s\n", out)
+	if out, err := exec.Command(linker, ldArgs...).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "linker error:\n%s\n", out)
 		os.Exit(1)
 	}
 
