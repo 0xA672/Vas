@@ -117,6 +117,32 @@
     }
     textarea::placeholder { color: #445; }
 
+    /* VAS input with highlight overlay */
+    .input-wrap { position: relative; flex: 1; display: flex; }
+    .input-wrap textarea, .input-wrap .highlight-overlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      padding: 12px; border: none; outline: none;
+      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+      font-size: 13px; line-height: 1.5; tab-size: 4;
+      white-space: pre; overflow-wrap: normal; overflow: auto;
+      resize: none;
+    }
+    .input-wrap textarea {
+      background: transparent; color: transparent; caret-color: #e0e0ee;
+      z-index: 2;
+    }
+    .input-wrap textarea:focus { background: transparent; }
+    .input-wrap .highlight-overlay {
+      background: #0a0a18; color: #e0e0ee; z-index: 1;
+      pointer-events: none;
+    }
+    .vas-cmt { color: #5a7a5a; }
+    .vas-keyword { color: #7ec8e3; font-weight: bold; }
+    .vas-reg { color: #c8a87a; }
+    .vas-number { color: #8ac; }
+    .vas-label { color: #d0d0e0; font-weight: bold; }
+    .vas-directive { color: #b8a0d8; }
+
     .output-area {
       flex: 1;
       background: #0a0a18;
@@ -231,7 +257,9 @@
 <span class="badge" id="inputLines">0 lines</span>
 <button class="copy-btn" onclick="copySource()" title="Copy VAS source">Copy</button>
     </div>
-    <textarea id="input" placeholder="; Enter VAS code here&#10;MOVI v0, 60&#10;SYSCALL">; A simple VAS program
+    <div class="input-wrap">
+      <div class="highlight-overlay" id="vasHighlight"></div>
+      <textarea id="input" placeholder="; Enter VAS code here&#10;MOVI v0, 60&#10;SYSCALL">; A simple VAS program
 ; Equivalent to sys_exit(0)
 
 SECTION .text
@@ -241,6 +269,7 @@ _start:
   MOVI  v0, 60       ; sys_exit number
   MOVI  v1, 0        ; return value 0
   SYSCALL</textarea>
+    </div>
   </div>
   <div class="panel">
     <div class="panel-header">
@@ -392,10 +421,39 @@ function highlightAsm(text) {
   return s;
 }
 
-// ── Line counter ──
+// ── Line counter + VAS highlighting ──
 document.getElementById('input').addEventListener('input', function() {
   const lines = this.value.split('\n').length;
 document.getElementById('inputLines').textContent = lines + ' lines';
+  highlightVAS();
+});
+
+// ── VAS syntax highlighting ──
+function highlightVAS() {
+  const input = document.getElementById('input');
+  const overlay = document.getElementById('vasHighlight');
+  let s = escapeHtml(input.value);
+  // Comments
+  s = s.replace(/([;#].*$)/gm, '<span class="vas-cmt">$1</span>');
+  // Labels (line start, identifier followed by colon)
+  s = s.replace(/^(\s*)([a-z_][a-z0-9_]*):/gim, '$1<span class="vas-label">$2:</span>');
+  // Directives
+  s = s.replace(/\b(section|global|extern|data|text|bss|align|db|dw|dd|dq|dw|resb|resw|resd|resq|equ|times|incbin)\b/gi, '<span class="vas-directive">$1</span>');
+  // VAS instructions
+  s = s.replace(/\b(ADD|SUB|MUL|LOAD|STORE|LEA|MOVI|MOV|CMP|JMP|JE|JNE|JG|JL|JGE|JLE|CALL|RET|NOP|PUSH|POP|SYSCALL|INT|SHL|SHR|AND|OR|XOR|NOT|NEG|INC|DEC)\b/g, '<span class="vas-keyword">$1</span>');
+  // v-registers
+  s = s.replace(/\b(v\d{1,2})\b/g, '<span class="vas-reg">$1</span>');
+  // Numbers
+  s = s.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g, '<span class="vas-number">$1</span>');
+  overlay.innerHTML = s + '\n';
+  // Sync scroll
+  overlay.scrollTop = input.scrollTop;
+  overlay.scrollLeft = input.scrollLeft;
+}
+// Sync scroll on scroll
+document.getElementById('input').addEventListener('scroll', function() {
+  document.getElementById('vasHighlight').scrollTop = this.scrollTop;
+  document.getElementById('vasHighlight').scrollLeft = this.scrollLeft;
 });
 
 // ── Examples ──
@@ -430,6 +488,9 @@ async function loadExamples() {
   }
 }
 loadExamples();
+
+// Initial highlight
+highlightVAS();
 
 // Keyboard shortcut: Ctrl+Enter to assemble
 document.getElementById('input').addEventListener('keydown', function(e) {
