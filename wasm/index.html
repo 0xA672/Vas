@@ -119,8 +119,18 @@
 
     /* VAS input with highlight overlay */
     .input-wrap { position: relative; flex: 1; display: flex; }
+    .input-wrap .gutter {
+      width: 48px; flex-shrink: 0;
+      padding: 12px 0; text-align: right;
+      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+      font-size: 13px; line-height: 1.5;
+      color: #445; user-select: none; overflow: hidden;
+      background: #08081a; z-index: 3; position: relative;
+    }
+    .input-wrap .gutter span { display: block; padding-right: 8px; }
+    .input-wrap .gutter .active { color: #667; }
     .input-wrap textarea, .input-wrap .highlight-overlay {
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      position: absolute; top: 0; left: 48px; right: 0; height: 100%;
       padding: 12px; border: none; outline: none;
       font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
       font-size: 13px; line-height: 1.5; tab-size: 4;
@@ -258,6 +268,7 @@
 <button class="copy-btn" onclick="copySource()" title="Copy VAS source">Copy</button>
     </div>
     <div class="input-wrap">
+      <div class="gutter" id="gutter"></div>
       <div class="highlight-overlay" id="vasHighlight"></div>
       <textarea id="input" placeholder="; Enter VAS code here&#10;MOVI v0, 60&#10;SYSCALL">; A simple VAS program
 ; Equivalent to sys_exit(0)
@@ -421,11 +432,30 @@ function highlightAsm(text) {
   return s;
 }
 
-// ── Line counter + VAS highlighting ──
+// ── Line counter + VAS highlighting + gutter ──
 document.getElementById('input').addEventListener('input', function() {
   const lines = this.value.split('\n').length;
 document.getElementById('inputLines').textContent = lines + ' lines';
+  updateGutter();
   highlightVAS();
+});
+
+// ── Gutter (line numbers) ──
+function updateGutter() {
+  const input = document.getElementById('input');
+  const gutter = document.getElementById('gutter');
+  const lines = input.value.split('\n').length;
+  let html = '';
+  for (let i = 1; i <= lines; i++) {
+    html += '<span>' + i + '</span>';
+  }
+  gutter.innerHTML = html;
+  gutter.scrollTop = input.scrollTop;
+}
+document.getElementById('input').addEventListener('scroll', function() {
+  document.getElementById('gutter').scrollTop = this.scrollTop;
+  document.getElementById('vasHighlight').scrollTop = this.scrollTop;
+  document.getElementById('vasHighlight').scrollLeft = this.scrollLeft;
 });
 
 // ── VAS syntax highlighting ──
@@ -489,8 +519,9 @@ async function loadExamples() {
 }
 loadExamples();
 
-// Initial highlight
+// Initial highlight + gutter
 highlightVAS();
+updateGutter();
 
 // Keyboard shortcut: Ctrl+Enter to assemble
 document.getElementById('input').addEventListener('keydown', function(e) {
