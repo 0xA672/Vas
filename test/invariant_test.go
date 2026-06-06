@@ -139,7 +139,7 @@ func TestGoldenExamples(t *testing.T) {
 	}
 }
 
-func r(i int) string { return string(rune('0'+i)) }
+func r(i int) string { return string(rune('0' + i)) }
 
 // ── Benchmarks ─────────────────────────────────────────────────────────
 
