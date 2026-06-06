@@ -131,6 +131,13 @@
     .output-area .error { color: #f55; }
     .output-area .info { color: #888; }
     .output-area .timestamp { color: #556; font-size: 0.75rem; }
+    .output-area .asm-cmt { color: #5a7a5a; }
+    .output-area .asm-keyword { color: #7ec8e3; font-weight: bold; }
+    .output-area .asm-reg { color: #c8a87a; }
+    .output-area .asm-number { color: #8ac; }
+    .output-area .asm-label { color: #d0d0e0; font-weight: bold; }
+    .output-area .asm-directive { color: #b8a0d8; }
+    .output-area .asm-string { color: #9b9; }
 
     .status-bar {
       background: #12122a;
@@ -348,7 +355,7 @@ result = { error: 'WASM function not ready' };
     }
 
     const outText = result.output || '';
-    output.innerHTML = '<span class="timestamp">; Generated at ' + new Date().toLocaleTimeString() + '</span>\n' + escapeHtml(outText);
+    output.innerHTML = '<span class="timestamp">; Generated at ' + new Date().toLocaleTimeString() + '</span>\n' + highlightAsm(outText);
     statusEl.textContent = 'OK';
     statusEl.className = 'ok';
 modeLabel.textContent = standalone ? 'standalone' : '';
@@ -362,6 +369,27 @@ statsEl.textContent = lines + ' lines / ' + instrs + ' instructions';
     statusEl.textContent = 'Exception';
     statusEl.className = 'err';
   }
+}
+
+// ── Syntax highlighting for NASM output ──
+function highlightAsm(text) {
+  // Escape HTML first, then apply colored spans
+  let s = escapeHtml(text);
+  // Comments (; ...)
+  s = s.replace(/(;.*$)/gm, '<span class="asm-cmt">$1</span>');
+  // Labels (identifier followed by colon)
+  s = s.replace(/^(\s*)([a-z_][a-z0-9_]*):/gim, '$1<span class="asm-label">$2:</span>');
+  // Directives (section, global, extern, default)
+  s = s.replace(/\b(section|global|extern|default|align|bits|org)\b/gi, '<span class="asm-directive">$1</span>');
+  // x86-64 registers (rax, rbx, ..., r15, eax, ebx, ..., xmm0-15)
+  s = s.replace(/\b([re]?[abcd]x|[re]?[sb]p|[re]?[sd]i|[re]?[bcd]?sp|r[89]|r1[0-5]|[abcd]h|[abcd]l|xmm\d{1,2}|ymm\d{1,2}|zmm\d{1,2})\b/gi, '<span class="asm-reg">$1</span>');
+  // v-registers (v0-v12)
+  s = s.replace(/\b(v\d{1,2})\b/g, '<span class="asm-reg">$1</span>');
+  // Numbers (hex and decimal)
+  s = s.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g, '<span class="asm-number">$1</span>');
+  // Instructions (common x86-64 mnemonics)
+  s = s.replace(/\b(mov|add|sub|imul|mul|div|idiv|lea|shl|shr|sar|xor|and|or|not|neg|inc|dec|push|pop|call|ret|jmp|je|jne|jg|jl|jge|jle|ja|jb|jae|jbe|jo|jno|js|jns|cmp|test|syscall|int|nop|rep|repne|lock|xchg|cmov[abgleno]{1,2}|set[abgleno]{1,2}|popcnt|bsf|bsr|tzcnt|lzcnt|bswap)\b/gi, '<span class="asm-keyword">$1</span>');
+  return s;
 }
 
 // ── Line counter ──
