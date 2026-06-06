@@ -3,274 +3,578 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VAS Playground — Virtual Assembler Online</title>
+  <title>VAS Playground - Virtual Assembler</title>
   <style>
+    /* ── Reset ── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      background: #0f0f1a;
-      color: #e0e0ee;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
+
+    /* ── Tokens ── */
+    :root {
+      --bg:         #0d0d0f;
+      --bg-raised:  #111114;
+      --bg-panel:   #0a0a0c;
+      --border:     #1e1e24;
+      --border-mid: #2a2a34;
+      --text:       #c9cdd8;
+      --text-dim:   #555a6e;
+      --text-muted: #3a3d4d;
+      --accent:     #3b82f6;
+      --accent-dim: rgba(59,130,246,0.12);
+      --accent-glow:rgba(59,130,246,0.06);
+      --ok:         #22c55e;
+      --err:        #ef4444;
+      --warn:       #f59e0b;
+      --radius:     6px;
+
+      /* syntax */
+      --syn-cmt:    #4a5568;
+      --syn-kw:     #60a5fa;
+      --syn-reg:    #fb923c;
+      --syn-num:    #34d399;
+      --syn-label:  #e2e8f0;
+      --syn-dir:    #a78bfa;
+      --syn-str:    #86efac;
+
+      --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+      --font-ui:   'Segoe UI', system-ui, -apple-system, sans-serif;
+      --font-size-code: 13px;
+      --font-size-ui:   12px;
     }
 
-    header {
-      background: #1a1a2e;
-      padding: 16px 24px;
-      border-bottom: 1px solid #2a2a4a;
-      display: fleg;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 12px;
+    /* ── Base ── */
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-ui);
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
     }
-    header h1 {
-      font-size: 1.3rem;
-      font-weight: 600;
-      color: #7ec8e3;
-      letter-spacing: 0.5px;
+
+    /* ── App shell ── */
+    #app {
+      display: grid;
+      grid-template-rows: auto 1fr auto auto;
+      height: 100vh;
+      height: 100dvh;
     }
-    header h1 span { color: #8888bb; font-weight: 400; }
-    header .controls {
+
+    /* ── Header ── */
+    #header {
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 12px;
+      padding: 0 20px;
+      height: 52px;
+      background: var(--bg-raised);
+      border-bottom: 1px solid var(--border);
       flex-wrap: wrap;
     }
-    .controls label { font-size: 0.85rem; color: #aab; }
-    .controls select, .controls button {
-      background: #252540;
-      color: #ddd;
-      border: 1px solid #3a3a5a;
-      padding: 6px 14px;
-      border-radius: 6px;
-      font-size: 0.85rem;
-      cursor: pointer;
-      transition: all 0.15s;
+
+    #header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
-    .controls select:hover, .controls button:hover { background: #30305a; border-color: #5a5a8a; }
-    .controls button.primary {
-      background: #2a5a7a;
-      border-color: #3a8aba;
+
+    #logo {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 600;
       color: #fff;
-      font-weight: 600;
-    }
-    .controls button.primary:hover { background: #3a7aaa; }
-    .copy-btn { background: none; border: 1px solid #3a3a5a; color: #889; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; transition: all 0.15s; line-height: 1.4; }
-    .copy-btn:hover { background: #2a2a4a; color: #dde; }
-    .copy-btn.copied { background: #2a5a3a; border-color: #4a8a5a; color: #8f8; }
-
-    main {
-      flex: 1;
-      display: flex;
-      gap: 0;
-      min-height: 0;
-    }
-    @media (max-width: 800px) {
-      main { flex-direction: column; }
+      letter-spacing: -0.3px;
     }
 
-    .panel {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      min-width: 0;
-    }
-    .panel + .panel { border-left: 1px solid #2a2a4a; }
-    @media (max-width: 800px) {
-      .panel + .panel { border-left: none; border-top: 1px solid #2a2a4a; }
+    #logo-tag {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-ui);
+      color: var(--text-dim);
+      background: var(--border);
+      padding: 2px 7px;
+      border-radius: 4px;
+      letter-spacing: 0.4px;
     }
 
-    .panel-header {
-      padding: 8px 16px;
-      background: #16162a;
-      border-bottom: 1px solid #2a2a4a;
-      font-size: 0.8rem;
-      color: #8899bb;
-      text-transform: uppercase;
-      letter-spacing: 1px;
+    #header-controls {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-    }
-    .panel-header .badge {
-      font-size: 0.7rem;
-      background: #2a2a4a;
-      padding: 2px 8px;
-      border-radius: 10px;
-      color: #99b;
-    }
-
-    textarea {
-      flex: 1;
-      background: #0a0a18;
-      color: #c9d1d9;
-      border: none;
-      outline: none;
-      padding: 16px;
-      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
-      font-size: 0.9rem;
-      line-height: 1.5;
-      resize: none;
-      tab-size: 2;
-    }
-    textarea::placeholder { color: #445; }
-
-    /* VAS input with highlight overlay */
-    .input-wrap { position: relative; flex: 1; display: flex; }
-    .input-wrap .gutter {
-      width: 48px; flex-shrink: 0;
-      padding: 12px 0; text-align: right;
-      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
-      font-size: 13px; line-height: 1.5;
-      color: #445; user-select: none; overflow: hidden;
-      background: #08081a; z-index: 3; position: relative;
-    }
-    .input-wrap .gutter span { display: block; padding-right: 8px; }
-    .input-wrap .gutter .active { color: #667; }
-    .input-wrap textarea, .input-wrap .highlight-overlay {
-      position: absolute; top: 0; left: 48px; right: 0; height: 100%;
-      padding: 12px; border: none; outline: none;
-      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
-      font-size: 13px; line-height: 1.5; tab-size: 4;
-      white-space: pre; overflow-wrap: normal; overflow: auto;
-      resize: none;
-    }
-    .input-wrap textarea {
-      background: transparent; color: transparent; caret-color: #e0e0ee;
-      z-index: 2;
-    }
-    .input-wrap textarea:focus { background: transparent; }
-    .input-wrap .highlight-overlay {
-      background: #0a0a18; color: #e0e0ee; z-index: 1;
-      pointer-events: none;
-    }
-    .vas-cmt { color: #5a7a5a; }
-    .vas-keyword { color: #7ec8e3; font-weight: bold; }
-    .vas-reg { color: #c8a87a; }
-    .vas-number { color: #8ac; }
-    .vas-label { color: #d0d0e0; font-weight: bold; }
-    .vas-directive { color: #b8a0d8; }
-
-    .output-area {
-      flex: 1;
-      background: #0a0a18;
-      padding: 16px;
-      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
-      font-size: 0.9rem;
-      line-height: 1.5;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-    .output-area .error { color: #f55; }
-    .output-area .info { color: #888; }
-    .output-area .timestamp { color: #556; font-size: 0.75rem; }
-    .output-area .asm-cmt { color: #5a7a5a; }
-    .output-area .asm-keyword { color: #7ec8e3; font-weight: bold; }
-    .output-area .asm-reg { color: #c8a87a; }
-    .output-area .asm-number { color: #8ac; }
-    .output-area .asm-label { color: #d0d0e0; font-weight: bold; }
-    .output-area .asm-directive { color: #b8a0d8; }
-    .output-area .asm-string { color: #9b9; }
-
-    .status-bar {
-      background: #12122a;
-      border-top: 1px solid #2a2a4a;
-      padding: 6px 16px;
-      font-size: 0.8rem;
-      color: #667;
-      display: flex;
-      gap: 20px;
-    }
-    .status-bar .ok { color: #5b5; }
-    .status-bar .err { color: #f55; }
-
-    .examples-bar {
-      background: #14142a;
-      border-top: 1px solid #2a2a4a;
-      padding: 8px 16px;
-      display: flex;
       gap: 8px;
       flex-wrap: wrap;
-      align-items: center;
     }
-    .examples-bar span { font-size: 0.8rem; color: #667; }
-    .examples-bar button {
-      background: #1e1e3a;
-      color: #aab;
-      border: 1px solid #2a2a4a;
-      padding: 4px 12px;
-      border-radius: 4px;
-      font-size: 0.8rem;
-      cursor: pointer;
-      transition: 0.1s;
-    }
-    .examples-bar button:hover { background: #2e2e5a; color: #dde; }
 
-    /* spinner */
-    .loading-overlay {
+    /* ── Form controls ── */
+    .ctrl-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .ctrl-label {
+      font-size: var(--font-size-ui);
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+
+    select {
+      appearance: none;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border-mid);
+      border-radius: var(--radius);
+      padding: 5px 28px 5px 10px;
+      font-family: var(--font-mono);
+      font-size: var(--font-size-ui);
+      cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23555a6e' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      transition: border-color 0.15s;
+    }
+    select:hover  { border-color: #3a3d4d; }
+    select:focus  { outline: none; border-color: var(--accent); }
+    select option { background: #1a1a20; }
+
+    /* ── Buttons ── */
+    button {
+      font-family: var(--font-ui);
+      cursor: pointer;
+      border: none;
+      border-radius: var(--radius);
+      transition: background 0.12s, transform 0.08s, opacity 0.12s;
+    }
+    button:active { transform: scale(0.97); }
+
+    #run-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--accent);
+      color: #fff;
+      font-size: var(--font-size-ui);
+      font-weight: 600;
+      padding: 6px 14px;
+      letter-spacing: 0.2px;
+    }
+    #run-btn:hover   { background: #2563eb; }
+    #run-btn:disabled {
+      background: var(--border-mid);
+      color: var(--text-dim);
+      cursor: not-allowed;
+      transform: none;
+      opacity: 0.7;
+    }
+
+    #run-btn svg {
+      width: 11px;
+      height: 11px;
+      flex-shrink: 0;
+    }
+
+    .kbd {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: rgba(255,255,255,0.5);
+      background: rgba(255,255,255,0.1);
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+
+    /* ── Divider ── */
+    .ctrl-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--border-mid);
+    }
+
+    /* ── Main split ── */
+    #main {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      min-height: 0;
+    }
+
+    @media (max-width: 768px) {
+      #main { grid-template-columns: 1fr; }
+    }
+
+    /* ── Panel ── */
+    .panel {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .panel + .panel { border-left: 1px solid var(--border); }
+
+    @media (max-width: 768px) {
+      .panel + .panel { border-left: none; border-top: 1px solid var(--border); }
+    }
+
+    /* ── Panel header ── */
+    .panel-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      height: 36px;
+      background: var(--bg-raised);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .panel-title {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel-title-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .panel-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel-badge {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 2px 7px;
+      border-radius: 3px;
+    }
+
+    .copy-btn {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      background: transparent;
+      border: 1px solid var(--border-mid) !important;
+      padding: 3px 9px;
+      border-radius: 3px;
+      transition: color 0.1s, border-color 0.1s, background 0.1s !important;
+    }
+    .copy-btn:hover  { color: var(--text); border-color: #3a3d4d !important; background: var(--bg) !important; }
+    .copy-btn.copied { color: var(--ok); border-color: rgba(34,197,94,0.4) !important; background: rgba(34,197,94,0.06) !important; }
+
+    /* ── Editor area ── */
+    .editor-wrap {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      position: relative;
+      background: var(--bg-panel);
+    }
+
+    .gutter {
+      width: 44px;
+      flex-shrink: 0;
+      padding: 14px 0;
+      font-family: var(--font-mono);
+      font-size: var(--font-size-code);
+      line-height: 1.6;
+      color: var(--text-muted);
+      user-select: none;
+      text-align: right;
+      overflow: hidden;
+      background: var(--bg-raised);
+      border-right: 1px solid var(--border);
+      position: relative;
+      z-index: 3;
+    }
+
+    .gutter span {
+      display: block;
+      padding-right: 10px;
+      height: calc(var(--font-size-code) * 1.6);
+    }
+
+    .gutter .active-line { color: var(--text-dim); }
+
+    .editor-inner {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .highlight-layer,
+    #editor-input {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      padding: 14px 16px;
+      font-family: var(--font-mono);
+      font-size: var(--font-size-code);
+      line-height: 1.6;
+      tab-size: 4;
+      white-space: pre;
+      overflow: auto;
+      border: none;
+      outline: none;
+      resize: none;
+      word-break: normal;
+      overflow-wrap: normal;
+    }
+
+    .highlight-layer {
+      background: var(--bg-panel);
+      color: var(--text);
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    #editor-input {
+      background: transparent;
+      color: transparent;
+      caret-color: var(--text);
+      z-index: 2;
+      -webkit-text-fill-color: transparent;
+    }
+
+    /* ── Output area ── */
+    #output {
+      flex: 1;
+      background: var(--bg-panel);
+      padding: 14px 16px;
+      font-family: var(--font-mono);
+      font-size: var(--font-size-code);
+      line-height: 1.6;
+      overflow: auto;
+      white-space: pre;
+      word-break: normal;
+      overflow-wrap: normal;
+    }
+
+    /* ── Syntax colors ── */
+    .c  { color: var(--syn-cmt); }
+    .k  { color: var(--syn-kw); font-weight: 600; }
+    .r  { color: var(--syn-reg); }
+    .n  { color: var(--syn-num); }
+    .lb { color: var(--syn-label); font-weight: 600; }
+    .d  { color: var(--syn-dir); }
+    .s  { color: var(--syn-str); }
+    .ts { color: var(--text-muted); font-size: 11px; }
+    .er { color: var(--err); }
+    .info { color: var(--text-dim); }
+
+    /* ── Examples bar ── */
+    #examples-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 16px;
+      height: 40px;
+      background: var(--bg-raised);
+      border-top: 1px solid var(--border);
+      overflow-x: auto;
+      scrollbar-width: none;
+      flex-shrink: 0;
+    }
+    #examples-bar::-webkit-scrollbar { display: none; }
+
+    .examples-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      flex-shrink: 0;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+
+    .example-btn {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      background: var(--bg);
+      border: 1px solid var(--border-mid);
+      padding: 4px 10px;
+      border-radius: 4px;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: color 0.1s, border-color 0.1s, background 0.1s;
+    }
+    .example-btn:hover {
+      color: var(--text);
+      border-color: #3a3d4d;
+      background: var(--bg-raised);
+    }
+    .example-btn.active {
+      color: var(--accent);
+      border-color: rgba(59,130,246,0.4);
+      background: var(--accent-dim);
+    }
+
+    /* ── Status bar ── */
+    #status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 16px;
+      height: 28px;
+      background: var(--bg-raised);
+      border-top: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+
+    #status-bar-left, #status-bar-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    #status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    #status-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      transition: background 0.2s;
+    }
+    #status-dot.ok  { background: var(--ok); }
+    #status-dot.err { background: var(--err); }
+
+    #status-text { color: var(--text-dim); }
+    #status-text.ok  { color: var(--ok); }
+    #status-text.err { color: var(--err); }
+
+    /* ── Loading overlay ── */
+    #loading {
       display: none;
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.7);
+      background: rgba(13,13,15,0.9);
       z-index: 999;
       justify-content: center;
       align-items: center;
       flex-direction: column;
       gap: 16px;
+      backdrop-filter: blur(4px);
     }
-    .loading-overlay.active { display: flex; }
+    #loading.active { display: flex; }
+
     .spinner {
-      width: 40px; height: 40px;
-      border: 3px solid #334;
-      border-top-color: #7ec8e3;
+      width: 32px;
+      height: 32px;
+      border: 2px solid var(--border-mid);
+      border-top-color: var(--accent);
       border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+      animation: spin 0.7s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .loading-overlay p { color: #aac; font-size: 1rem; }
+
+    #loading p {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-dim);
+      letter-spacing: 0.3px;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-mid);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover { background: #3a3d4d; }
+
+    /* ── Selection ── */
+    ::selection { background: rgba(59,130,246,0.25); }
+
+    @media (max-width: 768px) {
+      #header { height: auto; padding: 10px 16px; }
+      #main { grid-template-rows: 1fr 1fr; }
+      .ctrl-divider { display: none; }
+    }
   </style>
 </head>
 <body>
 
-<div class="loading-overlay" id="loading">
+<div id="loading">
   <div class="spinner"></div>
-<p>Loading VAS WebAssembly engine...</p>
+  <p>Loading VAS engine...</p>
 </div>
 
-<header>
-  <h1>VAS <span>Playground</span></h1>
-  <div class="controls">
-<label>Target
-      <select id="target">
-        <option value="elf64">Linux (elf64)</option>
-        <option value="win64">Windows (win64)</option>
-      </select>
-    </label>
-<label>Optimization
-      <select id="opt">
-        <option value="0">O0 (none)</option>
-        <option value="1">O1 (const fold, DCE, peephole)</option>
-        <option value="2">O2 (+ CSE, LICM, tail call, …)</option>
-      </select>
-    </label>
-<button class="primary" id="runBtn" disabled onclick="run()">▶ Assemble</button>
-  </div>
-</header>
+<div id="app">
 
-<main>
-  <div class="panel">
-    <div class="panel-header">
-<span>VAS Source</span>
-<span class="badge" id="inputLines">0 lines</span>
-<button class="copy-btn" onclick="copySource()" title="Copy VAS source">Copy</button>
+  <!-- Header -->
+  <header id="header">
+    <div id="header-left">
+      <span id="logo">VAS</span>
+      <span id="logo-tag">v0.1 playground</span>
     </div>
-    <div class="input-wrap">
-      <div class="gutter" id="gutter"></div>
-      <div class="highlight-overlay" id="vasHighlight"></div>
-      <textarea id="input" placeholder="; Enter VAS code here&#10;MOVI v0, 60&#10;SYSCALL">; A simple VAS program
+    <div id="header-controls">
+      <div class="ctrl-group">
+        <span class="ctrl-label">Target</span>
+        <select id="target">
+          <option value="elf64">Linux elf64</option>
+          <option value="win64">Windows win64</option>
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <span class="ctrl-label">Opt</span>
+        <select id="opt">
+          <option value="0">O0</option>
+          <option value="1">O1 - const fold, DCE, peephole</option>
+          <option value="2">O2 - + CSE, LICM, tail call</option>
+        </select>
+      </div>
+      <div class="ctrl-divider"></div>
+      <button id="run-btn" disabled onclick="run()">
+        <svg viewBox="0 0 10 12" fill="currentColor"><polygon points="0,0 10,6 0,12"/></svg>
+        Assemble
+        <span class="kbd">^↵</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main editors -->
+  <main id="main">
+
+    <!-- Input panel -->
+    <div class="panel">
+      <div class="panel-bar">
+        <span class="panel-title">
+          <span class="panel-title-dot"></span>
+          VAS source
+        </span>
+        <div class="panel-meta">
+          <span class="panel-badge" id="input-lines">0 lines</span>
+          <button class="copy-btn" onclick="copySource()">Copy</button>
+        </div>
+      </div>
+      <div class="editor-wrap">
+        <div class="gutter" id="gutter"></div>
+        <div class="editor-inner">
+          <div class="highlight-layer" id="vas-highlight"></div>
+          <textarea id="editor-input" spellcheck="false" autocorrect="off" autocapitalize="off"
+            placeholder="; Enter VAS code here">; A simple VAS program
 ; Equivalent to sys_exit(0)
 
 SECTION .text
@@ -280,285 +584,291 @@ _start:
   MOVI  v0, 60       ; sys_exit number
   MOVI  v1, 0        ; return value 0
   SYSCALL</textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- Output panel -->
+    <div class="panel">
+      <div class="panel-bar">
+        <span class="panel-title">
+          <span class="panel-title-dot"></span>
+          x86-64 NASM output
+        </span>
+        <div class="panel-meta">
+          <span class="panel-badge" id="mode-label">standalone</span>
+          <button class="copy-btn" onclick="copyOutput()">Copy</button>
+        </div>
+      </div>
+      <div id="output"><span class="info">; Press Assemble or Ctrl+Enter to generate output</span></div>
+    </div>
+
+  </main>
+
+  <!-- Examples bar -->
+  <div id="examples-bar">
+    <span class="examples-label">examples</span>
+    <button class="example-btn" onclick="loadExample('hello')">hello world</button>
+    <button class="example-btn" onclick="loadExample('fib')">fibonacci</button>
+    <button class="example-btn" onclick="loadExample('fact')">factorial</button>
+    <button class="example-btn" onclick="loadExample('calc')">calculator</button>
+    <button class="example-btn" onclick="loadExample('sort')">bubble sort</button>
+    <button class="example-btn" onclick="loadExample('win-edge')">win64 edge</button>
+    <button class="example-btn" onclick="loadExample('opt_showcase')">O2 showcase</button>
+  </div>
+
+  <!-- Status bar -->
+  <div id="status-bar">
+    <div id="status-bar-left">
+      <span id="status-indicator">
+        <span id="status-dot"></span>
+        <span id="status-text">Ready</span>
+      </span>
+      <span id="stats"></span>
+    </div>
+    <div id="status-bar-right">
+      <span>VAS Playground</span>
     </div>
   </div>
-  <div class="panel">
-    <div class="panel-header">
-<span>Generated x86-64 Assembly</span>
-<span class="badge" id="modeLabel">standalone</span>
-<button class="copy-btn" onclick="copyOutput()" title="Copy assembly output">Copy</button>
-    </div>
-    <div class="output-area" id="output">
-<span class="info">; Click &quot;▶ Assemble&quot; to start</span>
-    </div>
-  </div>
-</main>
 
-<div class="examples-bar">
-<span>Examples:</span>
-  <button onclick="loadExample('hello')">Hello World</button>
-<button onclick="loadExample('fib')">Fibonacci</button>
-<button onclick="loadExample('fact')">Factorial</button>
-<button onclick="loadExample('calc')">Calculator</button>
-<button onclick="loadExample('sort')">Sort</button>
-<button onclick="loadExample('win-edge')">Windows GUI</button>
-<button onclick="loadExample('opt_showcase')">-O2 Showcase</button>
-</div>
-
-<div class="status-bar">
-<span>Status: <span id="status" class="ok">Ready</span></span>
-  <span id="stats"></span>
 </div>
 
 <script src="wasm_exec.js"></script>
 <script>
+'use strict';
+
+// ── State ──
+const $ = id => document.getElementById(id);
+const loading   = $('loading');
+const runBtn    = $('run-btn');
+const statusDot = $('status-dot');
+const statusTxt = $('status-text');
+
 // ── WASM Bootstrap ──
-const loading = document.getElementById('loading');
-const runBtn = document.getElementById('runBtn');
-const statusEl = document.getElementById('status');
-
-let go;
-let inst;
-
 async function bootstrap() {
   loading.classList.add('active');
-  console.log('[VAS] bootstrap start');
   try {
-    console.log('[VAS] creating Go()');
-    go = new Go();
-    console.log('[VAS] fetching vas.wasm ...');
+    const go   = new Go();
     const resp = await fetch('vas.wasm');
-    console.log('[VAS] fetch OK, status:', resp.status, 'size:', resp.headers.get('Content-Length'), 'type:', resp.headers.get('Content-Type'));
-
-    // Use arrayBuffer + instantiate instead of instantiateStreaming (more reliable MIME handling)
-    console.log('[VAS] reading arrayBuffer ...');
-    const bytes = await resp.arrayBuffer();
-    console.log('[VAS] arrayBuffer OK, bytes:', bytes.byteLength);
-
-    console.log('[VAS] WebAssembly.instantiate ...');
-    const result = await WebAssembly.instantiate(bytes, go.importObject);
-    console.log('[VAS] instantiate OK');
-
-    inst = result.instance;
-    console.log('[VAS] calling go.run(inst) (non-blocking) ...');
-    go.run(inst).then(() => {
-      console.log('[VAS] go.run resolved (engine exited)');
-    }).catch(e => {
-      console.error('[VAS] go.run error:', e);
-      statusEl.textContent = 'Engine error: ' + e.message;
-    });
-
-    // These run immediately — WASM is ready for JS calls
+    const buf  = await resp.arrayBuffer();
+    const res  = await WebAssembly.instantiate(buf, go.importObject);
+    go.run(res.instance).catch(e => setStatus('err', 'Engine: ' + e.message));
     runBtn.disabled = false;
-    statusEl.textContent = 'VAS engine loaded';
+    setStatus('ok', 'Ready');
     loading.classList.remove('active');
-    console.log('[VAS] bootstrap complete, UI unlocked');
   } catch (e) {
-    console.error('[VAS] bootstrap failed:', e.message, e.stack);
-    statusEl.textContent = 'Load failed: ' + e.message;
-    statusEl.className = 'err';
-loading.querySelector('p').textContent = 'Load failed: ' + e.message;
+    loading.querySelector('p').textContent = 'Load failed: ' + e.message;
+    setStatus('err', 'Load failed');
   }
 }
 bootstrap();
 
-// ── Core assemble function ──
+// ── Status helpers ──
+function setStatus(kind, msg) {
+  statusDot.className = kind;
+  statusTxt.className = kind;
+  statusTxt.textContent = msg;
+}
+
+// ── Assemble ──
 function run() {
-  const input = document.getElementById('input').value;
-  const target = document.getElementById('target').value;
-  const opt = parseInt(document.getElementById('opt').value);
-  const output = document.getElementById('output');
-  const statsEl = document.getElementById('stats');
-  const modeLabel = document.getElementById('modeLabel');
+  const input  = $('editor-input').value;
+  const target = $('target').value;
+  const opt    = parseInt($('opt').value);
+  const output = $('output');
 
   if (!input.trim()) {
-output.innerHTML = '<span class="error">Error: enter VAS code</span>';
+    output.innerHTML = '<span class="er">; Error: no input</span>';
+    setStatus('err', 'Empty input');
     return;
   }
 
   try {
-    let result;
-    const standalone = typeof vasAssembleStandalone === 'function';
-    if (standalone) {
-      result = vasAssembleStandalone(input, target, opt);
-    } else {
-      // fallback
-result = { error: 'WASM function not ready' };
-    }
+    const result = typeof vasAssembleStandalone === 'function'
+      ? vasAssembleStandalone(input, target, opt)
+      : { error: 'WASM function not available' };
 
     if (result.error) {
-      output.innerHTML = '<span class="error">' + escapeHtml(result.error) + '</span>';
-      statusEl.textContent = 'Error';
-      statusEl.className = 'err';
-      statsEl.textContent = '';
+      output.innerHTML = '<span class="er">' + esc(result.error) + '</span>';
+      setStatus('err', result.error.split('\n')[0].slice(0, 60));
+      $('stats').textContent = '';
       return;
     }
 
-    const outText = result.output || '';
-    output.innerHTML = '<span class="timestamp">; Generated at ' + new Date().toLocaleTimeString() + '</span>\n' + highlightAsm(outText);
-    statusEl.textContent = 'OK';
-    statusEl.className = 'ok';
-modeLabel.textContent = standalone ? 'standalone' : '';
+    const text = result.output || '';
+    output.innerHTML =
+      '<span class="ts">; Generated ' + new Date().toLocaleTimeString() + ' - target=' + target + ' opt=O' + opt + '</span>\n'
+      + highlightAsm(text);
 
-    // stats
-    const lines = outText.split('\n').length;
-    const instrs = outText.split('\n').filter(l => l.trim() && !l.trim().startsWith(';') && !l.trim().startsWith('.')).length;
-statsEl.textContent = lines + ' lines / ' + instrs + ' instructions';
+    const lines = text.split('\n').length;
+    const instrs = text.split('\n').filter(l => {
+      const t = l.trim();
+      return t && !t.startsWith(';') && !t.startsWith('.') && !t.startsWith('section') && !t.includes(':');
+    }).length;
+
+    setStatus('ok', 'OK');
+    $('stats').textContent = lines + ' lines  ' + instrs + ' instructions';
+    $('mode-label').textContent = 'standalone';
+
   } catch (e) {
-    output.innerHTML = '<span class="error">' + escapeHtml(String(e)) + '</span>';
-    statusEl.textContent = 'Exception';
-    statusEl.className = 'err';
+    output.innerHTML = '<span class="er">' + esc(String(e)) + '</span>';
+    setStatus('err', 'Exception');
   }
 }
 
-// ── Syntax highlighting for NASM output ──
-function highlightAsm(text) {
-  // Escape HTML first, then apply colored spans
-  let s = escapeHtml(text);
-  // Comments (; ...)
-  s = s.replace(/(;.*$)/gm, '<span class="asm-cmt">$1</span>');
-  // Labels (identifier followed by colon)
-  s = s.replace(/^(\s*)([a-z_][a-z0-9_]*):/gim, '$1<span class="asm-label">$2:</span>');
-  // Directives (section, global, extern, default)
-  s = s.replace(/\b(section|global|extern|default|align|bits|org)\b/gi, '<span class="asm-directive">$1</span>');
-  // x86-64 registers (rax, rbx, ..., r15, eax, ebx, ..., xmm0-15)
-  s = s.replace(/\b([re]?[abcd]x|[re]?[sb]p|[re]?[sd]i|[re]?[bcd]?sp|r[89]|r1[0-5]|[abcd]h|[abcd]l|xmm\d{1,2}|ymm\d{1,2}|zmm\d{1,2})\b/gi, '<span class="asm-reg">$1</span>');
-  // v-registers (v0-v12)
-  s = s.replace(/\b(v\d{1,2})\b/g, '<span class="asm-reg">$1</span>');
-  // Numbers (hex and decimal)
-  s = s.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g, '<span class="asm-number">$1</span>');
-  // Instructions (common x86-64 mnemonics)
-  s = s.replace(/\b(mov|add|sub|imul|mul|div|idiv|lea|shl|shr|sar|xor|and|or|not|neg|inc|dec|push|pop|call|ret|jmp|je|jne|jg|jl|jge|jle|ja|jb|jae|jbe|jo|jno|js|jns|cmp|test|syscall|int|nop|rep|repne|lock|xchg|cmov[abgleno]{1,2}|set[abgleno]{1,2}|popcnt|bsf|bsr|tzcnt|lzcnt|bswap)\b/gi, '<span class="asm-keyword">$1</span>');
-  return s;
-}
-
-// ── Line counter + VAS highlighting + gutter ──
-document.getElementById('input').addEventListener('input', function() {
-  const lines = this.value.split('\n').length;
-document.getElementById('inputLines').textContent = lines + ' lines';
-  updateGutter();
-  highlightVAS();
-});
-
-// ── Gutter (line numbers) ──
-function updateGutter() {
-  const input = document.getElementById('input');
-  const gutter = document.getElementById('gutter');
-  const lines = input.value.split('\n').length;
-  let html = '';
-  for (let i = 1; i <= lines; i++) {
-    html += '<span>' + i + '</span>';
-  }
-  gutter.innerHTML = html;
-  gutter.scrollTop = input.scrollTop;
-}
-document.getElementById('input').addEventListener('scroll', function() {
-  document.getElementById('gutter').scrollTop = this.scrollTop;
-  document.getElementById('vasHighlight').scrollTop = this.scrollTop;
-  document.getElementById('vasHighlight').scrollLeft = this.scrollLeft;
-});
-
-// ── VAS syntax highlighting ──
-function highlightVAS() {
-  const input = document.getElementById('input');
-  const overlay = document.getElementById('vasHighlight');
-  let s = escapeHtml(input.value);
-  // Comments
-  s = s.replace(/([;#].*$)/gm, '<span class="vas-cmt">$1</span>');
-  // Labels (line start, identifier followed by colon)
-  s = s.replace(/^(\s*)([a-z_][a-z0-9_]*):/gim, '$1<span class="vas-label">$2:</span>');
-  // Directives
-  s = s.replace(/\b(section|global|extern|data|text|bss|align|db|dw|dd|dq|dw|resb|resw|resd|resq|equ|times|incbin)\b/gi, '<span class="vas-directive">$1</span>');
-  // VAS instructions
-  s = s.replace(/\b(ADD|SUB|MUL|LOAD|STORE|LEA|MOVI|MOV|CMP|JMP|JE|JNE|JG|JL|JGE|JLE|CALL|RET|NOP|PUSH|POP|SYSCALL|INT|SHL|SHR|AND|OR|XOR|NOT|NEG|INC|DEC)\b/g, '<span class="vas-keyword">$1</span>');
-  // v-registers
-  s = s.replace(/\b(v\d{1,2})\b/g, '<span class="vas-reg">$1</span>');
-  // Numbers
-  s = s.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g, '<span class="vas-number">$1</span>');
-  overlay.innerHTML = s + '\n';
-  // Sync scroll
-  overlay.scrollTop = input.scrollTop;
-  overlay.scrollLeft = input.scrollLeft;
-}
-// Sync scroll on scroll
-document.getElementById('input').addEventListener('scroll', function() {
-  document.getElementById('vasHighlight').scrollTop = this.scrollTop;
-  document.getElementById('vasHighlight').scrollLeft = this.scrollLeft;
-});
-
-// ── Examples ──
-const EXAMPLES = {};
-
-function loadExample(name) {
-  const area = document.getElementById('input');
-  if (EXAMPLES[name]) {
-    area.value = EXAMPLES[name];
-    area.dispatchEvent(new Event('input'));
-    // auto-run
-    run();
-  }
-}
-
-function escapeHtml(s) {
+// ── HTML escape ──
+function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
 }
 
-// ── Fetch examples from server ──
-async function loadExamples() {
-  const names = ['hello', 'fib', 'fact', 'calc', 'sort', 'win-edge', 'opt_showcase'];
-  for (const name of names) {
-    try {
-      const resp = await fetch('examples/' + name + '.vas');
-      if (resp.ok) {
-        EXAMPLES[name] = await resp.text();
-      }
-    } catch(_) {}
-  }
+// ── NASM syntax highlight ──
+function highlightAsm(text) {
+  let s = esc(text);
+  s = s.replace(/(;.*$)/gm,                                                          '<span class="c">$1</span>');
+  s = s.replace(/^(\s*)([a-z_][a-z0-9_]*):/gim,                                     '$1<span class="lb">$2:</span>');
+  s = s.replace(/\b(section|global|extern|default|align|bits|org|db|dw|dd|dq)\b/gi, '<span class="d">$1</span>');
+  s = s.replace(/\b(rax|rbx|rcx|rdx|rsi|rdi|rsp|rbp|r[89]|r1[0-5]|[re][abcd]x|[re][sb]p|[re][sd]i|[abcd][lh]|xmm\d{1,2})\b/gi, '<span class="r">$1</span>');
+  s = s.replace(/\b(v\d{1,2})\b/g,                                                   '<span class="r">$1</span>');
+  s = s.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g,                                        '<span class="n">$1</span>');
+  s = s.replace(/`([^`]*)`/g,                                                         '<span class="s">$1</span>');
+  s = s.replace(/\b(mov|add|sub|imul|mul|div|idiv|lea|shl|shr|sar|xor|and|or|not|neg|inc|dec|push|pop|call|ret|jmp|je|jne|jg|jl|jge|jle|ja|jb|jae|jbe|test|cmp|syscall|nop)\b/gi, '<span class="k">$1</span>');
+  return s;
 }
-loadExamples();
 
-// Initial highlight + gutter
-highlightVAS();
-updateGutter();
+// ── VAS syntax highlight ──
+function highlightVAS(text) {
+  let s = esc(text);
+  s = s.replace(/([;#].*$)/gm,                                                                                '<span class="c">$1</span>');
+  s = s.replace(/^(\s*)([a-z_][a-z0-9_]*):/gim,                                                              '$1<span class="lb">$2:</span>');
+  s = s.replace(/\b(section|global|extern|data|text|bss|db|dw|dd|dq|resb|resw|resd|resq|equ|times)\b/gi,     '<span class="d">$1</span>');
+  s = s.replace(/\b(ADD|SUB|MUL|LOAD|STORE|LEA|MOVI|MOV|CMP|JMP|JE|JNE|JG|JL|JGE|JLE|CALL|RET|NOP|PUSH|POP|SYSCALL|INT|SHL|SHR|AND|OR|XOR|NOT|NEG|INC|DEC)\b/g, '<span class="k">$1</span>');
+  s = s.replace(/\b(v\d{1,2})\b/g,                                                                            '<span class="r">$1</span>');
+  s = s.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g,                                                                 '<span class="n">$1</span>');
+  return s;
+}
 
-// Keyboard shortcut: Ctrl+Enter to assemble
-document.getElementById('input').addEventListener('keydown', function(e) {
+// ── Editor: gutter + highlight ──
+const editorInput = $('editor-input');
+const vasHighlight = $('vas-highlight');
+const gutter = $('gutter');
+
+function syncEditor() {
+  const val   = editorInput.value;
+  const lines = val.split('\n');
+  $('input-lines').textContent = lines.length + ' lines';
+
+  // Gutter
+  let gutterHtml = '';
+  const cursorPos = editorInput.selectionStart;
+  let charCount = 0;
+  let activeLine = 1;
+  for (let i = 0; i < lines.length; i++) {
+    charCount += lines[i].length + 1;
+    if (charCount >= cursorPos + 1 && activeLine === 1) activeLine = i + 1;
+  }
+  for (let i = 1; i <= lines.length; i++) {
+    gutterHtml += '<span' + (i === activeLine ? ' class="active-line"' : '') + '>' + i + '</span>';
+  }
+  gutter.innerHTML = gutterHtml;
+
+  // Highlight overlay
+  vasHighlight.innerHTML = highlightVAS(val) + '\n';
+
+  // Sync scroll
+  syncScroll();
+}
+
+function syncScroll() {
+  vasHighlight.scrollTop  = editorInput.scrollTop;
+  vasHighlight.scrollLeft = editorInput.scrollLeft;
+  gutter.scrollTop        = editorInput.scrollTop;
+}
+
+editorInput.addEventListener('input',    syncEditor);
+editorInput.addEventListener('keyup',    syncEditor);
+editorInput.addEventListener('click',    syncEditor);
+editorInput.addEventListener('scroll',   syncScroll);
+
+// Tab key support
+editorInput.addEventListener('keydown', function(e) {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const start = this.selectionStart;
+    const end   = this.selectionEnd;
+    this.value  = this.value.slice(0, start) + '  ' + this.value.slice(end);
+    this.selectionStart = this.selectionEnd = start + 2;
+    syncEditor();
+  }
   if (e.ctrlKey && e.key === 'Enter') {
     e.preventDefault();
     run();
   }
 });
 
-// ── Copy buttons ──
+// Initial render
+syncEditor();
+
+// ── Examples ──
+const EXAMPLES = {};
+let activeExample = null;
+
+async function loadExamples() {
+  const names = ['hello', 'fib', 'fact', 'calc', 'sort', 'win-edge', 'opt_showcase'];
+  await Promise.all(names.map(async name => {
+    try {
+      const r = await fetch('examples/' + name + '.vas');
+      if (r.ok) EXAMPLES[name] = await r.text();
+    } catch (_) {}
+  }));
+}
+loadExamples();
+
+function loadExample(name) {
+  if (!EXAMPLES[name]) return;
+  editorInput.value = EXAMPLES[name];
+  syncEditor();
+
+  // Mark active button
+  document.querySelectorAll('.example-btn').forEach(b => b.classList.remove('active'));
+  const btns = document.querySelectorAll('.example-btn');
+  const names = ['hello','fib','fact','calc','sort','win-edge','opt_showcase'];
+  const idx = names.indexOf(name);
+  if (idx >= 0) btns[idx].classList.add('active');
+
+  run();
+}
+
+// ── Copy ──
 function copySource() {
-  const text = document.getElementById('input').value;
-  copyToClipboard(text, 'copySource');
+  copyToClipboard(editorInput.value, document.querySelector('[onclick="copySource()"]'));
 }
 function copyOutput() {
-  const el = document.getElementById('output');
-  const text = el.textContent || el.innerText;
-  copyToClipboard(text, 'copyOutput');
+  copyToClipboard($('output').textContent, document.querySelector('[onclick="copyOutput()"]'));
 }
-function copyToClipboard(text, btnId) {
-  navigator.clipboard.writeText(text).then(() => {
-    const btn = document.querySelector(`[onclick="${btnId}()"]`);
-    btn.textContent = 'Copied!';
+function copyToClipboard(text, btn) {
+  const write = () => {
+    const orig = btn.textContent;
+    btn.textContent = 'Copied';
     btn.classList.add('copied');
-    setTimeout(() => {
-      btn.textContent = 'Copy';
-      btn.classList.remove('copied');
-    }, 1500);
-  }).catch(() => {
-    // Fallback for older browsers
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-  });
+    setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1600);
+  };
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(write).catch(() => fallbackCopy(text, write));
+  } else {
+    fallbackCopy(text, write);
+  }
+}
+function fallbackCopy(text, cb) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  cb();
 }
 </script>
 </body>
