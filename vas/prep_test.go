@@ -920,3 +920,37 @@ MOVI v2, C
 		t.Errorf("expected all case-variant blocks to be included (names are case-sensitive), got:\n%s", got)
 	}
 }
+
+func TestIncludeFileRollbackOnError(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a file with a syntax error (unclosed .ifdef)
+	brokenPath := filepath.Join(dir, "broken.vas")
+	os.WriteFile(brokenPath, []byte(".ifdef X\nNOP\n"), 0644)
+
+	src := `.include "broken.vas"
+MOVI v0, 1
+`
+	// First attempt must fail due to unclosed .ifdef
+	_, err := Preprocess(src, dir)
+	if err == nil {
+		t.Fatal("expected error due to unclosed ifdef")
+	}
+
+	// Fix the file: two unconditional NOPs
+	os.WriteFile(brokenPath, []byte("NOP\nNOP\n"), 0644)
+
+	// Second attempt must succeed and include the fixed content
+	got, err := Preprocess(src, dir)
+	if err != nil {
+		t.Fatalf("Preprocess after fix: %v", err)
+	}
+	// The fixed file contains two NOPs
+	if strings.Count(got, "NOP") != 2 {
+		t.Errorf("expected two NOPs from fixed file, got:\n%s", got)
+	}
+	// The main source line must also be present
+	if !strings.Contains(got, "MOVI v0, 1") {
+		t.Errorf("expected MOVI from main source, got:\n%s", got)
+	}
+}

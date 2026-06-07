@@ -24,26 +24,26 @@ type macroDef struct {
 
 // prepContext tracks state during preprocessing.
 type prepContext struct {
-	dir          string
-	included     map[string]bool // file-level deduplication (absolute paths)
-	pkgDir       string
-	vasPath      []string
-	consts       map[string]string   // .const NAME = value
-	macros       map[string]macroDef // .macro definitions
-	defines      map[string]bool     // defined names (for .ifdef)
-	ifStack      []ifState
-	macroBuf     []string // lines collected for current macro definition
-	macroName    string   // name of macro being defined
-	macroParams  []string
-	inMacro      bool
+	dir      string
+	included map[string]bool // file-level deduplication (absolute paths)
+	pkgDir   string
+	vasPath  []string
+	consts   map[string]string   // .const NAME = value
+	macros   map[string]macroDef // .macro definitions
+	defines  map[string]bool     // defined names (for .ifdef)
+	ifStack  []ifState
+	macroBuf    []string // lines collected for current macro definition
+	macroName   string   // name of macro being defined
+	macroParams []string
+	inMacro     bool
 	labelCounter int // for unique labels (\@)
-	inRept       bool
-	reptCount    int
-	reptBuf      []string
+	inRept    bool
+	reptCount int
+	reptBuf   []string
 	// Block-level deduplication for .once begin/end
-	blockOnceStack []string        // stack of active block names (.once begin <name>)
+	blockOnceStack []string // stack of active block names (.once begin <name>)
 	blockIncluded  map[string]bool // set of completed block names that were marked with .once
-	skipBlockDepth int             // depth of nested blocks being skipped (for .once end matching)
+	skipBlockDepth int // depth of nested blocks being skipped (for .once end matching)
 }
 
 // Preprocess resolves all preprocessor directives and returns flattened source.
@@ -126,28 +126,22 @@ func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
 			} else if strings.HasPrefix(trimmed, ".once end") {
 				ctx.skipBlockDepth--
 			}
-			// Ignore all directives and content inside skipped blocks
 			continue
 		}
 
 		// Handle conditional inclusion skipping (ifdef / ifndef false branch)
 		if len(ctx.ifStack) > 0 && ctx.ifStack[len(ctx.ifStack)-1] == ifFalse {
-			// Inside a false branch, only track .ifdef/.ifndef/.else/.endif nesting.
-			// .once begin/end are completely ignored to avoid polluting block state.
 			if strings.HasPrefix(trimmed, ".ifdef") || strings.HasPrefix(trimmed, ".ifndef") {
-				ctx.ifStack = append(ctx.ifStack, ifFalse) // nested push
+				ctx.ifStack = append(ctx.ifStack, ifFalse)
 			} else if strings.HasPrefix(trimmed, ".endif") {
 				ctx.ifStack = ctx.ifStack[:len(ctx.ifStack)-1]
 			} else if strings.HasPrefix(trimmed, ".else") {
-				// .else unconditionally toggles the current branch to true
 				ctx.ifStack[len(ctx.ifStack)-1] = ifTrue
 			}
-			continue // skip everything else (including .const, .macro, .once, etc.)
+			continue
 		}
 
 		// Directives processing
-
-		// .include_bytes BEFORE .include to avoid prefix confusion
 		if strings.HasPrefix(trimmed, ".include_bytes") {
 			path, ok := parseIncludeBytes(line)
 			if !ok {
@@ -186,7 +180,6 @@ func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			// Allow redefinition: the last .const wins.
 			ctx.consts[name] = value
 			ctx.defines[name] = true
 			continue
@@ -232,7 +225,6 @@ func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
 			if len(ctx.ifStack) == 0 {
 				return "", fmt.Errorf("orphan .else")
 			}
-			// Toggle current branch
 			if ctx.ifStack[len(ctx.ifStack)-1] == ifTrue {
 				ctx.ifStack[len(ctx.ifStack)-1] = ifFalse
 			} else {
@@ -280,7 +272,7 @@ func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
 		}
 
 		if trimmed == ".once" {
-			continue // simple file-level dedup handled by includeFile
+			continue
 		}
 
 		if strings.HasPrefix(trimmed, ".rept") {
@@ -313,7 +305,6 @@ func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
 	return out.String(), nil
 }
 
-// parseInclude extracts path and package flag from .include directive.
 func parseInclude(line string) (path string, isPkg bool, ok bool) {
 	trimmed := strings.TrimSpace(line)
 	if !strings.HasPrefix(trimmed, ".include") || strings.HasPrefix(trimmed, ".include_bytes") {
@@ -358,8 +349,6 @@ func parseConst(line string) (string, string, error) {
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
 }
 
-// parseMacro extracts name and parameters from a .macro directive.
-// Handles both formats: .macro name param1, param2 and .macro name param1,param2
 func parseMacro(line string) (string, []string, error) {
 	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ".macro"))
 	var name string
@@ -457,7 +446,6 @@ func (ctx *prepContext) loadPackageInclude(pkgPath string, depth int) (string, e
 	return "", fmt.Errorf("package %q not found – run `vpk install %s` to install it", pkgPath, pkgName)
 }
 
-// includeFile handles deduplication and recursive resolution for a found file.
 func (ctx *prepContext) includeFile(filePath string, data []byte, depth int) (string, error) {
 	abs, err := filepath.Abs(filePath)
 	if err != nil {
@@ -469,8 +457,15 @@ func (ctx *prepContext) includeFile(filePath string, data []byte, depth int) (st
 	if ctx.included[abs] {
 		return "", nil
 	}
+	// Mark early to prevent recursive reentry
 	ctx.included[abs] = true
-	return ctx.resolve(string(data), filepath.Dir(filePath), depth+1)
+	resolved, err := ctx.resolve(string(data), filepath.Dir(filePath), depth+1)
+	if err != nil {
+		// Rollback: if resolution failed, allow future attempts
+		delete(ctx.included, abs)
+		return "", err
+	}
+	return resolved, nil
 }
 
 func (ctx *prepContext) expandMacros(src string) (string, error) {
@@ -508,8 +503,6 @@ func (ctx *prepContext) expandMacros(src string) (string, error) {
 			outLines = append(outLines, line)
 		}
 	}
-	// Rebuild output, preserving the original trailing newline behavior:
-	// do not add a newline after a final empty element (which would double the trailing newline).
 	var out strings.Builder
 	for i, l := range outLines {
 		out.WriteString(l)
@@ -538,7 +531,6 @@ func (ctx *prepContext) applyConsts(src string) (string, error) {
 	return src, nil
 }
 
-// isInstructionOrDirective checks if a token is a known VAS instruction or directive keyword.
 func isInstructionOrDirective(s string) bool {
 	switch s {
 	case "ADD", "SUB", "MUL", "LOAD", "STORE", "LEA", "MOV", "MOVI",
@@ -553,7 +545,6 @@ func isInstructionOrDirective(s string) bool {
 	return false
 }
 
-// isUndefConst checks if a token looks like an undefined constant (e.g., SYS_WRITE).
 func isUndefConst(s string) bool {
 	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, ":") ||
 		strings.HasPrefix(s, "\"") || strings.HasPrefix(s, "'") {
@@ -598,7 +589,6 @@ func replaceWord(src, old, new string) string {
 	return out.String()
 }
 
-// isPathSafe ensures candidate does not escape root.
 func isPathSafe(root, candidate string) bool {
 	abs, err := filepath.Abs(candidate)
 	if err != nil {
@@ -611,6 +601,5 @@ func isPathSafe(root, candidate string) bool {
 	return strings.HasPrefix(abs, absRoot+string(os.PathSeparator)) || abs == absRoot
 }
 
-// pkgCacheDir and searchPath are assumed to be defined elsewhere in the package.
-func pkgCacheDir() string  { return "" }
+func pkgCacheDir() string { return "" }
 func searchPath() []string { return nil }
