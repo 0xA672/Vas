@@ -121,9 +121,10 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 
 	output := strings.Join(outLines, "\n")
 
-	// Post-expansion peephole optimization
+	// Post-expansion peephole optimization (only safe passes that understand physical registers)
 	if optLevel >= 1 {
-		output = opt.Optimize(output, optLevel)
+		// Only run peephole on NASM output - other optimizations only work on VAS source
+		output = opt.PeepholeOnly(output)
 	}
 
 	return output, nil
@@ -579,21 +580,32 @@ func wrapStandalone(vasInput, asmOutput string) string {
 	asmOutput = strings.Join(filtered, "\n")
 
 	// Check if user already defines an entry point
-	hasEntry := strings.Contains(asmOutput, "_start:") || strings.Contains(asmOutput, "main:")
+	hasStart := strings.Contains(asmOutput, "_start:")
+	hasMain := strings.Contains(asmOutput, "main:")
 
 	var sb strings.Builder
 	sb.WriteString("\tdefault rel\n\n")
 	sb.WriteString("\tsection .text\n")
-	if !hasEntry {
+
+	// Add appropriate global declaration based on what entry point exists
+	if !hasStart && !hasMain {
+		// No entry point defined - add default _start wrapper
 		sb.WriteString("\tglobal _start\n")
 		sb.WriteString("_start:\n")
 		sb.WriteString("\tcall\tvas_main\n")
 		sb.WriteString("\tmov\tedi, eax\n")
 		sb.WriteString("\tmov\teax, 60\n")
 		sb.WriteString("\tsyscall\n")
+	} else if hasMain && !hasStart {
+		// User defined main but not _start - add global main
+		sb.WriteString("\tglobal main\n")
+	} else if hasStart {
+		// User defined _start - add global _start
+		sb.WriteString("\tglobal _start\n")
 	}
+
 	sb.WriteString("vas_main:\n")
-	
+
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 
@@ -635,16 +647,26 @@ func wrapStandaloneWin64(vasInput, asmOutput string) string {
 	asmOutput = strings.Join(filtered, "\n")
 
 	// Check if user already defines an entry point
-	hasEntry := strings.Contains(asmOutput, "_start:") || strings.Contains(asmOutput, "main:")
+	hasStart := strings.Contains(asmOutput, "_start:")
+	hasMain := strings.Contains(asmOutput, "main:")
 
 	var sb strings.Builder
 	sb.WriteString("\tdefault rel\n\n")
 	sb.WriteString("\tsection .text\n")
-	if !hasEntry {
+
+	// Add appropriate global declaration based on what entry point exists
+	if !hasStart && !hasMain {
+		// No entry point defined - add default main for Win64
 		sb.WriteString("\tglobal main\n")
 		sb.WriteString("main:\n")
+	} else if hasMain && !hasStart {
+		// User defined main but not _start - add global main
+		sb.WriteString("\tglobal main\n")
+	} else if hasStart {
+		// User defined _start - add global _start
+		sb.WriteString("\tglobal _start\n")
 	}
-	
+
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 
