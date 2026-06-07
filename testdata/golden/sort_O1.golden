@@ -5,6 +5,7 @@
 
 	mov	rax, 8
 	push	rax
+	xor	ebx, ebx
 
 outer:
 	pop	rax

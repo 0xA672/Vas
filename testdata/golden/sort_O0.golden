@@ -5,6 +5,7 @@
 
 	mov	rax, 8
 	push	rax
+	mov	rbx, 0
 
 outer:
 	pop	rax
