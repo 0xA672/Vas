@@ -954,3 +954,29 @@ MOVI v0, 1
 		t.Errorf("expected MOVI from main source, got:\n%s", got)
 	}
 }
+
+func TestCircularIncludeDetection(t *testing.T) {
+    dir := t.TempDir()
+
+    // Create A.vas that includes B.vas
+    aPath := filepath.Join(dir, "a.vas")
+    os.WriteFile(aPath, []byte(`.include "b.vas"
+MOVI v0, 1
+`), 0644)
+
+    // Create B.vas that includes A.vas (circular)
+    bPath := filepath.Join(dir, "b.vas")
+    os.WriteFile(bPath, []byte(`.include "a.vas"
+MOVI v1, 2
+`), 0644)
+
+    // Main source includes A.vas
+    src := `.include "a.vas"`
+    _, err := Preprocess(src, dir)
+    if err == nil {
+        t.Fatal("expected circular include error, got nil")
+    }
+    if !strings.Contains(err.Error(), "circular include") {
+        t.Errorf("expected 'circular include' error, got: %v", err)
+    }
+}
