@@ -5,6 +5,7 @@
 
     MOVI v0, 8        ; n = 8
     PUSH v0           ; save n on stack
+    MOVI v1, 0        ; i = 0 (outer loop counter)
 
 outer:
     POP v0            ; restore n

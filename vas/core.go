@@ -243,7 +243,7 @@ func processInstruction(line string) ([]string, error) {
 			// .section -> section, .global -> global, .globl -> global
 			t = t[1:]
 			// .globl -> global (not just globl)
-			if t == "globl" || strings.HasPrefix(t, "globl ") || strings.HasPrefix(t, "globl\t") {
+			if strings.HasPrefix(t, "globl") {
 				t = "global" + t[5:]
 			}
 			// .data / .bss / .text -> section .data / section .bss / section .text
@@ -564,18 +564,36 @@ func hasBoilerplate(s string) bool {
 func wrapStandalone(vasInput, asmOutput string) string {
 	memRefs := collectMemRefs(vasInput)
 
+	// In standalone mode, always filter out user's global directives to avoid duplicates
+	// The wrapper will add the appropriate global declaration
+	lines := strings.Split(asmOutput, "\n")
+	var filtered []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip global directives in standalone mode (wrapper handles this)
+		if strings.HasPrefix(trimmed, "global ") {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	asmOutput = strings.Join(filtered, "\n")
+
+	// Check if user already defines an entry point
+	hasEntry := strings.Contains(asmOutput, "_start:") || strings.Contains(asmOutput, "main:")
+
 	var sb strings.Builder
 	sb.WriteString("\tdefault rel\n\n")
 	sb.WriteString("\tsection .text\n")
-	sb.WriteString("\tglobal _start\n")
-	sb.WriteString("_start:\n")
-	// Call the user's code as a subroutine so any RET returns here
-	sb.WriteString("\tcall\tvas_main\n")
-	sb.WriteString("\tmov\tedi, eax\n")
-	sb.WriteString("\tmov\teax, 60\n")
-	sb.WriteString("\tsyscall\n")
-	// User code label
+	if !hasEntry {
+		sb.WriteString("\tglobal _start\n")
+		sb.WriteString("_start:\n")
+		sb.WriteString("\tcall\tvas_main\n")
+		sb.WriteString("\tmov\tedi, eax\n")
+		sb.WriteString("\tmov\teax, 60\n")
+		sb.WriteString("\tsyscall\n")
+	}
 	sb.WriteString("vas_main:\n")
+	
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 
@@ -602,20 +620,31 @@ func wrapStandalone(vasInput, asmOutput string) string {
 func wrapStandaloneWin64(vasInput, asmOutput string) string {
 	memRefs := collectMemRefs(vasInput)
 
+	// In standalone mode, always filter out user's global directives to avoid duplicates
+	// The wrapper will add the appropriate global declaration
+	lines := strings.Split(asmOutput, "\n")
+	var filtered []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip global directives in standalone mode (wrapper handles this)
+		if strings.HasPrefix(trimmed, "global ") {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	asmOutput = strings.Join(filtered, "\n")
+
+	// Check if user already defines an entry point
+	hasEntry := strings.Contains(asmOutput, "_start:") || strings.Contains(asmOutput, "main:")
+
 	var sb strings.Builder
 	sb.WriteString("\tdefault rel\n\n")
 	sb.WriteString("\tsection .text\n")
-	// Only add global/label if the source doesn't already define main
-	hasEntry := strings.Contains(asmOutput, "main:") || strings.Contains(asmOutput, "_start:")
-	if hasEntry {
-		// User supplies their own entry point; just ensure it's public
-		if strings.Contains(asmOutput, "main:") {
-			sb.WriteString("\tglobal main\n")
-		}
-	} else {
+	if !hasEntry {
 		sb.WriteString("\tglobal main\n")
 		sb.WriteString("main:\n")
 	}
+	
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 
