@@ -567,7 +567,7 @@ NOP
 
 func TestPreprocessOnceBlockWithInclude(t *testing.T) {
 	dir := t.TempDir()
-	
+
 	// Create an included file with blocks
 	libContent := `.once begin lib_consts
 .const LIB_VERSION = 1
@@ -580,7 +580,7 @@ func TestPreprocessOnceBlockWithInclude(t *testing.T) {
 .once end lib_macros
 `
 	os.WriteFile(filepath.Join(dir, "lib.vas"), []byte(libContent), 0644)
-	
+
 	src := `.include "lib.vas"
 MOVI v0, LIB_VERSION
 

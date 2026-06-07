@@ -48,9 +48,9 @@ type prepContext struct {
 	reptBuf   []string
 
 	// Block-level deduplication for .once begin/end
-	blockOnceStack []string      // stack of active block names (.once begin <name>)
+	blockOnceStack []string        // stack of active block names (.once begin <name>)
 	blockIncluded  map[string]bool // set of completed block names that were marked with .once
-	skipBlockDepth int            // depth of nested blocks being skipped (for .once end matching)
+	skipBlockDepth int             // depth of nested blocks being skipped (for .once end matching)
 }
 
 // Preprocess resolves all preprocessor directives and returns flattened source.
