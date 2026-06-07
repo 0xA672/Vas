@@ -980,3 +980,111 @@ MOVI v1, 2
 		t.Errorf("expected 'circular include' error, got: %v", err)
 	}
 }
+
+// ── Package resolution & environment tests ─────────────────────────────────
+
+func TestPkgCacheDirEnv(t *testing.T) {
+	os.Setenv("VAS_PKG_CACHE", "/custom/vas/cache")
+	defer os.Unsetenv("VAS_PKG_CACHE")
+	if got := pkgCacheDir(); got != "/custom/vas/cache" {
+		t.Errorf("expected /custom/vas/cache, got %s", got)
+	}
+}
+
+func TestPkgCacheDirDefault(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	want := filepath.Join(home, ".vas", "pkg")
+	if got := pkgCacheDir(); got != want {
+		t.Errorf("expected %s, got %s", want, got)
+	}
+}
+
+func TestLoadPackageIncludeWithResolver(t *testing.T) {
+	// Custom resolver that returns a simple instruction
+	resolver := &mockResolver{src: "NOP\n"}
+
+	src := `.include <test/mock>
+RET
+`
+	got, err := Preprocess(src, "/tmp", WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// The included content should appear, and the .include directive should be stripped
+	if !strings.Contains(got, "NOP") {
+		t.Errorf("expected NOP from package, got:\n%s", got)
+	}
+	if !strings.Contains(got, "RET") {
+		t.Errorf("expected RET from main source, got:\n%s", got)
+	}
+	if strings.Contains(got, ".include") {
+		t.Errorf(".include directive should be stripped, got:\n%s", got)
+	}
+}
+
+type mockResolver struct{ src string }
+
+func (m *mockResolver) ResolvePackage(pkgPath string) (string, error) {
+	// The source is already "preprocessed" – just return it.
+	return m.src, nil
+}
+
+func TestPackageNotFoundHint(t *testing.T) {
+	// Default resolver, no such package exists
+	_, err := Preprocess(`.include <nonexistent>`, "/tmp")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "vpk") {
+		t.Errorf("error message should not contain 'vpk', got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "install it with your package manager") {
+		t.Errorf("expected generic install hint, got: %s", errMsg)
+	}
+}
+
+func TestPackageNotFoundWithPmEnv(t *testing.T) {
+	os.Setenv("VAS_PM", "mypm")
+	defer os.Unsetenv("VAS_PM")
+	_, err := Preprocess(`.include <nonexistent>`, "/tmp")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "`mypm install") {
+		t.Errorf("expected hint with 'mypm', got: %s", err.Error())
+	}
+}
+
+func TestCircularIncludeErrorMessage(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create A.vas that includes B.vas
+	aPath := filepath.Join(dir, "a.vas")
+	os.WriteFile(aPath, []byte(`.include "b.vas"
+MOVI v0, 1
+`), 0644)
+
+	// Create B.vas that includes A.vas (circular)
+	bPath := filepath.Join(dir, "b.vas")
+	os.WriteFile(bPath, []byte(`.include "a.vas"
+MOVI v1, 2
+`), 0644)
+
+	src := `.include "a.vas"`
+	_, err := Preprocess(src, dir)
+	if err == nil {
+		t.Fatal("expected circular include error, got nil")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "circular include detected:") {
+		t.Errorf("expected 'circular include detected' message, got: %v", err)
+	}
+	// Should list both files in the chain
+	if !strings.Contains(errMsg, "a.vas") || !strings.Contains(errMsg, "b.vas") {
+		t.Errorf("expected both files in error message, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "already included (cycle)") {
+		t.Errorf("expected cycle indicator, got: %s", errMsg)
+	}
+}

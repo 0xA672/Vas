@@ -22,11 +22,48 @@ type macroDef struct {
 	body   []string
 }
 
+// PackageResolver resolves a package path (e.g. "io" or "term/color")
+// into preprocessed source text. Implementations may read from the file system,
+// an in‑memory cache, or a network resource.
+type PackageResolver interface {
+	ResolvePackage(pkgPath string) (string, error)
+}
+
+// PreprocessOption configures a Preprocess call.
+type PreprocessOption func(*prepContext)
+
+// WithResolver replaces the default package resolver.
+func WithResolver(r PackageResolver) PreprocessOption {
+	return func(ctx *prepContext) {
+		ctx.resolver = r
+	}
+}
+
+// PreHook is called once before preprocessing starts.
+type PreHook func(src string) (string, error)
+
+// PostHook is called once after preprocessing finishes.
+type PostHook func(src string) (string, error)
+
+// WithPreHook sets a hook that transforms the input source before processing.
+func WithPreHook(hook PreHook) PreprocessOption {
+	return func(ctx *prepContext) {
+		ctx.preHook = hook
+	}
+}
+
+// WithPostHook sets a hook that transforms the output source after processing.
+func WithPostHook(hook PostHook) PreprocessOption {
+	return func(ctx *prepContext) {
+		ctx.postHook = hook
+	}
+}
+
 // prepContext tracks state during preprocessing.
 type prepContext struct {
 	dir          string
 	included     map[string]bool // file-level deduplication (absolute paths)
-	pkgDir       string
+	resolver     PackageResolver
 	vasPath      []string
 	consts       map[string]string   // .const NAME = value
 	macros       map[string]macroDef // .macro definitions
@@ -44,21 +81,37 @@ type prepContext struct {
 	blockOnceStack []string        // stack of active block names (.once begin <name>)
 	blockIncluded  map[string]bool // set of completed block names that were marked with .once
 	skipBlockDepth int             // depth of nested blocks being skipped (for .once end matching)
-	includeStack   []string        // tracks current include chain for cycle detection
+
+	includeStack []string // tracks current include chain for cycle detection
+
+	preHook  PreHook
+	postHook PostHook
 }
 
 // Preprocess resolves all preprocessor directives and returns flattened source.
-func Preprocess(src, baseDir string) (string, error) {
+func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 	ctx := &prepContext{
 		dir:           baseDir,
 		included:      map[string]bool{},
-		pkgDir:        pkgCacheDir(),
+		resolver:      &defaultResolver{pkgDir: pkgCacheDir(), vasPath: searchPath()},
 		vasPath:       searchPath(),
 		consts:        map[string]string{},
 		macros:        map[string]macroDef{},
 		defines:       map[string]bool{},
 		blockIncluded: map[string]bool{},
 	}
+	for _, opt := range opts {
+		opt(ctx)
+	}
+
+	if ctx.preHook != nil {
+		var err error
+		src, err = ctx.preHook(src)
+		if err != nil {
+			return "", fmt.Errorf("pre-hook: %w", err)
+		}
+	}
+
 	// Pass 1: resolve include, collect macros/consts, handle ifdef
 	out, err := ctx.resolve(src, baseDir, 0)
 	if err != nil {
@@ -73,6 +126,13 @@ func Preprocess(src, baseDir string) (string, error) {
 	out, err = ctx.applyConsts(out)
 	if err != nil {
 		return "", err
+	}
+
+	if ctx.postHook != nil {
+		out, err = ctx.postHook(out)
+		if err != nil {
+			return "", fmt.Errorf("post-hook: %w", err)
+		}
 	}
 	return out, nil
 }
@@ -417,6 +477,29 @@ func (ctx *prepContext) loadFileBytes(path string) ([]byte, error) {
 }
 
 func (ctx *prepContext) loadPackageInclude(pkgPath string, depth int) (string, error) {
+	resolved, err := ctx.resolver.ResolvePackage(pkgPath)
+	if err != nil {
+		parts := strings.SplitN(pkgPath, "/", 2)
+		pkgName := parts[0]
+		var installHint string
+		if pm := pmName(); pm != "" {
+			installHint = fmt.Sprintf(" – run `%s install %s`", pm, pkgName)
+		} else {
+			installHint = " – install it with your package manager"
+		}
+		return "", fmt.Errorf("package %q not found%s", pkgPath, installHint)
+	}
+	return resolved, nil
+}
+
+// defaultResolver implements PackageResolver by reading files from the
+// directory returned by pkgCacheDir() (and additional search paths).
+type defaultResolver struct {
+	pkgDir  string
+	vasPath []string
+}
+
+func (r *defaultResolver) ResolvePackage(pkgPath string) (string, error) {
 	parts := strings.SplitN(pkgPath, "/", 2)
 	pkgName := parts[0]
 	modPath := ""
@@ -425,11 +508,13 @@ func (ctx *prepContext) loadPackageInclude(pkgPath string, depth int) (string, e
 	} else {
 		modPath = pkgName
 	}
+
 	searchDirs := []string{}
-	if ctx.pkgDir != "" {
-		searchDirs = append(searchDirs, ctx.pkgDir)
+	if r.pkgDir != "" {
+		searchDirs = append(searchDirs, r.pkgDir)
 	}
-	searchDirs = append(searchDirs, ctx.vasPath...)
+	searchDirs = append(searchDirs, r.vasPath...)
+
 	for _, root := range searchDirs {
 		candidates := []string{
 			filepath.Join(root, pkgName, modPath+".vas"),
@@ -440,11 +525,13 @@ func (ctx *prepContext) loadPackageInclude(pkgPath string, depth int) (string, e
 				continue
 			}
 			if data, err := os.ReadFile(cand); err == nil {
-				return ctx.includeFile(cand, data, depth)
+				// Preprocess the package to resolve its own directives.
+				// Uses a fresh Preprocess call with the same default resolver.
+				return Preprocess(string(data), filepath.Dir(cand))
 			}
 		}
 	}
-	return "", fmt.Errorf("package %q not found – run `vpk install %s` to install it", pkgPath, pkgName)
+	return "", fmt.Errorf("package %q not found", pkgPath)
 }
 
 func (ctx *prepContext) includeFile(filePath string, data []byte, depth int) (string, error) {
@@ -459,7 +546,18 @@ func (ctx *prepContext) includeFile(filePath string, data []byte, depth int) (st
 	// Cycle detection: check if this file is already on the current include stack
 	for _, p := range ctx.includeStack {
 		if p == abs {
-			return "", fmt.Errorf("circular include detected: %s", abs)
+			// Build a human-readable include chain
+			var sb strings.Builder
+			sb.WriteString("circular include detected:\n")
+			for _, elem := range ctx.includeStack {
+				sb.WriteString("\t")
+				sb.WriteString(elem)
+				sb.WriteByte('\n')
+			}
+			sb.WriteString("\t")
+			sb.WriteString(abs)
+			sb.WriteString("  <-- already included (cycle)")
+			return "", fmt.Errorf("%s", sb.String())
 		}
 	}
 
@@ -474,7 +572,8 @@ func (ctx *prepContext) includeFile(filePath string, data []byte, depth int) (st
 
 	resolved, err := ctx.resolve(string(data), filepath.Dir(filePath), depth+1)
 
-	// Pop stack
+	// Pop stack (clear for GC)
+	ctx.includeStack[len(ctx.includeStack)-1] = ""
 	ctx.includeStack = ctx.includeStack[:len(ctx.includeStack)-1]
 
 	if err != nil {
@@ -618,5 +717,26 @@ func isPathSafe(root, candidate string) bool {
 	return strings.HasPrefix(abs, absRoot+string(os.PathSeparator)) || abs == absRoot
 }
 
-func pkgCacheDir() string  { return "" }
+// pkgCacheDir returns the directory for installed packages.
+// It respects the VAS_PKG_CACHE environment variable; otherwise
+// defaults to $HOME/.vas/pkg (cross-platform).
+func pkgCacheDir() string {
+	if dir := os.Getenv("VAS_PKG_CACHE"); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".vas", "pkg")
+}
+
+// pmName returns the package manager command name, taken from the
+// VAS_PM environment variable. If unset, it returns an empty string.
+func pmName() string {
+	return os.Getenv("VAS_PM")
+}
+
+// searchPath returns additional directories to search for included files.
+// (Placeholder – could be extended via an environment variable.)
 func searchPath() []string { return nil }
