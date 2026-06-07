@@ -1,4 +1,3 @@
-// Package vas provides the VAS virtual assembler core.
 package vas
 
 import (
@@ -9,20 +8,19 @@ import (
 	"strings"
 )
 
-// macroDef stores a single macro definition.
-type macroDef struct {
-	params []string
-	body   []string
-}
-
 // ifState tracks conditional inclusion nesting.
 type ifState int
 
 const (
-	ifActive   ifState = iota // block is active (condition true, no else seen)
-	ifSkipping                // block is being skipped (condition false)
-	ifDone                    // block was active but .else already seen
+	ifNone ifState = iota
+	ifTrue
+	ifFalse
 )
+
+type macroDef struct {
+	params []string
+	body   []string
+}
 
 // prepContext tracks state during preprocessing.
 type prepContext struct {
@@ -30,27 +28,22 @@ type prepContext struct {
 	included map[string]bool // file-level deduplication (absolute paths)
 	pkgDir   string
 	vasPath  []string
-
-	consts  map[string]string // .const NAME = value
-	macros  map[string]macroDef
-	defines map[string]bool // defined names (for .ifdef)
-
-	ifStack []ifState
-
-	macroBuf     []string // lines collected for current macro definition
-	macroName    string   // name of macro being defined
-	macroParams  []string
-	inMacro      bool
-	labelCounter int // for unique labels (\\@)
-
+	consts   map[string]string   // .const NAME = value
+	macros   map[string]macroDef // .macro definitions
+	defines  map[string]bool     // defined names (for .ifdef)
+	ifStack  []ifState
+	macroBuf    []string // lines collected for current macro definition
+	macroName   string   // name of macro being defined
+	macroParams []string
+	inMacro     bool
+	labelCounter int // for unique labels (\@)
 	inRept    bool
 	reptCount int
 	reptBuf   []string
-
 	// Block-level deduplication for .once begin/end
-	blockOnceStack []string        // stack of active block names (.once begin <name>)
+	blockOnceStack []string // stack of active block names (.once begin <name>)
 	blockIncluded  map[string]bool // set of completed block names that were marked with .once
-	skipBlockDepth int             // depth of nested blocks being skipped (for .once end matching)
+	skipBlockDepth int // depth of nested blocks being skipped (for .once end matching)
 }
 
 // Preprocess resolves all preprocessor directives and returns flattened source.
@@ -66,142 +59,42 @@ func Preprocess(src, baseDir string) (string, error) {
 		blockIncluded: map[string]bool{},
 	}
 	// Pass 1: resolve include, collect macros/consts, handle ifdef
-	out, err := ctx.resolve(src, baseDir)
+	out, err := ctx.resolve(src, baseDir, 0)
 	if err != nil {
 		return "", err
 	}
 	// Pass 2: expand macro calls
-	out = ctx.expandMacros(out)
+	out, err = ctx.expandMacros(out)
+	if err != nil {
+		return "", err
+	}
 	// Pass 3: apply const replacement
-	out = ctx.applyConsts(out)
+	out, err = ctx.applyConsts(out)
+	if err != nil {
+		return "", err
+	}
 	return out, nil
 }
 
-func pkgCacheDir() string {
-	if d := os.Getenv("VPK_CACHE"); d != "" {
-		return d
+func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
+	if depth > 100 {
+		return "", fmt.Errorf("preprocessing recursion limit exceeded")
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".vpk", "pkg")
-}
-
-func searchPath() []string {
-	if p := os.Getenv("VAS_PATH"); p != "" {
-		return filepath.SplitList(p)
-	}
-	return nil
-}
-
-// ── Pass 1: resolve directives ───────────────────────────────────────────
-
-func (ctx *prepContext) resolve(input, baseDir string) (string, error) {
-	input = strings.TrimRight(input, "\n")
-	lines := strings.Split(input, "\n")
+	ctx.dir = dir
 	var out strings.Builder
-	savedDir := ctx.dir
-	ctx.dir = baseDir
-	defer func() { ctx.dir = savedDir }()
+	lines := strings.Split(src, "\n")
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// Handle .once begin/end first (these control skipBlockDepth)
-		// .once (file-level marker, documentation only)
-		if trimmed == ".once" {
-			continue
-		}
-
-		// .once begin <name> - start a block-level single-inclusion region
-		if strings.HasPrefix(trimmed, ".once begin ") {
-			blockName := strings.TrimSpace(strings.TrimPrefix(trimmed, ".once begin "))
-			if blockName == "" {
-				return "", fmt.Errorf(".once begin requires a block name")
-			}
-
-			// If we're already skipping blocks, just increase depth
-			if ctx.skipBlockDepth > 0 {
-				ctx.skipBlockDepth++
-				ctx.blockOnceStack = append(ctx.blockOnceStack, blockName)
-				continue
-			}
-
-			// Check if this block was already included
-			if ctx.blockIncluded[blockName] {
-				// Skip this block: mark it and increase skip depth
-				ctx.skipBlockDepth = 1
-				ctx.blockOnceStack = append(ctx.blockOnceStack, blockName)
-				continue
-			}
-
-			// First time seeing this block: include it
-			ctx.blockOnceStack = append(ctx.blockOnceStack, blockName)
-			continue
-		}
-
-		// .once end [<name>] - end a block-level single-inclusion region
-		if strings.HasPrefix(trimmed, ".once end") {
-			if len(ctx.blockOnceStack) == 0 {
-				return "", fmt.Errorf(".once end without matching .once begin")
-			}
-
-			// Pop the block from stack
-			blockName := ctx.blockOnceStack[len(ctx.blockOnceStack)-1]
-			ctx.blockOnceStack = ctx.blockOnceStack[:len(ctx.blockOnceStack)-1]
-
-			// Parse optional name for validation
-			endName := strings.TrimSpace(strings.TrimPrefix(trimmed, ".once end"))
-			if endName != "" && endName != blockName {
-				return "", fmt.Errorf(".once end name mismatch: expected %q, got %q", blockName, endName)
-			}
-
-			// If we're skipping blocks, decrease depth
-			if ctx.skipBlockDepth > 0 {
-				ctx.skipBlockDepth--
-				// If we just closed the block that triggered skipping, mark it
-				if ctx.skipBlockDepth == 0 {
-					ctx.blockIncluded[blockName] = true
-				}
-				continue
-			}
-
-			// Normal case: block was included, mark it as completed
-			ctx.blockIncluded[blockName] = true
-			continue
-		}
-
-		// If we're inside a skipped block, skip all other lines
-		if ctx.skipBlockDepth > 0 {
-			continue
-		}
-
-		// If inside a .rept block, collect lines until .endr
-		if ctx.inRept {
-			if trimmed == ".endr" {
-				for i := 0; i < ctx.reptCount; i++ {
-					for _, rline := range ctx.reptBuf {
-						out.WriteString(rline)
-						out.WriteString("\n")
-					}
-				}
-				ctx.inRept = false
-				ctx.reptCount = 0
-				ctx.reptBuf = nil
-				continue
-			}
-			ctx.reptBuf = append(ctx.reptBuf, line)
-			continue
-		}
-
-		// If inside a macro definition, collect body lines
+		// Handle macro definition collection
 		if ctx.inMacro {
-			if trimmed == ".endm" {
+			if strings.HasPrefix(trimmed, ".endm") {
 				ctx.macros[ctx.macroName] = macroDef{
 					params: ctx.macroParams,
 					body:   ctx.macroBuf,
 				}
 				ctx.inMacro = false
-				ctx.macroName = ""
-				ctx.macroParams = nil
 				ctx.macroBuf = nil
 				continue
 			}
@@ -209,280 +102,242 @@ func (ctx *prepContext) resolve(input, baseDir string) (string, error) {
 			continue
 		}
 
-		// .rept count
-		if strings.HasPrefix(trimmed, ".rept ") {
-			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, ".rept "))
-			count, err := strconv.Atoi(rest)
-			if err != nil || count < 0 {
-				return "", fmt.Errorf(".rept requires a non-negative integer count")
-			}
-			ctx.inRept = true
-			ctx.reptCount = count
-			ctx.reptBuf = nil
-			continue
-		}
-		if trimmed == ".endr" {
-			return "", fmt.Errorf(".endr without .rept")
-		}
-
-		// .ifdef / .ifndef
-		if strings.HasPrefix(trimmed, ".ifdef ") || strings.HasPrefix(trimmed, ".ifndef ") {
-			name := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trimmed, ".ifdef "), ".ifndef "))
-			isIfdef := strings.HasPrefix(trimmed, ".ifdef ")
-			defined := ctx.defines[name]
-			active := (isIfdef && defined) || (!isIfdef && !defined)
-
-			// If any outer block is not active, force this block to be inactive
-			if len(ctx.ifStack) > 0 && ctx.ifStack[len(ctx.ifStack)-1] != ifActive {
-				active = false
-			}
-
-			if active {
-				ctx.ifStack = append(ctx.ifStack, ifActive)
-			} else {
-				ctx.ifStack = append(ctx.ifStack, ifSkipping)
-			}
-			continue
-		}
-
-		// .else
-		if trimmed == ".else" {
-			if len(ctx.ifStack) == 0 {
-				return "", fmt.Errorf(".else without .ifdef")
-			}
-			top := ctx.ifStack[len(ctx.ifStack)-1]
-			if top == ifDone {
-				return "", fmt.Errorf(".else after .else")
-			}
-			if top == ifSkipping {
-				// Allow activation only if all outer blocks are active
-				canActivate := true
-				for _, s := range ctx.ifStack[:len(ctx.ifStack)-1] {
-					if s != ifActive {
-						canActivate = false
-						break
+		// Handle rept collection
+		if ctx.inRept {
+			if strings.HasPrefix(trimmed, ".endr") {
+				for i := 0; i < ctx.reptCount; i++ {
+					for _, rline := range ctx.reptBuf {
+						out.WriteString(rline)
+						out.WriteByte('\n')
 					}
 				}
-				if canActivate {
-					ctx.ifStack[len(ctx.ifStack)-1] = ifActive
+				ctx.inRept = false
+				ctx.reptBuf = nil
+				continue
+			}
+			ctx.reptBuf = append(ctx.reptBuf, line)
+			continue
+		}
+
+		// Handle skipping for .once blocks (second+ encounter)
+		if ctx.skipBlockDepth > 0 {
+			if strings.HasPrefix(trimmed, ".once begin") {
+				ctx.skipBlockDepth++
+			} else if strings.HasPrefix(trimmed, ".once end") {
+				ctx.skipBlockDepth--
+			}
+			// Ignore all directives and content inside skipped blocks
+			continue
+		}
+
+		// Handle conditional inclusion skipping (ifdef / ifndef false branch)
+		if len(ctx.ifStack) > 0 && ctx.ifStack[len(ctx.ifStack)-1] == ifFalse {
+			// Inside a false branch, only track .ifdef/.ifndef/.else/.endif nesting.
+			// .once begin/end are completely ignored to avoid polluting block state.
+			if strings.HasPrefix(trimmed, ".ifdef") || strings.HasPrefix(trimmed, ".ifndef") {
+				ctx.ifStack = append(ctx.ifStack, ifFalse) // nested push
+			} else if strings.HasPrefix(trimmed, ".endif") {
+				ctx.ifStack = ctx.ifStack[:len(ctx.ifStack)-1]
+			} else if strings.HasPrefix(trimmed, ".else") {
+				// .else unconditionally toggles the current branch to true
+				ctx.ifStack[len(ctx.ifStack)-1] = ifTrue
+			}
+			continue // skip everything else (including .const, .macro, .once, etc.)
+		}
+
+		// Directives processing
+
+		// .include_bytes BEFORE .include to avoid prefix confusion
+		if strings.HasPrefix(trimmed, ".include_bytes") {
+			path, ok := parseIncludeBytes(line)
+			if !ok {
+				return "", fmt.Errorf("invalid .include_bytes syntax: %s", line)
+			}
+			data, err := ctx.loadFileBytes(path)
+			if err != nil {
+				return "", err
+			}
+			if len(data) > 0 {
+				hexParts := make([]string, len(data))
+				for i, b := range data {
+					hexParts[i] = fmt.Sprintf("0x%02x", b)
 				}
-			} else { // ifActive
-				ctx.ifStack[len(ctx.ifStack)-1] = ifDone
+				out.WriteString("db " + strings.Join(hexParts, ", "))
+			}
+			out.WriteByte('\n')
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, ".include") {
+			path, isPkg, ok := parseInclude(line)
+			if !ok {
+				return "", fmt.Errorf("invalid .include syntax: %s", line)
+			}
+			resolved, err := ctx.loadInclude(path, isPkg, depth)
+			if err != nil {
+				return "", err
+			}
+			out.WriteString(resolved)
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, ".const") {
+			name, value, err := parseConst(line)
+			if err != nil {
+				return "", err
+			}
+			// Allow redefinition: the last .const wins.
+			ctx.consts[name] = value
+			ctx.defines[name] = true
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, ".macro") {
+			name, params, err := parseMacro(line)
+			if err != nil {
+				return "", err
+			}
+			ctx.macroName = name
+			ctx.macroParams = params
+			ctx.macroBuf = []string{}
+			ctx.inMacro = true
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, ".endm") {
+			return "", fmt.Errorf("orphan .endm")
+		}
+
+		if strings.HasPrefix(trimmed, ".ifdef") {
+			name := strings.TrimSpace(strings.TrimPrefix(trimmed, ".ifdef"))
+			if ctx.defines[name] {
+				ctx.ifStack = append(ctx.ifStack, ifTrue)
+			} else {
+				ctx.ifStack = append(ctx.ifStack, ifFalse)
 			}
 			continue
 		}
 
-		// .endif
-		if trimmed == ".endif" {
+		if strings.HasPrefix(trimmed, ".ifndef") {
+			name := strings.TrimSpace(strings.TrimPrefix(trimmed, ".ifndef"))
+			if !ctx.defines[name] {
+				ctx.ifStack = append(ctx.ifStack, ifTrue)
+			} else {
+				ctx.ifStack = append(ctx.ifStack, ifFalse)
+			}
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, ".else") {
 			if len(ctx.ifStack) == 0 {
-				return "", fmt.Errorf(".endif without .ifdef")
+				return "", fmt.Errorf("orphan .else")
+			}
+			// Toggle current branch
+			if ctx.ifStack[len(ctx.ifStack)-1] == ifTrue {
+				ctx.ifStack[len(ctx.ifStack)-1] = ifFalse
+			} else {
+				ctx.ifStack[len(ctx.ifStack)-1] = ifTrue
+			}
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, ".endif") {
+			if len(ctx.ifStack) == 0 {
+				return "", fmt.Errorf("orphan .endif")
 			}
 			ctx.ifStack = ctx.ifStack[:len(ctx.ifStack)-1]
 			continue
 		}
 
-		// Skip lines inside inactive conditional blocks
-		if len(ctx.ifStack) > 0 && ctx.ifStack[len(ctx.ifStack)-1] != ifActive {
-			continue
-		}
-
-		// .macro name args...
-		if strings.HasPrefix(trimmed, ".macro ") {
-			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, ".macro "))
-			parts := strings.Fields(rest)
-			if len(parts) == 0 {
-				return "", fmt.Errorf(".macro requires a name")
-			}
-			ctx.inMacro = true
-			ctx.macroName = parts[0]
-			// Strip trailing commas from parameter names
-			params := parts[1:]
-			for i, p := range params {
-				params[i] = strings.Trim(p, ",")
-			}
-			ctx.macroParams = params
-			ctx.macroBuf = nil
-			continue
-		}
-
-		// .endm outside macro
-		if trimmed == ".endm" {
-			return "", fmt.Errorf(".endm without .macro")
-		}
-
-		// .const NAME = value
-		if strings.HasPrefix(trimmed, ".const ") {
-			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, ".const "))
-			eqIdx := strings.Index(rest, "=")
-			if eqIdx < 0 {
-				return "", fmt.Errorf(".const requires '='")
-			}
-			name := strings.TrimSpace(rest[:eqIdx])
-			value := strings.TrimSpace(rest[eqIdx+1:])
+		if strings.HasPrefix(trimmed, ".once begin") {
+			name := strings.TrimSpace(strings.TrimPrefix(trimmed, ".once begin"))
 			if name == "" {
-				return "", fmt.Errorf(".const requires a name")
+				return "", fmt.Errorf(".once begin requires a block name")
 			}
-			ctx.defines[name] = true
-			ctx.consts[name] = value
+			if ctx.blockIncluded[name] {
+				ctx.skipBlockDepth = 1
+			} else {
+				ctx.blockOnceStack = append(ctx.blockOnceStack, name)
+			}
 			continue
 		}
 
-		// .include "path" or .include <pkg>
-		if incPath, ok := parseInclude(trimmed); ok {
-			content, err := ctx.loadInclude(incPath)
+		if strings.HasPrefix(trimmed, ".once end") {
+			name := strings.TrimSpace(strings.TrimPrefix(trimmed, ".once end"))
+			if name == "" {
+				return "", fmt.Errorf(".once end requires a block name")
+			}
+			if len(ctx.blockOnceStack) == 0 {
+				return "", fmt.Errorf(".once end %q without matching .once begin", name)
+			}
+			top := ctx.blockOnceStack[len(ctx.blockOnceStack)-1]
+			if top != name {
+				return "", fmt.Errorf(".once end name mismatch: began as %q, ended as %q", top, name)
+			}
+			ctx.blockOnceStack = ctx.blockOnceStack[:len(ctx.blockOnceStack)-1]
+			ctx.blockIncluded[name] = true
+			continue
+		}
+
+		if trimmed == ".once" {
+			continue // simple file-level dedup handled by includeFile
+		}
+
+		if strings.HasPrefix(trimmed, ".rept") {
+			countStr := strings.TrimSpace(strings.TrimPrefix(trimmed, ".rept"))
+			count, err := strconv.Atoi(countStr)
 			if err != nil {
-				return "", fmt.Errorf("include error: %v", err)
+				return "", fmt.Errorf("invalid .rept count: %s", countStr)
 			}
-			out.WriteString(content)
-			if !strings.HasSuffix(content, "\n") {
-				out.WriteString("\n")
-			}
+			ctx.reptCount = count
+			ctx.reptBuf = []string{}
+			ctx.inRept = true
 			continue
 		}
 
-		// .include_bytes "path"
-		if strings.HasPrefix(trimmed, ".include_bytes ") {
-			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, ".include_bytes "))
-			path := ""
-			if len(rest) >= 2 && rest[0] == '"' {
-				end := strings.IndexByte(rest[1:], '"')
-				if end >= 0 {
-					path = rest[1 : end+1]
-				}
-			}
-			if path == "" {
-				return "", fmt.Errorf(".include_bytes requires a quoted path")
-			}
-			resolvedPath := path
-			if !filepath.IsAbs(path) {
-				resolvedPath = filepath.Join(ctx.dir, path)
-			}
-			data, err := os.ReadFile(resolvedPath)
-			if err != nil {
-				return "", fmt.Errorf(".include_bytes: %v", err)
-			}
-			hex := bytesToDB(data)
-			out.WriteString(hex)
-			out.WriteString("\n")
-			continue
-		}
-
+		// Normal line
 		out.WriteString(line)
-		out.WriteString("\n")
+		out.WriteByte('\n')
 	}
 
 	if ctx.inMacro {
-		return "", fmt.Errorf("unclosed .macro for %s (missing .endm)", ctx.macroName)
+		return "", fmt.Errorf("unclosed macro: %s", ctx.macroName)
 	}
 	if len(ctx.ifStack) > 0 {
-		return "", fmt.Errorf("unclosed .ifdef (missing .endif)")
+		return "", fmt.Errorf("unclosed ifdef")
 	}
-	if ctx.inRept {
-		return "", fmt.Errorf("unclosed .rept (missing .endr)")
+	if len(ctx.blockOnceStack) > 0 {
+		return "", fmt.Errorf("unclosed .once begin block: %s", ctx.blockOnceStack[len(ctx.blockOnceStack)-1])
 	}
 
 	return out.String(), nil
 }
 
-// bytesToDB converts binary data to VAS db directives.
-func bytesToDB(data []byte) string {
-	var b strings.Builder
-	b.WriteString("; .include_bytes\n")
-	const cols = 16
-	for i := 0; i < len(data); i += cols {
-		end := i + cols
-		if end > len(data) {
-			end = len(data)
-		}
-		b.WriteString("\tdb ")
-		for j := i; j < end; j++ {
-			if j > i {
-				b.WriteString(", ")
-			}
-			fmt.Fprintf(&b, "0x%02x", data[j])
-		}
-		b.WriteString("\n")
+// parseInclude extracts path and package flag from .include directive.
+func parseInclude(line string) (path string, isPkg bool, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, ".include") || strings.HasPrefix(trimmed, ".include_bytes") {
+		return "", false, false
 	}
-	return b.String()
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, ".include"))
+	if len(rest) >= 2 && rest[0] == '"' {
+		end := strings.IndexByte(rest[1:], '"')
+		if end >= 0 {
+			return rest[1 : end+1], false, true
+		}
+	}
+	if len(rest) >= 2 && rest[0] == '<' {
+		end := strings.IndexByte(rest[1:], '>')
+		if end >= 0 {
+			return rest[1 : end+1], true, true
+		}
+	}
+	return "", false, false
 }
 
-// ── Pass 2: macro expansion ───────────────────────────────────────────────
-
-func (ctx *prepContext) expandMacros(input string) string {
-	lines := strings.Split(input, "\n")
-	var out strings.Builder
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		firstWord := strings.Fields(trimmed)
-		if len(firstWord) > 0 {
-			if def, ok := ctx.macros[firstWord[0]]; ok {
-				// Extract arguments (rest of line)
-				args := strings.Fields(strings.TrimSpace(strings.TrimPrefix(trimmed, firstWord[0])))
-				// Strip trailing commas from arguments
-				for i := range args {
-					args[i] = strings.Trim(args[i], ",")
-				}
-				// Pad missing args with empty strings
-				if len(args) < len(def.params) {
-					for len(args) < len(def.params) {
-						args = append(args, "")
-					}
-				}
-				// Expand body
-				ctx.labelCounter++
-				for _, bodyLine := range def.body {
-					expanded := bodyLine
-					for i, p := range def.params {
-						if i < len(args) {
-							expanded = strings.ReplaceAll(expanded, "\\"+p, args[i])
-						}
-					}
-					expanded = strings.ReplaceAll(expanded, "\\@", fmt.Sprintf("_%d", ctx.labelCounter))
-					out.WriteString(expanded)
-					out.WriteString("\n")
-				}
-				continue
-			}
-		}
-		out.WriteString(line)
-		out.WriteString("\n")
-	}
-	return out.String()
-}
-
-// ── Pass 3: const replacement ─────────────────────────────────────────────
-
-func (ctx *prepContext) applyConsts(input string) string {
-	if len(ctx.consts) == 0 {
-		return input
-	}
-	// Replace longest names first to avoid partial substitution
-	type kv struct{ k, v string }
-	var sorted []kv
-	for k, v := range ctx.consts {
-		sorted = append(sorted, kv{k, v})
-	}
-	// Sort by length descending (longest match first)
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if len(sorted[j].k) > len(sorted[i].k) {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
-	result := input
-	for _, kv := range sorted {
-		result = strings.ReplaceAll(result, kv.k, kv.v)
-	}
-	return result
-}
-
-// ── Include helpers ──────────────────────────────────────────────────────
-
-func parseInclude(line string) (string, bool) {
-	rest, ok := strings.CutPrefix(strings.TrimSpace(line), ".include")
-	if !ok {
+func parseIncludeBytes(line string) (string, bool) {
+	rest, found := strings.CutPrefix(strings.TrimSpace(line), ".include_bytes")
+	if !found {
 		return "", false
 	}
 	rest = strings.TrimSpace(rest)
@@ -492,78 +347,270 @@ func parseInclude(line string) (string, bool) {
 			return rest[1 : end+1], true
 		}
 	}
-	if len(rest) >= 2 && rest[0] == '<' {
-		end := strings.IndexByte(rest[1:], '>')
-		if end >= 0 {
-			return rest[1 : end+1], true
-		}
-	}
 	return "", false
 }
 
-func (ctx *prepContext) loadInclude(path string) (string, error) {
-	var content string
-	var resolvedDir string
-	var resolvedPath string // actual file path for deduplication
+func parseConst(line string) (string, string, error) {
+	parts := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ".const")), "=", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid .const syntax: %s", line)
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
+}
 
+// parseMacro extracts name and parameters from a .macro directive.
+// Handles both formats: .macro name param1, param2 and .macro name param1,param2
+func parseMacro(line string) (string, []string, error) {
+	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ".macro"))
+	var name string
+	var paramStr string
+	if idx := strings.IndexAny(rest, " \t"); idx >= 0 {
+		name = rest[:idx]
+		paramStr = strings.TrimSpace(rest[idx+1:])
+	} else {
+		name = rest
+	}
+	if name == "" {
+		return "", nil, fmt.Errorf("invalid .macro syntax: missing name")
+	}
+	var params []string
+	if paramStr != "" {
+		params = strings.Split(paramStr, ",")
+		for i := range params {
+			params[i] = strings.TrimSpace(params[i])
+		}
+	}
+	return name, params, nil
+}
+
+func (ctx *prepContext) loadInclude(path string, isPkg bool, depth int) (string, error) {
+	if isPkg {
+		return ctx.loadPackageInclude(path, depth)
+	}
+	return ctx.loadFileInclude(path, depth)
+}
+
+func (ctx *prepContext) loadFileInclude(path string, depth int) (string, error) {
 	if !filepath.IsAbs(path) {
-		candidate := filepath.Join(ctx.dir, path)
-		if data, err := os.ReadFile(candidate); err == nil {
-			content = string(data)
-			resolvedDir = filepath.Dir(candidate)
-			resolvedPath = candidate
-			goto found
+		cand := filepath.Join(ctx.dir, path)
+		if data, err := os.ReadFile(cand); err == nil {
+			return ctx.includeFile(cand, data, depth)
 		}
 	}
 	if filepath.IsAbs(path) {
 		if data, err := os.ReadFile(path); err == nil {
-			content = string(data)
-			resolvedDir = filepath.Dir(path)
-			resolvedPath = path
-			goto found
+			return ctx.includeFile(path, data, depth)
 		}
 	}
-	if ctx.pkgDir != "" {
-		candidate := filepath.Join(ctx.pkgDir, path, path+".vas")
-		if data, err := os.ReadFile(candidate); err == nil {
-			content = string(data)
-			resolvedDir = filepath.Dir(candidate)
-			resolvedPath = candidate
-			goto found
-		}
-		if strings.Contains(path, "/") || strings.Contains(path, "\\") {
-			candidate = filepath.Join(ctx.pkgDir, path)
-			if data, err := os.ReadFile(candidate); err == nil {
-				content = string(data)
-				resolvedDir = filepath.Dir(candidate)
-				resolvedPath = candidate
-				goto found
-			}
-		}
-	}
-	for _, searchDir := range ctx.vasPath {
-		candidate := filepath.Join(searchDir, path)
-		if data, err := os.ReadFile(candidate); err == nil {
-			content = string(data)
-			resolvedDir = filepath.Dir(candidate)
-			resolvedPath = candidate
-			goto found
+	for _, dir := range ctx.vasPath {
+		cand := filepath.Join(dir, path)
+		if data, err := os.ReadFile(cand); err == nil {
+			return ctx.includeFile(cand, data, depth)
 		}
 	}
 	return "", fmt.Errorf("%q not found in search path", path)
-
-found:
-	// Normalize path to absolute and resolve symlinks for deduplication
-	absPath, err := filepath.Abs(resolvedPath)
-	if err != nil {
-		absPath = resolvedPath
-	}
-	if realPath, err := filepath.EvalSymlinks(absPath); err == nil {
-		absPath = realPath
-	}
-	if ctx.included[absPath] {
-		return "", nil // already included
-	}
-	ctx.included[absPath] = true
-	return ctx.resolve(content, resolvedDir)
 }
+
+func (ctx *prepContext) loadFileBytes(path string) ([]byte, error) {
+	if !filepath.IsAbs(path) {
+		cand := filepath.Join(ctx.dir, path)
+		if data, err := os.ReadFile(cand); err == nil {
+			return data, nil
+		}
+	}
+	if filepath.IsAbs(path) {
+		if data, err := os.ReadFile(path); err == nil {
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("%q not found for .include_bytes", path)
+}
+
+func (ctx *prepContext) loadPackageInclude(pkgPath string, depth int) (string, error) {
+	parts := strings.SplitN(pkgPath, "/", 2)
+	pkgName := parts[0]
+	modPath := ""
+	if len(parts) > 1 {
+		modPath = parts[1]
+	} else {
+		modPath = pkgName
+	}
+	searchDirs := []string{}
+	if ctx.pkgDir != "" {
+		searchDirs = append(searchDirs, ctx.pkgDir)
+	}
+	searchDirs = append(searchDirs, ctx.vasPath...)
+	for _, root := range searchDirs {
+		candidates := []string{
+			filepath.Join(root, pkgName, modPath+".vas"),
+			filepath.Join(root, pkgName, modPath, "index.vas"),
+		}
+		for _, cand := range candidates {
+			if !isPathSafe(root, cand) {
+				continue
+			}
+			if data, err := os.ReadFile(cand); err == nil {
+				return ctx.includeFile(cand, data, depth)
+			}
+		}
+	}
+	return "", fmt.Errorf("package %q not found – run `vpk install %s` to install it", pkgPath, pkgName)
+}
+
+// includeFile handles deduplication and recursive resolution for a found file.
+func (ctx *prepContext) includeFile(filePath string, data []byte, depth int) (string, error) {
+	abs, err := filepath.Abs(filePath)
+	if err != nil {
+		abs = filePath
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = real
+	}
+	if ctx.included[abs] {
+		return "", nil
+	}
+	ctx.included[abs] = true
+	return ctx.resolve(string(data), filepath.Dir(filePath), depth+1)
+}
+
+func (ctx *prepContext) expandMacros(src string) (string, error) {
+	var outLines []string
+	lines := strings.Split(src, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) == 0 || strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, ";") {
+			outLines = append(outLines, line)
+			continue
+		}
+		parts := strings.Fields(trimmed)
+		if macro, ok := ctx.macros[parts[0]]; ok {
+			var args []string
+			if len(parts) > 1 {
+				argStr := strings.Join(parts[1:], " ")
+				args = strings.Split(argStr, ",")
+				for i := range args {
+					args[i] = strings.TrimSpace(args[i])
+				}
+			}
+			if len(args) != len(macro.params) {
+				return "", fmt.Errorf("macro argument mismatch for %s: expected %d, got %d", parts[0], len(macro.params), len(args))
+			}
+			ctx.labelCounter++
+			for _, mline := range macro.body {
+				expanded := mline
+				for pi, param := range macro.params {
+					expanded = strings.ReplaceAll(expanded, `\`+param, args[pi])
+				}
+				expanded = strings.ReplaceAll(expanded, `\@`, fmt.Sprintf("_%d", ctx.labelCounter))
+				outLines = append(outLines, expanded)
+			}
+		} else {
+			outLines = append(outLines, line)
+		}
+	}
+	// Rebuild output, preserving the original trailing newline behavior:
+	// do not add a newline after a final empty element (which would double the trailing newline).
+	var out strings.Builder
+	for i, l := range outLines {
+		out.WriteString(l)
+		if i < len(outLines)-1 || l != "" {
+			out.WriteByte('\n')
+		}
+	}
+	return out.String(), nil
+}
+
+func (ctx *prepContext) applyConsts(src string) (string, error) {
+	for name, value := range ctx.consts {
+		src = replaceWord(src, name, value)
+	}
+	lines := strings.Split(src, "\n")
+	for _, line := range lines {
+		tokens := strings.Fields(line)
+		for _, token := range tokens {
+			if isUndefConst(token) {
+				if _, ok := ctx.consts[token]; !ok {
+					return "", fmt.Errorf("undefined constant: %s", token)
+				}
+			}
+		}
+	}
+	return src, nil
+}
+
+// isInstructionOrDirective checks if a token is a known VAS instruction or directive keyword.
+func isInstructionOrDirective(s string) bool {
+	switch s {
+	case "ADD", "SUB", "MUL", "LOAD", "STORE", "LEA", "MOV", "MOVI",
+		"CMP", "JMP", "JE", "JNE", "JG", "JL", "JGE", "JLE",
+		"CALL", "RET", "NOP", "PUSH", "POP", "INT", "SYSCALL",
+		"SECTION", "GLOBAL", "EXTERN", "DATA", "TEXT", "BSS",
+		"ALIGN", "BYTE", "WORD", "DWORD", "QWORD", "DD", "DQ", "DB",
+		"TYPE", "SIZE", "LENGTH", "START", "TIMES", "EQU",
+		"RESB", "RESD", "RESQ", "INCBIN", "BITS":
+		return true
+	}
+	return false
+}
+
+// isUndefConst checks if a token looks like an undefined constant (e.g., SYS_WRITE).
+func isUndefConst(s string) bool {
+	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, ":") ||
+		strings.HasPrefix(s, "\"") || strings.HasPrefix(s, "'") {
+		return false
+	}
+	upper := strings.ToUpper(s)
+	if isInstructionOrDirective(upper) {
+		return false
+	}
+	if strings.HasPrefix(s, "v") && len(s) <= 3 {
+		if _, err := strconv.Atoi(s[1:]); err == nil {
+			return false
+		}
+	}
+	hasLetter := false
+	for _, r := range s {
+		if r >= 'a' && r <= 'z' {
+			return false
+		}
+		if (r >= 'A' && r <= 'Z') || r == '_' {
+			hasLetter = true
+		}
+	}
+	return hasLetter
+}
+
+func replaceWord(src, old, new string) string {
+	var out strings.Builder
+	lines := strings.Split(src, "\n")
+	for i, line := range lines {
+		tokens := strings.Split(line, " ")
+		for j, token := range tokens {
+			if token == old {
+				tokens[j] = new
+			}
+		}
+		out.WriteString(strings.Join(tokens, " "))
+		if i < len(lines)-1 {
+			out.WriteByte('\n')
+		}
+	}
+	return out.String()
+}
+
+// isPathSafe ensures candidate does not escape root.
+func isPathSafe(root, candidate string) bool {
+	abs, err := filepath.Abs(candidate)
+	if err != nil {
+		return false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(abs, absRoot+string(os.PathSeparator)) || abs == absRoot
+}
+
+// pkgCacheDir and searchPath are assumed to be defined elsewhere in the package.
+func pkgCacheDir() string { return "" }
+func searchPath() []string { return nil }

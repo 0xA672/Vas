@@ -1,5 +1,3 @@
-// prep_test.go
-
 package vas
 
 import (
@@ -26,7 +24,7 @@ func TestParseInclude(t *testing.T) {
 		{`; .include "comment"`, "", false},
 	}
 	for _, tt := range tests {
-		got, ok := parseInclude(tt.line)
+		got, _, ok := parseInclude(tt.line)
 		if ok != tt.wantOK || got != tt.want {
 			t.Errorf("parseInclude(%q) = (%q, %v), want (%q, %v)", tt.line, got, ok, tt.want, tt.wantOK)
 		}
@@ -62,6 +60,23 @@ MAIN:
 	}
 	if !strings.Contains(got, "MAIN:") {
 		t.Errorf("expected MAIN, got:\n%s", got)
+	}
+}
+
+func TestParseIncludePathTraversal(t *testing.T) {
+	tests := []struct {
+		line   string
+		want   string
+		wantOK bool
+	}{
+		{`.include "../secret.vas"`, "../secret.vas", true}, // Path traversal
+		{`.include "./local.vas"`, "./local.vas", true},     // Relative path
+	}
+	for _, tt := range tests {
+		got, _, ok := parseInclude(tt.line)
+		if ok != tt.wantOK || got != tt.want {
+			t.Errorf("parseInclude(%q) = (%q, %v), want (%q, %v)", tt.line, got, ok, tt.want, tt.wantOK)
+		}
 	}
 }
 
@@ -130,6 +145,7 @@ func TestPreprocessNoInclude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
+	// Preprocessor always ensures a trailing newline, preserving the original empty line.
 	if got != src+"\n" {
 		t.Errorf("expected:\n%q\ngot:\n%q", src+"\n", got)
 	}
@@ -163,6 +179,41 @@ func TestConstMultiple(t *testing.T) {
 	if !strings.Contains(got, "MOVI v1, 20") {
 		t.Errorf("expected B=20, got:\n%s", got)
 	}
+}
+
+func TestConstUndefined(t *testing.T) {
+	src := "MOVI v0, UNDEFINED_CONST\n"
+	_, err := testPrep(t, src)
+	if err == nil {
+		t.Fatal("expected error for undefined constant")
+	}
+}
+
+func TestConstRedefinition(t *testing.T) {
+	// Constants can now be redefined (last assignment wins).
+	src := ".const A = 1\n.const A = 2\nMOVI v0, A\n"
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: unexpected error: %v", err)
+	}
+	if strings.Contains(got, ".const") {
+		t.Errorf(".const lines should be stripped")
+	}
+	if !strings.Contains(got, "MOVI v0, 2") {
+		t.Errorf("expected A=2 after redefinition, got:\n%s", got)
+	}
+}
+
+func TestConstString(t *testing.T) {
+	src := `.const MSG = "hello"`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if strings.Contains(got, ".const") {
+		t.Errorf(".const line should be stripped, got:\n%s", got)
+	}
+	// Depending on implementation: string might be inlined or just stripped
 }
 
 // ── .macro tests ──────────────────────────────────────────────────────────
@@ -221,6 +272,36 @@ func TestMacroOrphanEndm(t *testing.T) {
 	}
 }
 
+func TestMacroArgMismatch(t *testing.T) {
+	src := `.macro add a, b
+ADD \a, \b
+.endm
+add v0
+`
+	_, err := testPrep(t, src)
+	if err == nil {
+		t.Fatal("expected error for macro argument mismatch")
+	}
+}
+
+func TestMacroWithIfdefInside(t *testing.T) {
+	src := `.macro debug_cond cond
+.ifdef DEBUG
+MOVI v0, \cond
+.endif
+.endm
+.const DEBUG = 1
+debug_cond 42
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, "MOVI v0, 42") {
+		t.Errorf("expected expanded macro with ifdef inside, got:\n%s", got)
+	}
+}
+
 // ── .ifdef / .else / .endif tests ────────────────────────────────────────
 
 func TestIfdef(t *testing.T) {
@@ -242,6 +323,34 @@ func TestIfndef(t *testing.T) {
 	}
 	if !strings.Contains(got, "MOVI v0, 42") {
 		t.Errorf("expected MOVI inside ifndef, got:\n%s", got)
+	}
+}
+
+func TestIfndefElse(t *testing.T) {
+	src := ".ifndef DEBUG\nMOVI v0, 1\n.else\nMOVI v1, 2\n.endif\n"
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, "MOVI v0, 1") {
+		t.Errorf("expected ifndef branch, got:\n%s", got)
+	}
+	if strings.Contains(got, "MOVI v1, 2") {
+		t.Errorf("else branch should not appear, got:\n%s", got)
+	}
+}
+
+func TestIfdefNestedWithElse(t *testing.T) {
+	src := ".const A = 1\n.ifdef A\n.ifdef B\nNOP\n.else\nMOVI v0, 1\n.endif\n.endif\n"
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, "MOVI v0, 1") {
+		t.Errorf("expected nested else branch, got:\n%s", got)
+	}
+	if strings.Contains(got, "NOP") {
+		t.Errorf("NOP should not appear (B not defined), got:\n%s", got)
 	}
 }
 
@@ -347,17 +456,16 @@ msg: db "hello", 0
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// .const should be resolved (SYS_WRITE → 1)
 	if !strings.Contains(got, "MOVI v0, 1") {
 		t.Errorf("const not resolved, got:\n%s", got)
 	}
-	// .macro should be expanded
 	if !strings.Contains(got, "LEA v4, [msg]") {
 		t.Errorf("macro not expanded, got:\n%s", got)
 	}
-	// No preprocessor directives should remain
-	if strings.Contains(got, ".macro") || strings.Contains(got, ".const") || strings.Contains(got, ".include") || strings.Contains(got, ".ifdef") || strings.Contains(got, ".endm") {
-		t.Errorf("preprocessor directives should be stripped, got:\n%s", got)
+	for _, directive := range []string{".macro", ".const", ".include", ".ifdef", ".endm"} {
+		if strings.Contains(got, directive) {
+			t.Errorf("preprocessor directive %q should be stripped, got:\n%s", directive, got)
+		}
 	}
 }
 
@@ -392,13 +500,42 @@ MOVI v0, SYS_write
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// Block should be included (first occurrence), const should be resolved
 	if !strings.Contains(got, "MOVI v0, 1") {
 		t.Errorf("expected const to be resolved in block, got:\n%s", got)
 	}
-	// Directives should be stripped
 	if strings.Contains(got, ".once begin") || strings.Contains(got, ".once end") {
 		t.Errorf(".once begin/end should be stripped, got:\n%s", got)
+	}
+}
+
+func TestPreprocessOnceBlockUnclosed(t *testing.T) {
+	src := `.once begin unclosed
+NOP
+`
+	_, err := testPrep(t, src)
+	if err == nil {
+		t.Fatal("expected error for unclosed .once begin block")
+	}
+}
+
+func TestPreprocessOnceBlockCrossFileDedup(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "lib.vas"), []byte(".once begin lib_init\nNOP\n.once end lib_init\n"), 0644)
+	
+	src := `.include "lib.vas"
+.once begin lib_init
+MOVI v0, 42
+.once end lib_init
+`
+	got, err := Preprocess(src, dir)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if strings.Contains(got, "MOVI v0, 42") {
+		t.Errorf("second occurrence of block across files should be skipped, got:\n%s", got)
+	}
+	if strings.Count(got, "NOP") != 1 {
+		t.Errorf("expected lib block once, got:\n%s", got)
 	}
 }
 
@@ -421,17 +558,28 @@ MAIN:
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// First block should be included (const resolved)
 	if !strings.Contains(got, "MOVI v0, 1") {
 		t.Errorf("expected first utils block const to be resolved, got:\n%s", got)
 	}
-	// Second block should be skipped
 	if strings.Contains(got, "SHOULD_NOT_APPEAR") || strings.Contains(got, "999") {
 		t.Errorf("second utils block should be skipped, got:\n%s", got)
 	}
-	// Code between blocks should be preserved
 	if !strings.Contains(got, "MAIN:") {
 		t.Errorf("expected code between blocks, got:\n%s", got)
+	}
+}
+
+func TestIncludeBytesEmpty(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "empty.bin")
+	os.WriteFile(bin, []byte{}, 0644)
+	src := `.include_bytes "` + bin + `"`
+	got, err := Preprocess(src, dir)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if strings.Contains(got, "db") {
+		t.Errorf("empty file should not produce db directive, got:\n%s", got)
 	}
 }
 
@@ -458,23 +606,25 @@ MOVI v2, C
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// First outer block should be included
 	if !strings.Contains(got, "MOVI v0, 1") || !strings.Contains(got, "MOVI v2, 3") {
 		t.Errorf("expected first outer block consts, got:\n%s", got)
 	}
-	// Nested inner block should also be included (first time)
 	if !strings.Contains(got, "MOVI v1, 2") {
 		t.Errorf("expected inner block const (first occurrence), got:\n%s", got)
 	}
-	// Second outer block should be skipped entirely
-	if strings.Contains(got, "MOVI") && strings.Contains(got, "4") {
-		// Check if it's the D=4 const specifically
+	// second outer block skipped, so D should not appear
+	if strings.Contains(got, "D") || strings.Contains(got, "4") {
+		// but "4" might appear in other contexts, so check if MOVI v? anything with 4
 		lines := strings.Split(got, "\n")
-		for _, line := range lines {
-			if strings.Contains(line, "4") && !strings.Contains(line, "MOVI v0, 1") && !strings.Contains(line, "MOVI v1, 2") && !strings.Contains(line, "MOVI v2, 3") {
-				t.Errorf("second outer block should be skipped, got:\n%s", got)
+		found := false
+		for _, l := range lines {
+			if strings.Contains(l, "MOVI") && strings.Contains(l, "4") {
+				found = true
 				break
 			}
+		}
+		if found {
+			t.Errorf("second outer block should be skipped, got:\n%s", got)
 		}
 	}
 }
@@ -511,11 +661,11 @@ MOVI v4, E
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// First level1 and all nested blocks should be included (constants resolved to values)
-	if !strings.Contains(got, "MOVI v0, 1") || !strings.Contains(got, "MOVI v1, 2") || !strings.Contains(got, "MOVI v2, 3") || !strings.Contains(got, "MOVI v3, 4") || !strings.Contains(got, "MOVI v4, 5") {
+	if !strings.Contains(got, "MOVI v0, 1") || !strings.Contains(got, "MOVI v1, 2") ||
+		!strings.Contains(got, "MOVI v2, 3") || !strings.Contains(got, "MOVI v3, 4") ||
+		!strings.Contains(got, "MOVI v4, 5") {
 		t.Errorf("expected all nested blocks in first occurrence with constants resolved, got:\n%s", got)
 	}
-	// Second level1 should be completely skipped
 	if strings.Contains(got, "SHOULD_NOT_APPEAR") || strings.Contains(got, "999") {
 		t.Errorf("second level1 block should be skipped, got:\n%s", got)
 	}
@@ -556,19 +706,13 @@ NOP
 	if err == nil {
 		t.Error("expected error for .once begin without name")
 	}
-	// The error could be either "requires a block name" or "without matching .once begin"
-	// depending on parsing order. Both are acceptable.
 	if !strings.Contains(err.Error(), "requires a block name") && !strings.Contains(err.Error(), "without matching") {
 		t.Errorf("expected error about missing name or unmatched end, got: %v", err)
 	}
 }
 
-// ── Advanced .once begin/end tests ───────────────────────────────────────
-
 func TestPreprocessOnceBlockWithInclude(t *testing.T) {
 	dir := t.TempDir()
-
-	// Create an included file with blocks
 	libContent := `.once begin lib_consts
 .const LIB_VERSION = 1
 .once end lib_consts
@@ -591,11 +735,9 @@ MOVI v0, LIB_VERSION
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// First inclusion should work
 	if !strings.Contains(got, "MOVI v0, 1") {
 		t.Errorf("expected const from first inclusion, got:\n%s", got)
 	}
-	// File-level dedup should prevent second inclusion entirely
 	if strings.Count(got, "LIB_VERSION") > 1 {
 		t.Errorf("file should only be included once, got:\n%s", got)
 	}
@@ -647,7 +789,6 @@ func TestPreprocessOnceBlockEmptyBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// Should handle empty blocks gracefully
 	if strings.Contains(got, ".once") {
 		t.Errorf(".once directives should be stripped, got:\n%s", got)
 	}
@@ -715,11 +856,9 @@ MOVI v2, C_VAL
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// All first blocks should be included
 	if !strings.Contains(got, "MOVI v0, 10") || !strings.Contains(got, "MOVI v1, 20") || !strings.Contains(got, "MOVI v2, 30") {
 		t.Errorf("expected all first blocks to be included, got:\n%s", got)
 	}
-	// All duplicate blocks should be skipped
 	if strings.Contains(got, "A_DUP") || strings.Contains(got, "B_DUP") || strings.Contains(got, "C_DUP") {
 		t.Errorf("duplicate blocks should be skipped, got:\n%s", got)
 	}
@@ -749,7 +888,6 @@ MOVI v0, VALUE
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// Should handle normal block names correctly (const resolved to 42)
 	if !strings.Contains(got, "MOVI v0, 42") {
 		t.Errorf("expected block content with const resolved to 42, got:\n%s", got)
 	}
@@ -778,7 +916,6 @@ MOVI v2, C
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// All three blocks have different names (case-sensitive), so all should be included
 	if !strings.Contains(got, "MOVI v0, 1") || !strings.Contains(got, "MOVI v1, 2") || !strings.Contains(got, "MOVI v2, 3") {
 		t.Errorf("expected all case-variant blocks to be included (names are case-sensitive), got:\n%s", got)
 	}
