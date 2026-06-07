@@ -1,0 +1,66 @@
+; once_block_demo.vas - Demonstrates .once begin/end for block-level deduplication
+; Author: 0xA672
+
+; This example shows how to use .once begin/end to control inclusion
+; of specific code blocks, preventing One Definition Rule (ODR) issues
+; at a finer granularity than file-level deduplication.
+
+; ── Block 1: System Call Constants ───────────────────────────────────────
+.once begin syscalls
+  .const SYS_write = 1
+  .const SYS_exit = 60
+  .const STDOUT = 1
+.once end syscalls
+
+; Test constant usage outside macro
+MOVI v0, SYS_write
+MOVI v5, STDOUT
+
+; ── Block 2: Utility Macros ──────────────────────────────────────────────
+.once begin utils
+  .macro print_msg msg_ptr, msg_len
+    MOVI v0, 1      ; SYS_write hardcoded for demo
+    MOVI v5, 1      ; STDOUT hardcoded
+    LEA  v4, [\msg_ptr]
+    MOVI v3, \msg_len
+    SYSCALL
+  .endm
+  
+  .macro exit_program code
+    MOVI v0, 60     ; SYS_exit hardcoded
+    MOVI v5, \code
+    SYSCALL
+  .endm
+.once end utils
+
+; ── Main Program ─────────────────────────────────────────────────────────
+section .text
+global _start
+
+_start:
+  ; Use the macros defined in the "utils" block
+  print_msg message, 13
+  exit_program 0
+
+section .data
+message: db "Hello World", 10
+
+; ── Simulate Duplicate Inclusion ─────────────────────────────────────────
+; In a real scenario, this might come from multiple .include directives
+; The second occurrence of these blocks will be skipped
+
+.once begin syscalls
+  ; This block is SKIPPED because "syscalls" was already included above
+  .const DUPLICATE_CONST = 999
+.once end syscalls
+
+.once begin utils
+  ; This block is also SKIPPED
+  .macro duplicate_macro
+    NOP
+  .endm
+.once end utils
+
+; Note: If you try to use DUPLICATE_CONST or duplicate_macro here,
+; you'll get an error because they were never defined (block was skipped).
+; This demonstrates the deduplication behavior.

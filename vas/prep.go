@@ -27,7 +27,7 @@ const (
 // prepContext tracks state during preprocessing.
 type prepContext struct {
 	dir      string
-	included map[string]bool
+	included map[string]bool // file-level deduplication (absolute paths)
 	pkgDir   string
 	vasPath  []string
 
@@ -46,18 +46,24 @@ type prepContext struct {
 	inRept    bool
 	reptCount int
 	reptBuf   []string
+
+	// Block-level deduplication for .once begin/end
+	blockOnceStack []string      // stack of active block names (.once begin <name>)
+	blockIncluded  map[string]bool // set of completed block names that were marked with .once
+	skipBlockDepth int            // depth of nested blocks being skipped (for .once end matching)
 }
 
 // Preprocess resolves all preprocessor directives and returns flattened source.
 func Preprocess(src, baseDir string) (string, error) {
 	ctx := &prepContext{
-		dir:      baseDir,
-		included: map[string]bool{},
-		pkgDir:   pkgCacheDir(),
-		vasPath:  searchPath(),
-		consts:   map[string]string{},
-		macros:   map[string]macroDef{},
-		defines:  map[string]bool{},
+		dir:           baseDir,
+		included:      map[string]bool{},
+		pkgDir:        pkgCacheDir(),
+		vasPath:       searchPath(),
+		consts:        map[string]string{},
+		macros:        map[string]macroDef{},
+		defines:       map[string]bool{},
+		blockIncluded: map[string]bool{},
 	}
 	// Pass 1: resolve include, collect macros/consts, handle ifdef
 	out, err := ctx.resolve(src, baseDir)
@@ -98,6 +104,75 @@ func (ctx *prepContext) resolve(input, baseDir string) (string, error) {
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+
+		// Handle .once begin/end first (these control skipBlockDepth)
+		// .once (file-level marker, documentation only)
+		if trimmed == ".once" {
+			continue
+		}
+
+		// .once begin <name> - start a block-level single-inclusion region
+		if strings.HasPrefix(trimmed, ".once begin ") {
+			blockName := strings.TrimSpace(strings.TrimPrefix(trimmed, ".once begin "))
+			if blockName == "" {
+				return "", fmt.Errorf(".once begin requires a block name")
+			}
+
+			// If we're already skipping blocks, just increase depth
+			if ctx.skipBlockDepth > 0 {
+				ctx.skipBlockDepth++
+				ctx.blockOnceStack = append(ctx.blockOnceStack, blockName)
+				continue
+			}
+
+			// Check if this block was already included
+			if ctx.blockIncluded[blockName] {
+				// Skip this block: mark it and increase skip depth
+				ctx.skipBlockDepth = 1
+				ctx.blockOnceStack = append(ctx.blockOnceStack, blockName)
+				continue
+			}
+
+			// First time seeing this block: include it
+			ctx.blockOnceStack = append(ctx.blockOnceStack, blockName)
+			continue
+		}
+
+		// .once end [<name>] - end a block-level single-inclusion region
+		if strings.HasPrefix(trimmed, ".once end") {
+			if len(ctx.blockOnceStack) == 0 {
+				return "", fmt.Errorf(".once end without matching .once begin")
+			}
+
+			// Pop the block from stack
+			blockName := ctx.blockOnceStack[len(ctx.blockOnceStack)-1]
+			ctx.blockOnceStack = ctx.blockOnceStack[:len(ctx.blockOnceStack)-1]
+
+			// Parse optional name for validation
+			endName := strings.TrimSpace(strings.TrimPrefix(trimmed, ".once end"))
+			if endName != "" && endName != blockName {
+				return "", fmt.Errorf(".once end name mismatch: expected %q, got %q", blockName, endName)
+			}
+
+			// If we're skipping blocks, decrease depth
+			if ctx.skipBlockDepth > 0 {
+				ctx.skipBlockDepth--
+				// If we just closed the block that triggered skipping, mark it
+				if ctx.skipBlockDepth == 0 {
+					ctx.blockIncluded[blockName] = true
+				}
+				continue
+			}
+
+			// Normal case: block was included, mark it as completed
+			ctx.blockIncluded[blockName] = true
+			continue
+		}
+
+		// If we're inside a skipped block, skip all other lines
+		if ctx.skipBlockDepth > 0 {
+			continue
+		}
 
 		// If inside a .rept block, collect lines until .endr
 		if ctx.inRept {
@@ -262,11 +337,6 @@ func (ctx *prepContext) resolve(input, baseDir string) (string, error) {
 			if !strings.HasSuffix(content, "\n") {
 				out.WriteString("\n")
 			}
-			continue
-		}
-
-		// .once
-		if trimmed == ".once" {
 			continue
 		}
 

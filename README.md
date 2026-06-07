@@ -14,7 +14,7 @@ It does not perform register allocation, instruction scheduling, or linking. Its
 
 ### 1. Write Pseudocode (`hello.vas`)
 
-```asm
+``asm
 ; hello.vas - print "hello world" via Linux write syscall
 MOVI v0, 1        ; rax = 1 (write syscall number)
 MOVI v5, 1        ; rdi = 1 (stdout fd)
@@ -37,7 +37,7 @@ vas -o hello.asm hello.vas
 
 Generated `hello.asm`:
 
-```asm
+```
 default rel
 
         section .text
@@ -71,7 +71,7 @@ ld -o hello hello.o
 ```
 
 **Windows** (nasm + ld):
-```bash
+```
 vas -target win64 hello.vas -o hello.asm
 nasm -f win64 -o hello.obj hello.asm
 ld -e main -o hello.exe hello.obj
@@ -280,7 +280,135 @@ MOVI v0, 42   ; this is a comment
 ADD  v1, v0   # this is also a comment
 ```
 
-### Labels
+### Preprocessor Directives
+
+VAS supports several preprocessor directives for code organization and conditional compilation:
+
+#### File Inclusion (`.include`)
+
+```asm
+.include "utils.vas"      ; Include from current directory or search path
+.include <std/io>         ; Include from package cache or VAS_PATH
+```
+
+**Automatic Deduplication**: VAS automatically prevents duplicate file inclusion based on absolute paths. The same file will only be expanded once, regardless of how many times it's included. This eliminates One Definition Rule (ODR) issues without requiring manual guards.
+
+#### Optional Single-Inclusion Marker (`.once`)
+
+```asm
+; utils.vas
+.once  ; Optional: documents that this file is designed for single inclusion
+
+.const SYS_write = 1
+.macro print_str ptr
+  MOVI v0, SYS_write
+  SYSCALL
+.endm
+```
+
+**Note**: The `.once` directive is optional and serves as documentation only. Since VAS already handles automatic deduplication at the file level, `.once` has no functional effect. It can be placed at the top of header files to indicate design intent, but the actual prevention of duplicate inclusion works regardless of this directive.
+
+#### Block-Level Single-Inclusion (`.once begin` / `.once end`)
+
+For fine-grained control over code blocks, use `.once begin <name>` and `.once end [<name>]`:
+
+```asm
+; utils.vas - Block-level deduplication
+
+.once begin constants
+  .const SYS_write = 1
+  .const BUFFER_SIZE = 1024
+.once end constants
+
+.once begin macros
+  .macro print_str ptr
+    MOVI v0, SYS_write
+    SYSCALL
+  .endm
+.once end macros
+
+; Later in the same file or another included file...
+.once begin constants
+  ; This block will be SKIPPED because "constants" was already included
+  .const SHOULD_NOT_APPEAR = 999
+.once end constants
+```
+
+**Features:**
+- **Named Blocks**: Each block must have a unique name for identification
+- **Deduplication**: Blocks with the same name are only included once (first occurrence)
+- **Nesting Support**: Blocks can be nested; inner blocks maintain their own deduplication state
+- **Name Validation**: Optional name in `.once end` is checked against the matching `.once begin`
+- **Error Detection**: Unmatched `.once end` or missing block names produce clear error messages
+
+**Use Cases:**
+- Organize large header files into logical sections
+- Conditionally include different implementations
+- Prevent ODR issues for specific code blocks without affecting the entire file
+
+#### Constants (`.const`)
+
+```asm
+.const SYS_write = 1
+.const BUFFER_SIZE = 1024
+
+MOVI v0, SYS_write     ; → MOVI v0, 1
+```
+
+Constants are pure text substitutions. Defined constants are automatically available for `.ifdef` checks.
+
+#### Conditional Compilation (`.ifdef` / `.ifndef` / `.else` / `.endif`)
+
+```asm
+.const DEBUG = 1
+
+.ifdef DEBUG
+  MOVI v0, 1      ; Debug mode code
+.else
+  MOVI v0, 0      ; Release mode code
+.endif
+```
+
+Only checks if a name is defined (via `.const`), does not support value comparison.
+
+#### Macros (`.macro` / `.endm`)
+
+```asm
+.macro strlen ptr, len
+  MOVI \len, 0
+  .loop\@:
+    CMP [\ptr + \len], 0
+    JE .done\@
+    ADD \len, \len, 1
+    JMP .loop\@
+  .done\@:
+.endm
+
+strlen msg, v1  ; Expands with unique labels (.loop_1, .done_1)
+```
+
+- `\param` - Parameter substitution
+- `\@` - Unique label generation (auto-incrementing counter)
+
+#### Repetition (`.rept` / `.endr`)
+
+```asm
+.rept 5
+  NOP
+.endr
+; Expands to 5 NOP instructions
+```
+
+#### Binary Data Inclusion (`.include_bytes`)
+
+```asm
+.include_bytes "data.bin"
+; Converts to db directives with hex bytes
+```
+
+---
+
+## Labels
 
 Lines ending with `:` that are not known pseudo-instructions pass through as labels with virtual register substitution:
 

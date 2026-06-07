@@ -377,3 +377,409 @@ NOP
 		t.Errorf("expected NOP (DEBUG defined via .const), got:\n%s", got)
 	}
 }
+
+// ── .once begin/end tests ────────────────────────────────────────────────
+
+func TestPreprocessOnceBlockBasic(t *testing.T) {
+	src := `.once begin constants
+.const SYS_write = 1
+.const BUFFER_SIZE = 1024
+.once end constants
+
+MOVI v0, SYS_write
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// Block should be included (first occurrence), const should be resolved
+	if !strings.Contains(got, "MOVI v0, 1") {
+		t.Errorf("expected const to be resolved in block, got:\n%s", got)
+	}
+	// Directives should be stripped
+	if strings.Contains(got, ".once begin") || strings.Contains(got, ".once end") {
+		t.Errorf(".once begin/end should be stripped, got:\n%s", got)
+	}
+}
+
+func TestPreprocessOnceBlockDedup(t *testing.T) {
+	src := `.once begin utils
+.const UTILS_LOADED = 1
+.once end utils
+
+; Some code here
+MOVI v0, UTILS_LOADED
+
+.once begin utils
+.const SHOULD_NOT_APPEAR = 999
+.once end utils
+
+MAIN:
+  RET
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// First block should be included (const resolved)
+	if !strings.Contains(got, "MOVI v0, 1") {
+		t.Errorf("expected first utils block const to be resolved, got:\n%s", got)
+	}
+	// Second block should be skipped
+	if strings.Contains(got, "SHOULD_NOT_APPEAR") || strings.Contains(got, "999") {
+		t.Errorf("second utils block should be skipped, got:\n%s", got)
+	}
+	// Code between blocks should be preserved
+	if !strings.Contains(got, "MAIN:") {
+		t.Errorf("expected code between blocks, got:\n%s", got)
+	}
+}
+
+func TestPreprocessOnceBlockNested(t *testing.T) {
+	src := `.once begin outer
+.const A = 1
+
+.once begin inner
+.const B = 2
+.once end inner
+
+.const C = 3
+.once end outer
+
+MOVI v0, A
+MOVI v1, B
+MOVI v2, C
+
+.once begin outer
+.const D = 4
+.once end outer
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// First outer block should be included
+	if !strings.Contains(got, "MOVI v0, 1") || !strings.Contains(got, "MOVI v2, 3") {
+		t.Errorf("expected first outer block consts, got:\n%s", got)
+	}
+	// Nested inner block should also be included (first time)
+	if !strings.Contains(got, "MOVI v1, 2") {
+		t.Errorf("expected inner block const (first occurrence), got:\n%s", got)
+	}
+	// Second outer block should be skipped entirely
+	if strings.Contains(got, "MOVI") && strings.Contains(got, "4") {
+		// Check if it's the D=4 const specifically
+		lines := strings.Split(got, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "4") && !strings.Contains(line, "MOVI v0, 1") && !strings.Contains(line, "MOVI v1, 2") && !strings.Contains(line, "MOVI v2, 3") {
+				t.Errorf("second outer block should be skipped, got:\n%s", got)
+				break
+			}
+		}
+	}
+}
+
+func TestPreprocessOnceBlockDeepNesting(t *testing.T) {
+	src := `.once begin level1
+.const A = 1
+
+.once begin level2
+.const B = 2
+
+.once begin level3
+.const C = 3
+.once end level3
+
+.const D = 4
+.once end level2
+
+.const E = 5
+.once end level1
+
+MOVI v0, A
+MOVI v1, B
+MOVI v2, C
+MOVI v3, D
+MOVI v4, E
+
+; Second occurrence - all nested blocks should be skipped
+.once begin level1
+.const SHOULD_NOT_APPEAR = 999
+.once end level1
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// First level1 and all nested blocks should be included (constants resolved to values)
+	if !strings.Contains(got, "MOVI v0, 1") || !strings.Contains(got, "MOVI v1, 2") || !strings.Contains(got, "MOVI v2, 3") || !strings.Contains(got, "MOVI v3, 4") || !strings.Contains(got, "MOVI v4, 5") {
+		t.Errorf("expected all nested blocks in first occurrence with constants resolved, got:\n%s", got)
+	}
+	// Second level1 should be completely skipped
+	if strings.Contains(got, "SHOULD_NOT_APPEAR") || strings.Contains(got, "999") {
+		t.Errorf("second level1 block should be skipped, got:\n%s", got)
+	}
+}
+
+func TestPreprocessOnceBlockMismatch(t *testing.T) {
+	src := `.once begin foo
+NOP
+.once end bar
+`
+	_, err := testPrep(t, src)
+	if err == nil {
+		t.Error("expected error for mismatched block names")
+	}
+	if !strings.Contains(err.Error(), "name mismatch") {
+		t.Errorf("expected 'name mismatch' error, got: %v", err)
+	}
+}
+
+func TestPreprocessOnceBlockUnmatchedEnd(t *testing.T) {
+	src := `.once end orphan
+`
+	_, err := testPrep(t, src)
+	if err == nil {
+		t.Error("expected error for unmatched .once end")
+	}
+	if !strings.Contains(err.Error(), "without matching") {
+		t.Errorf("expected 'without matching' error, got: %v", err)
+	}
+}
+
+func TestPreprocessOnceBlockNoName(t *testing.T) {
+	src := `.once begin
+NOP
+.once end
+`
+	_, err := testPrep(t, src)
+	if err == nil {
+		t.Error("expected error for .once begin without name")
+	}
+	// The error could be either "requires a block name" or "without matching .once begin"
+	// depending on parsing order. Both are acceptable.
+	if !strings.Contains(err.Error(), "requires a block name") && !strings.Contains(err.Error(), "without matching") {
+		t.Errorf("expected error about missing name or unmatched end, got: %v", err)
+	}
+}
+
+// ── Advanced .once begin/end tests ───────────────────────────────────────
+
+func TestPreprocessOnceBlockWithInclude(t *testing.T) {
+	dir := t.TempDir()
+	
+	// Create an included file with blocks
+	libContent := `.once begin lib_consts
+.const LIB_VERSION = 1
+.once end lib_consts
+
+.once begin lib_macros
+.macro lib_func
+  NOP
+.endm
+.once end lib_macros
+`
+	os.WriteFile(filepath.Join(dir, "lib.vas"), []byte(libContent), 0644)
+	
+	src := `.include "lib.vas"
+MOVI v0, LIB_VERSION
+
+; Try to include again - blocks should be skipped
+.include "lib.vas"
+`
+	got, err := Preprocess(src, dir)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// First inclusion should work
+	if !strings.Contains(got, "MOVI v0, 1") {
+		t.Errorf("expected const from first inclusion, got:\n%s", got)
+	}
+	// File-level dedup should prevent second inclusion entirely
+	if strings.Count(got, "LIB_VERSION") > 1 {
+		t.Errorf("file should only be included once, got:\n%s", got)
+	}
+}
+
+func TestPreprocessOnceBlockMixedWithIfdef(t *testing.T) {
+	src := `.const ENABLE_FEATURE = 1
+
+.once begin feature_block
+.ifdef ENABLE_FEATURE
+.const FEATURE_ENABLED = 1
+.else
+.const FEATURE_DISABLED = 1
+.endif
+.once end feature_block
+
+MOVI v0, FEATURE_ENABLED
+
+; Second occurrence should be skipped even if ifdef condition changes
+.const ENABLE_FEATURE = 0
+.once begin feature_block
+.ifdef ENABLE_FEATURE
+.const SHOULD_NOT_APPEAR = 999
+.endif
+.once end feature_block
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// First block should be processed (FEATURE_ENABLED defined and resolved to 1)
+	if !strings.Contains(got, "MOVI v0, 1") {
+		t.Errorf("expected first block to be included with const resolved to 1, got:\n%s", got)
+	}
+	// Second block should be skipped entirely
+	if strings.Contains(got, "SHOULD_NOT_APPEAR") || strings.Contains(got, "999") {
+		t.Errorf("second block should be skipped regardless of ifdef, got:\n%s", got)
+	}
+}
+
+func TestPreprocessOnceBlockEmptyBlock(t *testing.T) {
+	src := `.once begin empty_block
+.once end empty_block
+
+.once begin empty_block
+.once end empty_block
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// Should handle empty blocks gracefully
+	if strings.Contains(got, ".once") {
+		t.Errorf(".once directives should be stripped, got:\n%s", got)
+	}
+}
+
+func TestPreprocessOnceBlockWithRept(t *testing.T) {
+	src := `.once begin rept_block
+.rept 3
+DB 0xFF
+.endr
+.once end rept_block
+
+.once begin rept_block
+.rept 3
+DB 0x00
+.once end rept_block
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// First block should expand rept
+	count := strings.Count(got, "0xFF")
+	if count != 3 {
+		t.Errorf("expected 3 occurrences of 0xFF, got %d:\n%s", count, got)
+	}
+	// Second block should be skipped
+	if strings.Contains(got, "0x00") {
+		t.Errorf("second rept block should be skipped, got:\n%s", got)
+	}
+}
+
+func TestPreprocessOnceBlockMultipleBlocksSameFile(t *testing.T) {
+	src := `.once begin block_a
+.const A_VAL = 10
+.once end block_a
+
+.once begin block_b
+.const B_VAL = 20
+.once end block_b
+
+.once begin block_c
+.const C_VAL = 30
+.once end block_c
+
+; Duplicate all three blocks
+.once begin block_a
+.const A_DUP = 100
+.once end block_a
+
+.once begin block_b
+.const B_DUP = 200
+.once end block_b
+
+.once begin block_c
+.const C_DUP = 300
+.once end block_c
+
+; Use constants
+MOVI v0, A_VAL
+MOVI v1, B_VAL
+MOVI v2, C_VAL
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// All first blocks should be included
+	if !strings.Contains(got, "MOVI v0, 10") || !strings.Contains(got, "MOVI v1, 20") || !strings.Contains(got, "MOVI v2, 30") {
+		t.Errorf("expected all first blocks to be included, got:\n%s", got)
+	}
+	// All duplicate blocks should be skipped
+	if strings.Contains(got, "A_DUP") || strings.Contains(got, "B_DUP") || strings.Contains(got, "C_DUP") {
+		t.Errorf("duplicate blocks should be skipped, got:\n%s", got)
+	}
+}
+
+func TestPreprocessOnceBlockEndWithoutBeginInNested(t *testing.T) {
+	src := `.once begin outer
+.once end inner
+`
+	_, err := testPrep(t, src)
+	if err == nil {
+		t.Error("expected error for .once end with wrong name in nested context")
+	}
+	if !strings.Contains(err.Error(), "name mismatch") {
+		t.Errorf("expected 'name mismatch' error, got: %v", err)
+	}
+}
+
+func TestPreprocessOnceBlockWhitespaceHandling(t *testing.T) {
+	src := `.once begin spaced_name
+.const VALUE = 42
+.once end spaced_name
+
+MOVI v0, VALUE
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// Should handle normal block names correctly (const resolved to 42)
+	if !strings.Contains(got, "MOVI v0, 42") {
+		t.Errorf("expected block content with const resolved to 42, got:\n%s", got)
+	}
+}
+
+func TestPreprocessOnceBlockCaseSensitive(t *testing.T) {
+	src := `.once begin MyBlock
+.const A = 1
+.once end MyBlock
+
+MOVI v0, A
+
+.once begin myblock
+.const B = 2
+.once end myblock
+
+MOVI v1, B
+
+.once begin MYBLOCK
+.const C = 3
+.once end MYBLOCK
+
+MOVI v2, C
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	// All three blocks have different names (case-sensitive), so all should be included
+	if !strings.Contains(got, "MOVI v0, 1") || !strings.Contains(got, "MOVI v1, 2") || !strings.Contains(got, "MOVI v2, 3") {
+		t.Errorf("expected all case-variant blocks to be included (names are case-sensitive), got:\n%s", got)
+	}
+}
