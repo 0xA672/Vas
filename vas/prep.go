@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -32,15 +33,19 @@ type prepContext struct {
 
 	consts  map[string]string // .const NAME = value
 	macros  map[string]macroDef
-	defines map[string]bool // defined names (for .ifdef)
+	defines map[string]bool   // defined names (for .ifdef)
 
 	ifStack []ifState
 
-	macroBuf     []string // lines being collected for current macro
+	macroBuf     []string // lines collected for current macro definition
 	macroName    string   // name of macro being defined
 	macroParams  []string
 	inMacro      bool
 	labelCounter int // for unique labels (\\@)
+
+	inRept    bool
+	reptCount int
+	reptBuf   []string
 }
 
 // Preprocess resolves all preprocessor directives and returns flattened source.
@@ -94,7 +99,25 @@ func (ctx *prepContext) resolve(input, baseDir string) (string, error) {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// Check if we're in a macro definition
+		// If inside a .rept block, collect lines until .endr
+		if ctx.inRept {
+			if trimmed == ".endr" {
+				for i := 0; i < ctx.reptCount; i++ {
+					for _, rline := range ctx.reptBuf {
+						out.WriteString(rline)
+						out.WriteString("\n")
+					}
+				}
+				ctx.inRept = false
+				ctx.reptCount = 0
+				ctx.reptBuf = nil
+				continue
+			}
+			ctx.reptBuf = append(ctx.reptBuf, line)
+			continue
+		}
+
+		// If inside a macro definition, collect body lines
 		if ctx.inMacro {
 			if trimmed == ".endm" {
 				ctx.macros[ctx.macroName] = macroDef{
@@ -111,6 +134,22 @@ func (ctx *prepContext) resolve(input, baseDir string) (string, error) {
 			continue
 		}
 
+		// .rept count
+		if strings.HasPrefix(trimmed, ".rept ") {
+			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, ".rept "))
+			count, err := strconv.Atoi(rest)
+			if err != nil || count < 0 {
+				return "", fmt.Errorf(".rept requires a non-negative integer count")
+			}
+			ctx.inRept = true
+			ctx.reptCount = count
+			ctx.reptBuf = nil
+			continue
+		}
+		if trimmed == ".endr" {
+			return "", fmt.Errorf(".endr without .rept")
+		}
+
 		// .ifdef / .ifndef
 		if strings.HasPrefix(trimmed, ".ifdef ") || strings.HasPrefix(trimmed, ".ifndef ") {
 			name := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trimmed, ".ifdef "), ".ifndef "))
@@ -118,8 +157,9 @@ func (ctx *prepContext) resolve(input, baseDir string) (string, error) {
 			defined := ctx.defines[name]
 			active := (isIfdef && defined) || (!isIfdef && !defined)
 
+			// If any outer block is not active, force this block to be inactive
 			if len(ctx.ifStack) > 0 && ctx.ifStack[len(ctx.ifStack)-1] != ifActive {
-				active = false // nested inside an inactive block
+				active = false
 			}
 
 			if active {
@@ -140,7 +180,17 @@ func (ctx *prepContext) resolve(input, baseDir string) (string, error) {
 				return "", fmt.Errorf(".else after .else")
 			}
 			if top == ifSkipping {
-				ctx.ifStack[len(ctx.ifStack)-1] = ifActive
+				// Allow activation only if all outer blocks are active
+				canActivate := true
+				for _, s := range ctx.ifStack[:len(ctx.ifStack)-1] {
+					if s != ifActive {
+						canActivate = false
+						break
+					}
+				}
+				if canActivate {
+					ctx.ifStack[len(ctx.ifStack)-1] = ifActive
+				}
 			} else { // ifActive
 				ctx.ifStack[len(ctx.ifStack)-1] = ifDone
 			}
@@ -170,10 +220,12 @@ func (ctx *prepContext) resolve(input, baseDir string) (string, error) {
 			}
 			ctx.inMacro = true
 			ctx.macroName = parts[0]
-			ctx.macroParams = make([]string, len(parts[1:]))
-			for i, p := range parts[1:] {
-				ctx.macroParams[i] = strings.Trim(p, ",")
+			// Strip trailing commas from parameter names
+			params := parts[1:]
+			for i, p := range params {
+				params[i] = strings.Trim(p, ",")
 			}
+			ctx.macroParams = params
 			ctx.macroBuf = nil
 			continue
 		}
@@ -255,6 +307,9 @@ func (ctx *prepContext) resolve(input, baseDir string) (string, error) {
 	if len(ctx.ifStack) > 0 {
 		return "", fmt.Errorf("unclosed .ifdef (missing .endif)")
 	}
+	if ctx.inRept {
+		return "", fmt.Errorf("unclosed .rept (missing .endr)")
+	}
 
 	return out.String(), nil
 }
@@ -289,17 +344,17 @@ func (ctx *prepContext) expandMacros(input string) string {
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		// Check if this line is a macro call
 		firstWord := strings.Fields(trimmed)
 		if len(firstWord) > 0 {
 			if def, ok := ctx.macros[firstWord[0]]; ok {
 				// Extract arguments (rest of line)
 				args := strings.Fields(strings.TrimSpace(strings.TrimPrefix(trimmed, firstWord[0])))
+				// Strip trailing commas from arguments
 				for i := range args {
 					args[i] = strings.Trim(args[i], ",")
 				}
+				// Pad missing args with empty strings
 				if len(args) < len(def.params) {
-					// Pad missing args with empty
 					for len(args) < len(def.params) {
 						args = append(args, "")
 					}
@@ -377,17 +432,16 @@ func parseInclude(line string) (string, bool) {
 }
 
 func (ctx *prepContext) loadInclude(path string) (string, error) {
-	if ctx.included[path] {
-		return "", nil
-	}
 	var content string
 	var resolvedDir string
+	var resolvedPath string // actual file path for deduplication
 
 	if !filepath.IsAbs(path) {
 		candidate := filepath.Join(ctx.dir, path)
 		if data, err := os.ReadFile(candidate); err == nil {
 			content = string(data)
 			resolvedDir = filepath.Dir(candidate)
+			resolvedPath = candidate
 			goto found
 		}
 	}
@@ -395,6 +449,7 @@ func (ctx *prepContext) loadInclude(path string) (string, error) {
 		if data, err := os.ReadFile(path); err == nil {
 			content = string(data)
 			resolvedDir = filepath.Dir(path)
+			resolvedPath = path
 			goto found
 		}
 	}
@@ -403,6 +458,7 @@ func (ctx *prepContext) loadInclude(path string) (string, error) {
 		if data, err := os.ReadFile(candidate); err == nil {
 			content = string(data)
 			resolvedDir = filepath.Dir(candidate)
+			resolvedPath = candidate
 			goto found
 		}
 		if strings.Contains(path, "/") || strings.Contains(path, "\\") {
@@ -410,6 +466,7 @@ func (ctx *prepContext) loadInclude(path string) (string, error) {
 			if data, err := os.ReadFile(candidate); err == nil {
 				content = string(data)
 				resolvedDir = filepath.Dir(candidate)
+				resolvedPath = candidate
 				goto found
 			}
 		}
@@ -419,12 +476,24 @@ func (ctx *prepContext) loadInclude(path string) (string, error) {
 		if data, err := os.ReadFile(candidate); err == nil {
 			content = string(data)
 			resolvedDir = filepath.Dir(candidate)
+			resolvedPath = candidate
 			goto found
 		}
 	}
 	return "", fmt.Errorf("%q not found in search path", path)
 
 found:
-	ctx.included[path] = true
+	// Normalize path to absolute and resolve symlinks for deduplication
+	absPath, err := filepath.Abs(resolvedPath)
+	if err != nil {
+		absPath = resolvedPath
+	}
+	if realPath, err := filepath.EvalSymlinks(absPath); err == nil {
+		absPath = realPath
+	}
+	if ctx.included[absPath] {
+		return "", nil // already included
+	}
+	ctx.included[absPath] = true
 	return ctx.resolve(content, resolvedDir)
 }
