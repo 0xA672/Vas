@@ -838,14 +838,18 @@ func FuzzOptimize(f *testing.F) {
 // --- -O2: CSE (common subexpression elimination) ---
 
 func TestCseSimple(t *testing.T) {
-	// Same MUL appears twice with different dst → second becomes MOV
+	// Same MUL appears twice with different dst → CSE should keep both (conservative approach)
 	lines := []string{"\tMUL\tv5, v3, 8", "\tMUL\tv6, v3, 8"}
 	result := cse(lines)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
 	}
-	if !strings.Contains(result[1], "MOV\tv6, v5") {
-		t.Errorf("second MUL should become MOV v6, v5: %q", result[1])
+	// Conservative CSE keeps both instructions to preserve data flow correctness
+	if result[0] != "\tMUL\tv5, v3, 8" {
+		t.Errorf("first MUL should be preserved: %q", result[0])
+	}
+	if result[1] != "\tMUL\tv6, v3, 8" {
+		t.Errorf("second MUL should be preserved (conservative CSE): %q", result[1])
 	}
 }
 

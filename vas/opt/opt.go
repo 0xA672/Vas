@@ -61,14 +61,14 @@ func Optimize(input string, level int) string {
 
 	// Pre-expansion optimizations (operate on VAS virtual registers)
 	lines = copyPropagate(lines)
-	// TEMPORARILY DISABLED - BUG: incorrectly propagates constants after register modification
-	// lines = constPropagate(lines)
+	lines = constPropagate(lines)
 	lines = strengthReduce(lines)
 	lines = storeLoadFwd(lines)
 	lines = deadStoreElim(lines)
 	lines = deadCodeElim(lines)
 
 	// Peephole runs post-expansion too, so keep it last.
+	lines = peephole(lines)
 	lines = peephole(lines)
 
 	// -O2: more aggressive optimizations (only on VAS source, NOT on NASM output)
@@ -500,22 +500,26 @@ func propagateBlock(lines []string) []string {
 		}
 
 		// Step 2: update alias map (resolve source transitively)
-		if op == "MOV" && dst >= 0 && len(args) >= 2 {
-			srcRi := resolve(regIndex(args[1]))
-			if srcRi >= 0 {
-				alias[dst] = srcRi
-			}
-		}
-
 		// CRITICAL FIX: When any instruction writes to a register, invalidate ALL aliases pointing to it
 		// This prevents stale alias chains after register values are modified
+
+		// First, clear all aliases pointing to the destination register (before setting new alias)
 		if dst >= 0 {
 			for j := range alias {
 				if alias[j] == dst {
 					alias[j] = -1
 				}
 			}
-			// Also clear the destination's own alias (it now holds a new value)
+		}
+
+		// Then set the new alias for MOV instructions
+		if op == "MOV" && dst >= 0 && len(args) >= 2 {
+			srcRi := resolve(regIndex(args[1]))
+			if srcRi >= 0 {
+				alias[dst] = srcRi
+			}
+		} else if dst >= 0 {
+			// For non-MOV instructions that write to a register, clear its alias
 			alias[dst] = -1
 		}
 		result[i] = newLine
@@ -1499,12 +1503,11 @@ func licm(lines []string) []string {
 			op := strings.ToUpper(fields[0])
 			args := fields[1:]
 
-			// Check if this instruction is loop-invariant:
-			// 1. It doesn't modify any register used in the loop condition
-			// 2. All its source operands are not modified in the loop
-			isInvariant := true
+			// Conservative approach: Only hoist LEA with label operands
+			// Other instructions are too risky to hoist without full dataflow analysis
+			isInvariant := false
 
-			// For LEA with memory operand like [data], check if base reg is modified
+			// For LEA with memory operand like [data] or [label], check if it's truly invariant
 			if op == "LEA" && len(args) >= 2 {
 				// Extract base register from memory operand [reg] or [reg+offset]
 				memOp := args[1]
@@ -1518,14 +1521,9 @@ func licm(lines []string) []string {
 					memOp = memOp[:minusIdx]
 				}
 				// Check if base register is modified in loop
-				if modified[memOp] {
-					isInvariant = false
+				if !modified[memOp] {
+					isInvariant = true
 				}
-			}
-
-			// For MOVI, always invariant (immediate value)
-			if op == "MOVI" {
-				isInvariant = true
 			}
 
 			if isInvariant {
