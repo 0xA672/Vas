@@ -521,7 +521,7 @@ NOP
 func TestPreprocessOnceBlockCrossFileDedup(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "lib.vas"), []byte(".once begin lib_init\nNOP\n.once end lib_init\n"), 0644)
-	
+
 	src := `.include "lib.vas"
 .once begin lib_init
 MOVI v0, 42

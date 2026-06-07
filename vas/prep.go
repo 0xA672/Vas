@@ -24,26 +24,26 @@ type macroDef struct {
 
 // prepContext tracks state during preprocessing.
 type prepContext struct {
-	dir      string
-	included map[string]bool // file-level deduplication (absolute paths)
-	pkgDir   string
-	vasPath  []string
-	consts   map[string]string   // .const NAME = value
-	macros   map[string]macroDef // .macro definitions
-	defines  map[string]bool     // defined names (for .ifdef)
-	ifStack  []ifState
-	macroBuf    []string // lines collected for current macro definition
-	macroName   string   // name of macro being defined
-	macroParams []string
-	inMacro     bool
+	dir          string
+	included     map[string]bool // file-level deduplication (absolute paths)
+	pkgDir       string
+	vasPath      []string
+	consts       map[string]string   // .const NAME = value
+	macros       map[string]macroDef // .macro definitions
+	defines      map[string]bool     // defined names (for .ifdef)
+	ifStack      []ifState
+	macroBuf     []string // lines collected for current macro definition
+	macroName    string   // name of macro being defined
+	macroParams  []string
+	inMacro      bool
 	labelCounter int // for unique labels (\@)
-	inRept    bool
-	reptCount int
-	reptBuf   []string
+	inRept       bool
+	reptCount    int
+	reptBuf      []string
 	// Block-level deduplication for .once begin/end
-	blockOnceStack []string // stack of active block names (.once begin <name>)
+	blockOnceStack []string        // stack of active block names (.once begin <name>)
 	blockIncluded  map[string]bool // set of completed block names that were marked with .once
-	skipBlockDepth int // depth of nested blocks being skipped (for .once end matching)
+	skipBlockDepth int             // depth of nested blocks being skipped (for .once end matching)
 }
 
 // Preprocess resolves all preprocessor directives and returns flattened source.
@@ -612,5 +612,5 @@ func isPathSafe(root, candidate string) bool {
 }
 
 // pkgCacheDir and searchPath are assumed to be defined elsewhere in the package.
-func pkgCacheDir() string { return "" }
+func pkgCacheDir() string  { return "" }
 func searchPath() []string { return nil }
