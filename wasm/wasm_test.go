@@ -3,6 +3,7 @@
 package main
 
 import (
+	"syscall/js"
 	"testing"
 )
 

@@ -1,580 +1,734 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VAS Playground - Virtual Assembler</title>
-  <style>
-    /* ── Reset ── */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VAS Playground - Virtual Assembler</title>
+    <style>
+      /* ── Reset ── */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
 
-    /* ── Tokens ── */
-    :root {
-      --bg:         #0d0d0f;
-      --bg-raised:  #111114;
-      --bg-panel:   #0a0a0c;
-      --border:     #1e1e24;
-      --border-mid: #2a2a34;
-      --text:       #c9cdd8;
-      --text-dim:   #555a6e;
-      --text-muted: #3a3d4d;
-      --accent:     #3b82f6;
-      --accent-dim: rgba(59,130,246,0.12);
-      --accent-glow:rgba(59,130,246,0.06);
-      --ok:         #22c55e;
-      --err:        #ef4444;
-      --warn:       #f59e0b;
-      --radius:     6px;
+      /* ── Tokens ── */
+      :root {
+        --bg: #0d0d0f;
+        --bg-raised: #111114;
+        --bg-panel: #0a0a0c;
+        --border: #1e1e24;
+        --border-mid: #2a2a34;
+        --text: #c9cdd8;
+        --text-dim: #555a6e;
+        --text-muted: #3a3d4d;
+        --accent: #3b82f6;
+        --accent-dim: rgba(59, 130, 246, 0.12);
+        --accent-glow: rgba(59, 130, 246, 0.06);
+        --ok: #22c55e;
+        --err: #ef4444;
+        --warn: #f59e0b;
+        --radius: 6px;
 
-      /* syntax */
-      --syn-cmt:    #4a5568;
-      --syn-kw:     #60a5fa;
-      --syn-reg:    #fb923c;
-      --syn-num:    #34d399;
-      --syn-label:  #e2e8f0;
-      --syn-dir:    #a78bfa;
-      --syn-str:    #86efac;
+        /* syntax */
+        --syn-cmt: #4a5568;
+        --syn-kw: #60a5fa;
+        --syn-reg: #fb923c;
+        --syn-num: #34d399;
+        --syn-label: #e2e8f0;
+        --syn-dir: #a78bfa;
+        --syn-str: #86efac;
 
-      --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
-      --font-ui:   'Segoe UI', system-ui, -apple-system, sans-serif;
-      --font-size-code: 13px;
-      --font-size-ui:   12px;
-    }
+        --font-mono:
+          "Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas", monospace;
+        --font-ui: "Segoe UI", system-ui, -apple-system, sans-serif;
+        --font-size-code: 13px;
+        --font-size-ui: 12px;
+      }
 
-    /* ── Base ── */
-    html, body {
-      height: 100%;
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font-ui);
-      font-size: 14px;
-      line-height: 1.5;
-      overflow: hidden;
-    }
+      /* ── Base ── */
+      html,
+      body {
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font-ui);
+        font-size: 14px;
+        line-height: 1.5;
+        overflow: hidden;
+      }
 
-    /* ── App shell ── */
-    #app {
-      display: grid;
-      grid-template-rows: auto 1fr auto auto;
-      height: 100vh;
-      height: 100dvh;
-    }
+      /* ── App shell ── */
+      #app {
+        display: grid;
+        grid-template-rows: auto 1fr auto auto;
+        height: 100vh;
+        height: 100dvh;
+      }
 
-    /* ── Header ── */
-    #header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 0 20px;
-      height: 52px;
-      background: var(--bg-raised);
-      border-bottom: 1px solid var(--border);
-      flex-wrap: wrap;
-    }
+      /* ── Header ── */
+      #header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 20px;
+        height: 52px;
+        background: var(--bg-raised);
+        border-bottom: 1px solid var(--border);
+        flex-wrap: wrap;
+      }
 
-    #header-left {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
+      #header-left {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
 
-    #logo {
-      font-family: var(--font-mono);
-      font-size: 15px;
-      font-weight: 600;
-      color: #fff;
-      letter-spacing: -0.3px;
-    }
+      #logo {
+        font-family: var(--font-mono);
+        font-size: 15px;
+        font-weight: 600;
+        color: #fff;
+        letter-spacing: -0.3px;
+      }
 
-    #logo-tag {
-      font-family: var(--font-mono);
-      font-size: var(--font-size-ui);
-      color: var(--text-dim);
-      background: var(--border);
-      padding: 2px 7px;
-      border-radius: 4px;
-      letter-spacing: 0.4px;
-    }
+      #logo-tag {
+        font-family: var(--font-mono);
+        font-size: var(--font-size-ui);
+        color: var(--text-dim);
+        background: var(--border);
+        padding: 2px 7px;
+        border-radius: 4px;
+        letter-spacing: 0.4px;
+      }
 
-    #header-controls {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
+      #header-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
 
-    /* ── Form controls ── */
-    .ctrl-group {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
+      /* ── Form controls ── */
+      .ctrl-group {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
 
-    .ctrl-label {
-      font-size: var(--font-size-ui);
-      color: var(--text-dim);
-      white-space: nowrap;
-    }
+      .ctrl-label {
+        font-size: var(--font-size-ui);
+        color: var(--text-dim);
+        white-space: nowrap;
+      }
 
-    select {
-      appearance: none;
-      background: var(--bg);
-      color: var(--text);
-      border: 1px solid var(--border-mid);
-      border-radius: var(--radius);
-      padding: 5px 28px 5px 10px;
-      font-family: var(--font-mono);
-      font-size: var(--font-size-ui);
-      cursor: pointer;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23555a6e' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 8px center;
-      transition: border-color 0.15s;
-    }
-    select:hover  { border-color: #3a3d4d; }
-    select:focus  { outline: none; border-color: var(--accent); }
-    select option { background: #1a1a20; }
+      select {
+        appearance: none;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border-mid);
+        border-radius: var(--radius);
+        padding: 5px 28px 5px 10px;
+        font-family: var(--font-mono);
+        font-size: var(--font-size-ui);
+        cursor: pointer;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23555a6e' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 8px center;
+        transition: border-color 0.15s;
+      }
+      select:hover {
+        border-color: #3a3d4d;
+      }
+      select:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      select option {
+        background: #1a1a20;
+      }
 
-    /* ── Buttons ── */
-    button {
-      font-family: var(--font-ui);
-      cursor: pointer;
-      border: none;
-      border-radius: var(--radius);
-      transition: background 0.12s, transform 0.08s, opacity 0.12s;
-    }
-    button:active { transform: scale(0.97); }
+      /* ── Buttons ── */
+      button {
+        font-family: var(--font-ui);
+        cursor: pointer;
+        border: none;
+        border-radius: var(--radius);
+        transition:
+          background 0.12s,
+          transform 0.08s,
+          opacity 0.12s;
+      }
+      button:active {
+        transform: scale(0.97);
+      }
 
-    #run-btn {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      background: var(--accent);
-      color: #fff;
-      font-size: var(--font-size-ui);
-      font-weight: 600;
-      padding: 6px 14px;
-      letter-spacing: 0.2px;
-    }
-    #run-btn:hover   { background: #2563eb; }
-    #run-btn:disabled {
-      background: var(--border-mid);
-      color: var(--text-dim);
-      cursor: not-allowed;
-      transform: none;
-      opacity: 0.7;
-    }
+      #run-btn {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        background: var(--accent);
+        color: #fff;
+        font-size: var(--font-size-ui);
+        font-weight: 600;
+        padding: 6px 14px;
+        letter-spacing: 0.2px;
+      }
+      #run-btn:hover {
+        background: #2563eb;
+      }
+      #run-btn:disabled {
+        background: var(--border-mid);
+        color: var(--text-dim);
+        cursor: not-allowed;
+        transform: none;
+        opacity: 0.7;
+      }
 
-    #run-btn svg {
-      width: 11px;
-      height: 11px;
-      flex-shrink: 0;
-    }
+      #run-btn svg {
+        width: 11px;
+        height: 11px;
+        flex-shrink: 0;
+      }
 
-    .kbd {
-      font-family: var(--font-mono);
-      font-size: 10px;
-      color: rgba(255,255,255,0.5);
-      background: rgba(255,255,255,0.1);
-      padding: 1px 4px;
-      border-radius: 3px;
-    }
+      #force-refresh-btn {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        background: var(--bg);
+        color: var(--text-dim);
+        border: 1px solid var(--border-mid);
+        padding: 5px 10px;
+        font-size: var(--font-size-ui);
+        border-radius: var(--radius);
+        transition:
+          color 0.1s,
+          border-color 0.1s,
+          background 0.1s;
+      }
+      #force-refresh-btn:hover {
+        color: var(--text);
+        border-color: #3a3d4d;
+        background: var(--bg-raised);
+      }
 
-    /* ── Divider ── */
-    .ctrl-divider {
-      width: 1px;
-      height: 20px;
-      background: var(--border-mid);
-    }
+      .kbd {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: rgba(255, 255, 255, 0.5);
+        background: rgba(255, 255, 255, 0.1);
+        padding: 1px 4px;
+        border-radius: 3px;
+      }
 
-    /* ── Main split ── */
-    #main {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      min-height: 0;
-    }
+      /* ── Divider ── */
+      .ctrl-divider {
+        width: 1px;
+        height: 20px;
+        background: var(--border-mid);
+      }
 
-    @media (max-width: 768px) {
-      #main { grid-template-columns: 1fr; }
-    }
+      /* ── Main split ── */
+      #main {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        min-height: 0;
+      }
 
-    /* ── Panel ── */
-    .panel {
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-      min-width: 0;
-    }
+      @media (max-width: 768px) {
+        #main {
+          grid-template-columns: 1fr;
+        }
+      }
 
-    .panel + .panel { border-left: 1px solid var(--border); }
+      /* ── Panel ── */
+      .panel {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
+      }
 
-    @media (max-width: 768px) {
-      .panel + .panel { border-left: none; border-top: 1px solid var(--border); }
-    }
+      .panel + .panel {
+        border-left: 1px solid var(--border);
+      }
 
-    /* ── Panel header ── */
-    .panel-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 16px;
-      height: 36px;
-      background: var(--bg-raised);
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-    }
+      @media (max-width: 768px) {
+        .panel + .panel {
+          border-left: none;
+          border-top: 1px solid var(--border);
+        }
+      }
 
-    .panel-title {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--text-dim);
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
+      /* ── Panel header ── */
+      .panel-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 16px;
+        height: 36px;
+        background: var(--bg-raised);
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
 
-    .panel-title-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--text-muted);
-      flex-shrink: 0;
-    }
+      .panel-title {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
 
-    .panel-meta {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
+      .panel-title-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--text-muted);
+        flex-shrink: 0;
+      }
 
-    .panel-badge {
-      font-family: var(--font-mono);
-      font-size: 10px;
-      color: var(--text-dim);
-      background: var(--bg);
-      border: 1px solid var(--border);
-      padding: 2px 7px;
-      border-radius: 3px;
-    }
+      .panel-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
 
-    .copy-btn {
-      font-family: var(--font-mono);
-      font-size: 10px;
-      color: var(--text-dim);
-      background: transparent;
-      border: 1px solid var(--border-mid) !important;
-      padding: 3px 9px;
-      border-radius: 3px;
-      transition: color 0.1s, border-color 0.1s, background 0.1s !important;
-    }
-    .copy-btn:hover  { color: var(--text); border-color: #3a3d4d !important; background: var(--bg) !important; }
-    .copy-btn.copied { color: var(--ok); border-color: rgba(34,197,94,0.4) !important; background: rgba(34,197,94,0.06) !important; }
+      .panel-badge {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--text-dim);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        padding: 2px 7px;
+        border-radius: 3px;
+      }
 
-    /* ── Editor area ── */
-    .editor-wrap {
-      flex: 1;
-      display: flex;
-      min-height: 0;
-      position: relative;
-      background: var(--bg-panel);
-    }
+      .copy-btn {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--text-dim);
+        background: transparent;
+        border: 1px solid var(--border-mid) !important;
+        padding: 3px 9px;
+        border-radius: 3px;
+        transition:
+          color 0.1s,
+          border-color 0.1s,
+          background 0.1s !important;
+      }
+      .copy-btn:hover {
+        color: var(--text);
+        border-color: #3a3d4d !important;
+        background: var(--bg) !important;
+      }
+      .copy-btn.copied {
+        color: var(--ok);
+        border-color: rgba(34, 197, 94, 0.4) !important;
+        background: rgba(34, 197, 94, 0.06) !important;
+      }
 
-    .gutter {
-      width: 44px;
-      flex-shrink: 0;
-      padding: 14px 0;
-      font-family: var(--font-mono);
-      font-size: var(--font-size-code);
-      line-height: 1.6;
-      color: var(--text-muted);
-      user-select: none;
-      text-align: right;
-      overflow: hidden;
-      background: var(--bg-raised);
-      border-right: 1px solid var(--border);
-      position: relative;
-      z-index: 3;
-    }
+      /* ── Editor area ── */
+      .editor-wrap {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+        position: relative;
+        background: var(--bg-panel);
+      }
 
-    .gutter span {
-      display: block;
-      padding-right: 10px;
-      height: calc(var(--font-size-code) * 1.6);
-    }
+      .gutter {
+        width: 44px;
+        flex-shrink: 0;
+        padding: 14px 0;
+        font-family: var(--font-mono);
+        font-size: var(--font-size-code);
+        line-height: 1.6;
+        color: var(--text-muted);
+        -webkit-user-select: none;
+        user-select: none;
+        text-align: right;
+        overflow: hidden;
+        background: var(--bg-raised);
+        border-right: 1px solid var(--border);
+        position: relative;
+        z-index: 3;
+      }
 
-    .gutter .active-line { color: var(--text-dim); }
+      .gutter span {
+        display: block;
+        padding-right: 10px;
+        height: calc(var(--font-size-code) * 1.6);
+      }
 
-    .editor-inner {
-      flex: 1;
-      position: relative;
-      overflow: hidden;
-      min-width: 0;
-    }
+      .gutter .active-line {
+        color: var(--text-dim);
+      }
 
-    .highlight-layer,
-    #editor-input {
-      position: absolute;
-      top: 0; left: 0; right: 0; bottom: 0;
-      padding: 14px 16px;
-      font-family: var(--font-mono);
-      font-size: var(--font-size-code);
-      line-height: 1.6;
-      tab-size: 4;
-      white-space: pre;
-      overflow: auto;
-      border: none;
-      outline: none;
-      resize: none;
-      word-break: normal;
-      overflow-wrap: normal;
-    }
+      .editor-inner {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+        min-width: 0;
+      }
 
-    .highlight-layer {
-      background: var(--bg-panel);
-      color: var(--text);
-      z-index: 1;
-      pointer-events: none;
-    }
+      .highlight-layer,
+      #editor-input {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 14px 16px;
+        font-family: var(--font-mono);
+        font-size: var(--font-size-code);
+        line-height: 1.6;
+        tab-size: 4;
+        white-space: pre;
+        overflow: auto;
+        border: none;
+        outline: none;
+        resize: none;
+        word-break: normal;
+        overflow-wrap: normal;
+      }
 
-    #editor-input {
-      background: transparent;
-      color: transparent;
-      caret-color: var(--text);
-      z-index: 2;
-      -webkit-text-fill-color: transparent;
-    }
+      .highlight-layer {
+        background: var(--bg-panel);
+        color: var(--text);
+        z-index: 1;
+        pointer-events: none;
+      }
 
-    /* ── Output area ── */
-    #output {
-      flex: 1;
-      background: var(--bg-panel);
-      padding: 14px 16px;
-      font-family: var(--font-mono);
-      font-size: var(--font-size-code);
-      line-height: 1.6;
-      overflow: auto;
-      white-space: pre;
-      word-break: normal;
-      overflow-wrap: normal;
-    }
+      #editor-input {
+        background: transparent;
+        color: transparent;
+        caret-color: var(--text);
+        z-index: 2;
+        -webkit-text-fill-color: transparent;
+      }
 
-    /* ── Syntax colors ── */
-    .c  { color: var(--syn-cmt); }
-    .k  { color: var(--syn-kw); font-weight: 600; }
-    .r  { color: var(--syn-reg); }
-    .n  { color: var(--syn-num); }
-    .lb { color: var(--syn-label); font-weight: 600; }
-    .d  { color: var(--syn-dir); }
-    .s  { color: var(--syn-str); }
-    .ts { color: var(--text-muted); font-size: 11px; }
-    .er { color: var(--err); }
-    .info { color: var(--text-dim); }
+      /* ── Output area ── */
+      #output {
+        flex: 1;
+        background: var(--bg-panel);
+        padding: 14px 16px;
+        font-family: var(--font-mono);
+        font-size: var(--font-size-code);
+        line-height: 1.6;
+        overflow: auto;
+        white-space: pre;
+        word-break: normal;
+        overflow-wrap: normal;
+      }
 
-    /* ── Examples bar ── */
-    #examples-bar {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 0 16px;
-      height: 40px;
-      background: var(--bg-raised);
-      border-top: 1px solid var(--border);
-      overflow-x: auto;
-      scrollbar-width: none;
-      flex-shrink: 0;
-    }
-    #examples-bar::-webkit-scrollbar { display: none; }
+      /* ── Syntax colors ── */
+      .c {
+        color: var(--syn-cmt);
+      }
+      .k {
+        color: var(--syn-kw);
+        font-weight: 600;
+      }
+      .r {
+        color: var(--syn-reg);
+      }
+      .n {
+        color: var(--syn-num);
+      }
+      .lb {
+        color: var(--syn-label);
+        font-weight: 600;
+      }
+      .d {
+        color: var(--syn-dir);
+      }
+      .s {
+        color: var(--syn-str);
+      }
+      .ts {
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+      .er {
+        color: var(--err);
+      }
+      .info {
+        color: var(--text-dim);
+      }
 
-    .examples-label {
-      font-size: 11px;
-      color: var(--text-muted);
-      white-space: nowrap;
-      flex-shrink: 0;
-      font-family: var(--font-mono);
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-    }
+      /* ── Examples bar ── */
+      #examples-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 16px;
+        height: 40px;
+        background: var(--bg-raised);
+        border-top: 1px solid var(--border);
+        overflow-x: auto;
+        -ms-overflow-style: none; /* IE and Edge */
+        flex-shrink: 0;
+      }
+      #examples-bar::-webkit-scrollbar {
+        display: none; /* Chrome, Safari, Opera */
+      }
 
-    .example-btn {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--text-dim);
-      background: var(--bg);
-      border: 1px solid var(--border-mid);
-      padding: 4px 10px;
-      border-radius: 4px;
-      white-space: nowrap;
-      flex-shrink: 0;
-      transition: color 0.1s, border-color 0.1s, background 0.1s;
-    }
-    .example-btn:hover {
-      color: var(--text);
-      border-color: #3a3d4d;
-      background: var(--bg-raised);
-    }
-    .example-btn.active {
-      color: var(--accent);
-      border-color: rgba(59,130,246,0.4);
-      background: var(--accent-dim);
-    }
+      .examples-label {
+        font-size: 11px;
+        color: var(--text-muted);
+        white-space: nowrap;
+        flex-shrink: 0;
+        font-family: var(--font-mono);
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+      }
 
-    /* ── Status bar ── */
-    #status-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      padding: 0 16px;
-      height: 28px;
-      background: var(--bg-raised);
-      border-top: 1px solid var(--border);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--text-dim);
-      flex-shrink: 0;
-    }
+      .example-btn {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--text-dim);
+        background: var(--bg);
+        border: 1px solid var(--border-mid);
+        padding: 4px 10px;
+        border-radius: 4px;
+        white-space: nowrap;
+        flex-shrink: 0;
+        transition:
+          color 0.1s,
+          border-color 0.1s,
+          background 0.1s;
+      }
+      .example-btn:hover {
+        color: var(--text);
+        border-color: #3a3d4d;
+        background: var(--bg-raised);
+      }
+      .example-btn.active {
+        color: var(--accent);
+        border-color: rgba(59, 130, 246, 0.4);
+        background: var(--accent-dim);
+      }
 
-    #status-bar-left, #status-bar-right {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
+      /* ── Status bar ── */
+      #status-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 0 16px;
+        height: 28px;
+        background: var(--bg-raised);
+        border-top: 1px solid var(--border);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--text-dim);
+        flex-shrink: 0;
+      }
 
-    #status-indicator {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-    }
+      #status-bar-left,
+      #status-bar-right {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
 
-    #status-dot {
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: var(--text-muted);
-      transition: background 0.2s;
-    }
-    #status-dot.ok  { background: var(--ok); }
-    #status-dot.err { background: var(--err); }
+      #status-indicator {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
 
-    #status-text { color: var(--text-dim); }
-    #status-text.ok  { color: var(--ok); }
-    #status-text.err { color: var(--err); }
+      #status-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--text-muted);
+        transition: background 0.2s;
+      }
+      #status-dot.ok {
+        background: var(--ok);
+      }
+      #status-dot.err {
+        background: var(--err);
+      }
 
-    /* ── Loading overlay ── */
-    #loading {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(13,13,15,0.9);
-      z-index: 999;
-      justify-content: center;
-      align-items: center;
-      flex-direction: column;
-      gap: 16px;
-      backdrop-filter: blur(4px);
-    }
-    #loading.active { display: flex; }
+      #status-text {
+        color: var(--text-dim);
+      }
+      #status-text.ok {
+        color: var(--ok);
+      }
+      #status-text.err {
+        color: var(--err);
+      }
 
-    .spinner {
-      width: 32px;
-      height: 32px;
-      border: 2px solid var(--border-mid);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
+      /* ── Loading overlay ── */
+      #loading {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(13, 13, 15, 0.9);
+        z-index: 999;
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+        gap: 16px;
+        -webkit-backdrop-filter: blur(4px);
+        backdrop-filter: blur(4px);
+      }
+      #loading.active {
+        display: flex;
+      }
 
-    #loading p {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--text-dim);
-      letter-spacing: 0.3px;
-    }
+      .spinner {
+        width: 32px;
+        height: 32px;
+        border: 2px solid var(--border-mid);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
 
-    /* ── Scrollbar ── */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb {
-      background: var(--border-mid);
-      border-radius: 3px;
-    }
-    ::-webkit-scrollbar-thumb:hover { background: #3a3d4d; }
+      #loading p {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--text-dim);
+        letter-spacing: 0.3px;
+      }
 
-    /* ── Selection ── */
-    ::selection { background: rgba(59,130,246,0.25); }
+      /* ── Scrollbar ── */
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--border-mid);
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #3a3d4d;
+      }
 
-    @media (max-width: 768px) {
-      #header { height: auto; padding: 10px 16px; }
-      #main { grid-template-rows: 1fr 1fr; }
-      .ctrl-divider { display: none; }
-    }
-  </style>
-</head>
-<body>
+      /* ── Selection ── */
+      ::selection {
+        background: rgba(59, 130, 246, 0.25);
+      }
 
-<div id="loading">
-  <div class="spinner"></div>
-  <p>Loading VAS engine...</p>
-</div>
-
-<div id="app">
-
-  <!-- Header -->
-  <header id="header">
-    <div id="header-left">
-      <span id="logo">VAS</span>
-      <span id="logo-tag">v0.1 playground</span>
+      @media (max-width: 768px) {
+        #header {
+          height: auto;
+          padding: 10px 16px;
+        }
+        #main {
+          grid-template-rows: 1fr 1fr;
+        }
+        .ctrl-divider {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loading">
+      <div class="spinner"></div>
+      <p>Loading VAS engine...</p>
     </div>
-    <div id="header-controls">
-      <div class="ctrl-group">
-        <span class="ctrl-label">Target</span>
-        <select id="target">
-          <option value="elf64">Linux elf64</option>
-          <option value="win64">Windows win64</option>
-        </select>
-      </div>
-      <div class="ctrl-group">
-        <span class="ctrl-label">Opt</span>
-        <select id="opt">
-          <option value="0">O0</option>
-          <option value="1">O1 - const fold, DCE, peephole</option>
-          <option value="2">O2 - + CSE, LICM, tail call</option>
-        </select>
-      </div>
-      <div class="ctrl-divider"></div>
-      <button id="run-btn" disabled onclick="run()">
-        <svg viewBox="0 0 10 12" fill="currentColor"><polygon points="0,0 10,6 0,12"/></svg>
-        Assemble
-        <span class="kbd">^↵</span>
-      </button>
-    </div>
-  </header>
 
-  <!-- Main editors -->
-  <main id="main">
-
-    <!-- Input panel -->
-    <div class="panel">
-      <div class="panel-bar">
-        <span class="panel-title">
-          <span class="panel-title-dot"></span>
-          VAS source
-        </span>
-        <div class="panel-meta">
-          <span class="panel-badge" id="input-lines">0 lines</span>
-          <button class="copy-btn" onclick="copySource()">Copy</button>
+    <div id="app">
+      <!-- Header -->
+      <header id="header">
+        <div id="header-left">
+          <span id="logo">VAS</span>
+          <span id="logo-tag">v0.1 playground</span>
         </div>
-      </div>
-      <div class="editor-wrap">
-        <div class="gutter" id="gutter"></div>
-        <div class="editor-inner">
-          <div class="highlight-layer" id="vas-highlight"></div>
-          <textarea id="editor-input" spellcheck="false" autocorrect="off" autocapitalize="off"
-            placeholder="; Enter VAS code here">; A simple VAS program
+        <div id="header-controls">
+          <div class="ctrl-group">
+            <span class="ctrl-label">Target</span>
+            <select id="target" aria-label="Target platform">
+              <option value="elf64">Linux elf64</option>
+              <option value="win64">Windows win64</option>
+            </select>
+          </div>
+          <div class="ctrl-group">
+            <span class="ctrl-label">Opt</span>
+            <select id="opt" aria-label="Optimization level">
+              <option value="0">O0</option>
+              <option value="1">O1 - const fold, DCE, peephole</option>
+              <option value="2">O2 - + CSE, LICM, tail call</option>
+            </select>
+          </div>
+          <div class="ctrl-divider"></div>
+          <button id="run-btn" disabled onclick="run()">
+            <svg viewBox="0 0 10 12" fill="currentColor">
+              <polygon points="0,0 10,6 0,12" />
+            </svg>
+            Assemble
+            <span class="kbd">^↵</span>
+          </button>
+          <button
+            id="force-refresh-btn"
+            title="Clear cache & reload"
+            onclick="forceRefresh()"
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path
+                d="M2 6a4 4 0 0 1 4-4 3.9 3.9 0 0 1 3.2 1.8M10 6a4 4 0 0 1-4 4 3.9 3.9 0 0 1-3.2-1.8"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
+              <path
+                d="M10 1v3H7M2 11V8h3"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span class="kbd">⟳</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Main editors -->
+      <main id="main">
+        <!-- Input panel -->
+        <div class="panel">
+          <div class="panel-bar">
+            <span class="panel-title">
+              <span class="panel-title-dot"></span>
+              VAS source
+            </span>
+            <div class="panel-meta">
+              <span class="panel-badge" id="input-lines">0 lines</span>
+              <button class="copy-btn" onclick="copySource()">Copy</button>
+            </div>
+          </div>
+          <div class="editor-wrap">
+            <div class="gutter" id="gutter"></div>
+            <div class="editor-inner">
+              <div class="highlight-layer" id="vas-highlight"></div>
+              <textarea
+                id="editor-input"
+                spellcheck="false"
+                placeholder="; Enter VAS code here"
+              >
+; A simple VAS program
 ; Equivalent to sys_exit(0)
 
 SECTION .text
@@ -583,293 +737,405 @@ GLOBAL _start
 _start:
   MOVI  v0, 60       ; sys_exit number
   MOVI  v5, 0        ; return value 0
-  SYSCALL</textarea>
+  SYSCALL</textarea
+              >
+            </div>
+          </div>
+        </div>
+
+        <!-- Output panel -->
+        <div class="panel">
+          <div class="panel-bar">
+            <span class="panel-title">
+              <span class="panel-title-dot"></span>
+              x86-64 NASM output
+            </span>
+            <div class="panel-meta">
+              <span class="panel-badge" id="mode-label">standalone</span>
+              <button class="copy-btn" onclick="copyOutput()">Copy</button>
+            </div>
+          </div>
+          <div id="output">
+            <span class="info"
+              >; Press Assemble or Ctrl+Enter to generate output</span
+            >
+          </div>
+        </div>
+      </main>
+
+      <!-- Examples bar -->
+      <div id="examples-bar">
+        <span class="examples-label">examples</span>
+        <button class="example-btn" onclick="loadExample('hello')">
+          hello world
+        </button>
+        <button class="example-btn" onclick="loadExample('fib')">
+          fibonacci
+        </button>
+        <button class="example-btn" onclick="loadExample('fact')">
+          factorial
+        </button>
+        <button class="example-btn" onclick="loadExample('calc')">
+          calculator
+        </button>
+        <button class="example-btn" onclick="loadExample('sort')">
+          bubble sort
+        </button>
+        <button class="example-btn" onclick="loadExample('win-edge')">
+          win64 edge
+        </button>
+        <button class="example-btn" onclick="loadExample('opt_showcase')">
+          O2 showcase
+        </button>
+      </div>
+
+      <!-- Status bar -->
+      <div id="status-bar">
+        <div id="status-bar-left">
+          <span id="status-indicator">
+            <span id="status-dot"></span>
+            <span id="status-text">Ready</span>
+          </span>
+          <span id="stats"></span>
+        </div>
+        <div id="status-bar-right">
+          <span>VAS Playground</span>
         </div>
       </div>
     </div>
 
-    <!-- Output panel -->
-    <div class="panel">
-      <div class="panel-bar">
-        <span class="panel-title">
-          <span class="panel-title-dot"></span>
-          x86-64 NASM output
-        </span>
-        <div class="panel-meta">
-          <span class="panel-badge" id="mode-label">standalone</span>
-          <button class="copy-btn" onclick="copyOutput()">Copy</button>
-        </div>
-      </div>
-      <div id="output"><span class="info">; Press Assemble or Ctrl+Enter to generate output</span></div>
-    </div>
+    <script src="wasm_exec.js"></script>
+    <script>
+      "use strict";
 
-  </main>
+      // ── State ──
+      const $ = (id) => document.getElementById(id);
+      const loading = $("loading");
+      const runBtn = $("run-btn");
+      const statusDot = $("status-dot");
+      const statusTxt = $("status-text");
 
-  <!-- Examples bar -->
-  <div id="examples-bar">
-    <span class="examples-label">examples</span>
-    <button class="example-btn" onclick="loadExample('hello')">hello world</button>
-    <button class="example-btn" onclick="loadExample('fib')">fibonacci</button>
-    <button class="example-btn" onclick="loadExample('fact')">factorial</button>
-    <button class="example-btn" onclick="loadExample('calc')">calculator</button>
-    <button class="example-btn" onclick="loadExample('sort')">bubble sort</button>
-    <button class="example-btn" onclick="loadExample('win-edge')">win64 edge</button>
-    <button class="example-btn" onclick="loadExample('opt_showcase')">O2 showcase</button>
-  </div>
+      // ── WASM Bootstrap ──
+      async function bootstrap() {
+        loading.classList.add("active");
+        try {
+          const go = new Go();
+          const resp = await fetch("vas.wasm");
+          const buf = await resp.arrayBuffer();
+          const res = await WebAssembly.instantiate(buf, go.importObject);
+          go.run(res.instance).catch((e) =>
+            setStatus("err", "Engine: " + e.message),
+          );
+          runBtn.disabled = false;
+          setStatus("ok", "Ready");
+          loading.classList.remove("active");
+        } catch (e) {
+          loading.querySelector("p").textContent = "Load failed: " + e.message;
+          setStatus("err", "Load failed");
+        }
+      }
+      bootstrap();
 
-  <!-- Status bar -->
-  <div id="status-bar">
-    <div id="status-bar-left">
-      <span id="status-indicator">
-        <span id="status-dot"></span>
-        <span id="status-text">Ready</span>
-      </span>
-      <span id="stats"></span>
-    </div>
-    <div id="status-bar-right">
-      <span>VAS Playground</span>
-    </div>
-  </div>
+      // ── Status helpers ──
+      function setStatus(kind, msg) {
+        statusDot.className = kind;
+        statusTxt.className = kind;
+        statusTxt.textContent = msg;
+      }
 
-</div>
+      // ── Assemble ──
+      function run() {
+        const input = $("editor-input").value;
+        const target = $("target").value;
+        const opt = parseInt($("opt").value);
+        const output = $("output");
 
-<script src="wasm_exec.js"></script>
-<script>
-'use strict';
+        if (!input.trim()) {
+          output.innerHTML = '<span class="er">; Error: no input</span>';
+          setStatus("err", "Empty input");
+          return;
+        }
 
-// ── State ──
-const $ = id => document.getElementById(id);
-const loading   = $('loading');
-const runBtn    = $('run-btn');
-const statusDot = $('status-dot');
-const statusTxt = $('status-text');
+        try {
+          const result =
+            typeof vasAssembleStandalone === "function"
+              ? vasAssembleStandalone(input, target, opt)
+              : { error: "WASM function not available" };
 
-// ── WASM Bootstrap ──
-async function bootstrap() {
-  loading.classList.add('active');
-  try {
-    const go   = new Go();
-    const resp = await fetch('vas.wasm');
-    const buf  = await resp.arrayBuffer();
-    const res  = await WebAssembly.instantiate(buf, go.importObject);
-    go.run(res.instance).catch(e => setStatus('err', 'Engine: ' + e.message));
-    runBtn.disabled = false;
-    setStatus('ok', 'Ready');
-    loading.classList.remove('active');
-  } catch (e) {
-    loading.querySelector('p').textContent = 'Load failed: ' + e.message;
-    setStatus('err', 'Load failed');
-  }
-}
-bootstrap();
+          if (result.error) {
+            output.innerHTML =
+              '<span class="er">' + esc(result.error) + "</span>";
+            setStatus("err", result.error.split("\n")[0].slice(0, 60));
+            $("stats").textContent = "";
+            return;
+          }
 
-// ── Status helpers ──
-function setStatus(kind, msg) {
-  statusDot.className = kind;
-  statusTxt.className = kind;
-  statusTxt.textContent = msg;
-}
+          const text = result.output || "";
+          output.innerHTML =
+            '<span class="ts">; Generated ' +
+            new Date().toLocaleTimeString() +
+            " - target=" +
+            target +
+            " opt=O" +
+            opt +
+            "</span>\n" +
+            highlightAsm(text);
 
-// ── Assemble ──
-function run() {
-  const input  = $('editor-input').value;
-  const target = $('target').value;
-  const opt    = parseInt($('opt').value);
-  const output = $('output');
+          const lines = text.split("\n").length;
+          const instrs = text.split("\n").filter((l) => {
+            const t = l.trim();
+            return (
+              t &&
+              !t.startsWith(";") &&
+              !t.startsWith(".") &&
+              !t.startsWith("section") &&
+              !t.includes(":")
+            );
+          }).length;
 
-  if (!input.trim()) {
-    output.innerHTML = '<span class="er">; Error: no input</span>';
-    setStatus('err', 'Empty input');
-    return;
-  }
+          setStatus("ok", "OK");
+          $("stats").textContent =
+            lines + " lines  " + instrs + " instructions";
+          $("mode-label").textContent = "standalone";
+        } catch (e) {
+          output.innerHTML = '<span class="er">' + esc(String(e)) + "</span>";
+          setStatus("err", "Exception");
+        }
+      }
 
-  try {
-    const result = typeof vasAssembleStandalone === 'function'
-      ? vasAssembleStandalone(input, target, opt)
-      : { error: 'WASM function not available' };
+      // ── HTML escape ──
+      function esc(s) {
+        const d = document.createElement("div");
+        d.textContent = s;
+        return d.innerHTML;
+      }
 
-    if (result.error) {
-      output.innerHTML = '<span class="er">' + esc(result.error) + '</span>';
-      setStatus('err', result.error.split('\n')[0].slice(0, 60));
-      $('stats').textContent = '';
-      return;
-    }
+      // ── NASM syntax highlight ──
+      function highlightAsm(text) {
+        let s = esc(text);
+        s = s.replace(/(;.*$)/gm, '<span class="c">$1</span>');
+        s = s.replace(
+          /^(\s*)([a-z_][a-z0-9_]*):/gim,
+          '$1<span class="lb">$2:</span>',
+        );
+        s = s.replace(
+          /\b(section|global|extern|default|align|bits|org|db|dw|dd|dq)\b/gi,
+          '<span class="d">$1</span>',
+        );
+        s = s.replace(
+          /\b(rax|rbx|rcx|rdx|rsi|rdi|rsp|rbp|r[89]|r1[0-5]|[re][abcd]x|[re][sb]p|[re][sd]i|[abcd][lh]|xmm\d{1,2})\b/gi,
+          '<span class="r">$1</span>',
+        );
+        s = s.replace(/\b(v\d{1,2})\b/g, '<span class="r">$1</span>');
+        s = s.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g, '<span class="n">$1</span>');
+        s = s.replace(/`([^`]*)`/g, '<span class="s">$1</span>');
+        s = s.replace(
+          /\b(mov|add|sub|imul|mul|div|idiv|lea|shl|shr|sar|xor|and|or|not|neg|inc|dec|push|pop|call|ret|jmp|je|jne|jg|jl|jge|jle|ja|jb|jae|jbe|test|cmp|syscall|nop)\b/gi,
+          '<span class="k">$1</span>',
+        );
+        return s;
+      }
 
-    const text = result.output || '';
-    output.innerHTML =
-      '<span class="ts">; Generated ' + new Date().toLocaleTimeString() + ' - target=' + target + ' opt=O' + opt + '</span>\n'
-      + highlightAsm(text);
+      // ── VAS syntax highlight ──
+      function highlightVAS(text) {
+        let s = esc(text);
+        s = s.replace(/([;#].*$)/gm, '<span class="c">$1</span>');
+        s = s.replace(
+          /^(\s*)([a-z_][a-z0-9_]*):/gim,
+          '$1<span class="lb">$2:</span>',
+        );
+        s = s.replace(
+          /\b(section|global|extern|data|text|bss|db|dw|dd|dq|resb|resw|resd|resq|equ|times)\b/gi,
+          '<span class="d">$1</span>',
+        );
+        s = s.replace(
+          /\b(ADD|SUB|MUL|LOAD|STORE|LEA|MOVI|MOV|CMP|JMP|JE|JNE|JG|JL|JGE|JLE|CALL|RET|NOP|PUSH|POP|SYSCALL|INT|SHL|SHR|AND|OR|XOR|NOT|NEG|INC|DEC)\b/g,
+          '<span class="k">$1</span>',
+        );
+        s = s.replace(/\b(v\d{1,2})\b/g, '<span class="r">$1</span>');
+        s = s.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g, '<span class="n">$1</span>');
+        return s;
+      }
 
-    const lines = text.split('\n').length;
-    const instrs = text.split('\n').filter(l => {
-      const t = l.trim();
-      return t && !t.startsWith(';') && !t.startsWith('.') && !t.startsWith('section') && !t.includes(':');
-    }).length;
+      // ── Editor: gutter + highlight ──
+      const editorInput = $("editor-input");
+      const vasHighlight = $("vas-highlight");
+      const gutter = $("gutter");
 
-    setStatus('ok', 'OK');
-    $('stats').textContent = lines + ' lines  ' + instrs + ' instructions';
-    $('mode-label').textContent = 'standalone';
+      function syncEditor() {
+        const val = editorInput.value;
+        const lines = val.split("\n");
+        $("input-lines").textContent = lines.length + " lines";
 
-  } catch (e) {
-    output.innerHTML = '<span class="er">' + esc(String(e)) + '</span>';
-    setStatus('err', 'Exception');
-  }
-}
+        // Gutter
+        let gutterHtml = "";
+        const cursorPos = editorInput.selectionStart;
+        let charCount = 0;
+        let activeLine = 1;
+        for (let i = 0; i < lines.length; i++) {
+          charCount += lines[i].length + 1;
+          if (charCount >= cursorPos + 1 && activeLine === 1)
+            activeLine = i + 1;
+        }
+        for (let i = 1; i <= lines.length; i++) {
+          gutterHtml +=
+            "<span" +
+            (i === activeLine ? ' class="active-line"' : "") +
+            ">" +
+            i +
+            "</span>";
+        }
+        gutter.innerHTML = gutterHtml;
 
-// ── HTML escape ──
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
+        // Highlight overlay
+        vasHighlight.innerHTML = highlightVAS(val) + "\n";
 
-// ── NASM syntax highlight ──
-function highlightAsm(text) {
-  let s = esc(text);
-  s = s.replace(/(;.*$)/gm,                                                          '<span class="c">$1</span>');
-  s = s.replace(/^(\s*)([a-z_][a-z0-9_]*):/gim,                                     '$1<span class="lb">$2:</span>');
-  s = s.replace(/\b(section|global|extern|default|align|bits|org|db|dw|dd|dq)\b/gi, '<span class="d">$1</span>');
-  s = s.replace(/\b(rax|rbx|rcx|rdx|rsi|rdi|rsp|rbp|r[89]|r1[0-5]|[re][abcd]x|[re][sb]p|[re][sd]i|[abcd][lh]|xmm\d{1,2})\b/gi, '<span class="r">$1</span>');
-  s = s.replace(/\b(v\d{1,2})\b/g,                                                   '<span class="r">$1</span>');
-  s = s.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g,                                        '<span class="n">$1</span>');
-  s = s.replace(/`([^`]*)`/g,                                                         '<span class="s">$1</span>');
-  s = s.replace(/\b(mov|add|sub|imul|mul|div|idiv|lea|shl|shr|sar|xor|and|or|not|neg|inc|dec|push|pop|call|ret|jmp|je|jne|jg|jl|jge|jle|ja|jb|jae|jbe|test|cmp|syscall|nop)\b/gi, '<span class="k">$1</span>');
-  return s;
-}
+        // Sync scroll
+        syncScroll();
+      }
 
-// ── VAS syntax highlight ──
-function highlightVAS(text) {
-  let s = esc(text);
-  s = s.replace(/([;#].*$)/gm,                                                                                '<span class="c">$1</span>');
-  s = s.replace(/^(\s*)([a-z_][a-z0-9_]*):/gim,                                                              '$1<span class="lb">$2:</span>');
-  s = s.replace(/\b(section|global|extern|data|text|bss|db|dw|dd|dq|resb|resw|resd|resq|equ|times)\b/gi,     '<span class="d">$1</span>');
-  s = s.replace(/\b(ADD|SUB|MUL|LOAD|STORE|LEA|MOVI|MOV|CMP|JMP|JE|JNE|JG|JL|JGE|JLE|CALL|RET|NOP|PUSH|POP|SYSCALL|INT|SHL|SHR|AND|OR|XOR|NOT|NEG|INC|DEC)\b/g, '<span class="k">$1</span>');
-  s = s.replace(/\b(v\d{1,2})\b/g,                                                                            '<span class="r">$1</span>');
-  s = s.replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g,                                                                 '<span class="n">$1</span>');
-  return s;
-}
+      function syncScroll() {
+        vasHighlight.scrollTop = editorInput.scrollTop;
+        vasHighlight.scrollLeft = editorInput.scrollLeft;
+        gutter.scrollTop = editorInput.scrollTop;
+      }
 
-// ── Editor: gutter + highlight ──
-const editorInput = $('editor-input');
-const vasHighlight = $('vas-highlight');
-const gutter = $('gutter');
+      editorInput.addEventListener("input", syncEditor);
+      editorInput.addEventListener("keyup", syncEditor);
+      editorInput.addEventListener("click", syncEditor);
+      editorInput.addEventListener("scroll", syncScroll);
 
-function syncEditor() {
-  const val   = editorInput.value;
-  const lines = val.split('\n');
-  $('input-lines').textContent = lines.length + ' lines';
+      // Tab key support
+      editorInput.addEventListener("keydown", function (e) {
+        if (e.key === "Tab") {
+          e.preventDefault();
+          const start = this.selectionStart;
+          const end = this.selectionEnd;
+          this.value =
+            this.value.slice(0, start) + "  " + this.value.slice(end);
+          this.selectionStart = this.selectionEnd = start + 2;
+          syncEditor();
+        }
+        if (e.ctrlKey && e.key === "Enter") {
+          e.preventDefault();
+          run();
+        }
+      });
 
-  // Gutter
-  let gutterHtml = '';
-  const cursorPos = editorInput.selectionStart;
-  let charCount = 0;
-  let activeLine = 1;
-  for (let i = 0; i < lines.length; i++) {
-    charCount += lines[i].length + 1;
-    if (charCount >= cursorPos + 1 && activeLine === 1) activeLine = i + 1;
-  }
-  for (let i = 1; i <= lines.length; i++) {
-    gutterHtml += '<span' + (i === activeLine ? ' class="active-line"' : '') + '>' + i + '</span>';
-  }
-  gutter.innerHTML = gutterHtml;
+      // Initial render
+      syncEditor();
 
-  // Highlight overlay
-  vasHighlight.innerHTML = highlightVAS(val) + '\n';
+      // ── Examples ──
+      const EXAMPLES = {};
+      let activeExample = null;
 
-  // Sync scroll
-  syncScroll();
-}
+      async function loadExamples() {
+        const names = [
+          "hello",
+          "fib",
+          "fact",
+          "calc",
+          "sort",
+          "win-edge",
+          "opt_showcase",
+        ];
+        await Promise.all(
+          names.map(async (name) => {
+            try {
+              const r = await fetch("examples/" + name + ".vas");
+              if (r.ok) EXAMPLES[name] = await r.text();
+            } catch (_) {}
+          }),
+        );
+      }
+      loadExamples();
 
-function syncScroll() {
-  vasHighlight.scrollTop  = editorInput.scrollTop;
-  vasHighlight.scrollLeft = editorInput.scrollLeft;
-  gutter.scrollTop        = editorInput.scrollTop;
-}
+      function loadExample(name) {
+        if (!EXAMPLES[name]) return;
+        editorInput.value = EXAMPLES[name];
+        syncEditor();
 
-editorInput.addEventListener('input',    syncEditor);
-editorInput.addEventListener('keyup',    syncEditor);
-editorInput.addEventListener('click',    syncEditor);
-editorInput.addEventListener('scroll',   syncScroll);
+        // Mark active button
+        document
+          .querySelectorAll(".example-btn")
+          .forEach((b) => b.classList.remove("active"));
+        const btns = document.querySelectorAll(".example-btn");
+        const names = [
+          "hello",
+          "fib",
+          "fact",
+          "calc",
+          "sort",
+          "win-edge",
+          "opt_showcase",
+        ];
+        const idx = names.indexOf(name);
+        if (idx >= 0) btns[idx].classList.add("active");
 
-// Tab key support
-editorInput.addEventListener('keydown', function(e) {
-  if (e.key === 'Tab') {
-    e.preventDefault();
-    const start = this.selectionStart;
-    const end   = this.selectionEnd;
-    this.value  = this.value.slice(0, start) + '  ' + this.value.slice(end);
-    this.selectionStart = this.selectionEnd = start + 2;
-    syncEditor();
-  }
-  if (e.ctrlKey && e.key === 'Enter') {
-    e.preventDefault();
-    run();
-  }
-});
+        run();
+      }
 
-// Initial render
-syncEditor();
+      // ── Copy ──
+      function copySource() {
+        copyToClipboard(
+          editorInput.value,
+          document.querySelector('[onclick="copySource()"]'),
+        );
+      }
+      function copyOutput() {
+        copyToClipboard(
+          $("output").textContent,
+          document.querySelector('[onclick="copyOutput()"]'),
+        );
+      }
+      function copyToClipboard(text, btn) {
+        const write = () => {
+          const orig = btn.textContent;
+          btn.textContent = "Copied";
+          btn.classList.add("copied");
+          setTimeout(() => {
+            btn.textContent = orig;
+            btn.classList.remove("copied");
+          }, 1600);
+        };
+        if (navigator.clipboard) {
+          navigator.clipboard
+            .writeText(text)
+            .then(write)
+            .catch(() => fallbackCopy(text, write));
+        } else {
+          fallbackCopy(text, write);
+        }
+      }
+      function fallbackCopy(text, cb) {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        cb();
+      }
+      async function forceRefresh() {
+        if ("caches" in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((k) => caches.delete(k)));
+        }
 
-// ── Examples ──
-const EXAMPLES = {};
-let activeExample = null;
+        if ("serviceWorker" in navigator) {
+          const registrations =
+            await navigator.serviceWorker.getRegistrations();
+          await Promise.all(registrations.map((r) => r.unregister()));
+        }
 
-async function loadExamples() {
-  const names = ['hello', 'fib', 'fact', 'calc', 'sort', 'win-edge', 'opt_showcase'];
-  await Promise.all(names.map(async name => {
-    try {
-      const r = await fetch('examples/' + name + '.vas');
-      if (r.ok) EXAMPLES[name] = await r.text();
-    } catch (_) {}
-  }));
-}
-loadExamples();
+        try {
+          localStorage.clear();
+          sessionStorage.clear();
+        } catch (e) {}
 
-function loadExample(name) {
-  if (!EXAMPLES[name]) return;
-  editorInput.value = EXAMPLES[name];
-  syncEditor();
-
-  // Mark active button
-  document.querySelectorAll('.example-btn').forEach(b => b.classList.remove('active'));
-  const btns = document.querySelectorAll('.example-btn');
-  const names = ['hello','fib','fact','calc','sort','win-edge','opt_showcase'];
-  const idx = names.indexOf(name);
-  if (idx >= 0) btns[idx].classList.add('active');
-
-  run();
-}
-
-// ── Copy ──
-function copySource() {
-  copyToClipboard(editorInput.value, document.querySelector('[onclick="copySource()"]'));
-}
-function copyOutput() {
-  copyToClipboard($('output').textContent, document.querySelector('[onclick="copyOutput()"]'));
-}
-function copyToClipboard(text, btn) {
-  const write = () => {
-    const orig = btn.textContent;
-    btn.textContent = 'Copied';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1600);
-  };
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(text).then(write).catch(() => fallbackCopy(text, write));
-  } else {
-    fallbackCopy(text, write);
-  }
-}
-function fallbackCopy(text, cb) {
-  const ta = document.createElement('textarea');
-  ta.value = text;
-  ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
-  document.body.appendChild(ta);
-  ta.select();
-  document.execCommand('copy');
-  document.body.removeChild(ta);
-  cb();
-}
-</script>
-</body>
+        window.location.reload(true);
+      }
+    </script>
+  </body>
 </html>

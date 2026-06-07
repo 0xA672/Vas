@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	c := make(chan struct{}, 0)
+	c := make(chan struct{})
 
 	js.Global().Set("vasAssemble", js.FuncOf(func(this js.Value, args []js.Value) any {
 		if len(args) < 1 || args[0].Type() != js.TypeString {
