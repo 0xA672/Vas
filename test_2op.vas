@@ -1,5 +1,0 @@
-MOVI v1, 3
-ADD v1, 5
-MOV v5, v1
-MOVI v0, 60
-SYSCALL

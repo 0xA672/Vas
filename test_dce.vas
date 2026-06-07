@@ -1,6 +1,0 @@
-    MOVI v0, 0
-    MOVI v1, 1
-    MOV v4, v1
-    ADD v1, v0, v1
-    MOV v0, v4
-    RET
