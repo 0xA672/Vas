@@ -44,7 +44,7 @@ type prepContext struct {
 	blockOnceStack []string        // stack of active block names (.once begin <name>)
 	blockIncluded  map[string]bool // set of completed block names that were marked with .once
 	skipBlockDepth int             // depth of nested blocks being skipped (for .once end matching)
-	includeStack []string // tracks current include chain for cycle detection
+	includeStack   []string        // tracks current include chain for cycle detection
 }
 
 // Preprocess resolves all preprocessor directives and returns flattened source.
@@ -448,41 +448,41 @@ func (ctx *prepContext) loadPackageInclude(pkgPath string, depth int) (string, e
 }
 
 func (ctx *prepContext) includeFile(filePath string, data []byte, depth int) (string, error) {
-    abs, err := filepath.Abs(filePath)
-    if err != nil {
-        abs = filePath
-    }
-    if real, err := filepath.EvalSymlinks(abs); err == nil {
-        abs = real
-    }
+	abs, err := filepath.Abs(filePath)
+	if err != nil {
+		abs = filePath
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = real
+	}
 
-    // Cycle detection: check if this file is already on the current include stack
-    for _, p := range ctx.includeStack {
-        if p == abs {
-            return "", fmt.Errorf("circular include detected: %s", abs)
-        }
-    }
+	// Cycle detection: check if this file is already on the current include stack
+	for _, p := range ctx.includeStack {
+		if p == abs {
+			return "", fmt.Errorf("circular include detected: %s", abs)
+		}
+	}
 
-    // Already fully included (and not currently on stack) → skip
-    if ctx.included[abs] {
-        return "", nil
-    }
+	// Already fully included (and not currently on stack) → skip
+	if ctx.included[abs] {
+		return "", nil
+	}
 
-    // Push onto stack and mark as included
-    ctx.includeStack = append(ctx.includeStack, abs)
-    ctx.included[abs] = true
+	// Push onto stack and mark as included
+	ctx.includeStack = append(ctx.includeStack, abs)
+	ctx.included[abs] = true
 
-    resolved, err := ctx.resolve(string(data), filepath.Dir(filePath), depth+1)
+	resolved, err := ctx.resolve(string(data), filepath.Dir(filePath), depth+1)
 
-    // Pop stack
-    ctx.includeStack = ctx.includeStack[:len(ctx.includeStack)-1]
+	// Pop stack
+	ctx.includeStack = ctx.includeStack[:len(ctx.includeStack)-1]
 
-    if err != nil {
-        // Rollback on failure to allow future attempts
-        delete(ctx.included, abs)
-        return "", err
-    }
-    return resolved, nil
+	if err != nil {
+		// Rollback on failure to allow future attempts
+		delete(ctx.included, abs)
+		return "", err
+	}
+	return resolved, nil
 }
 
 func (ctx *prepContext) expandMacros(src string) (string, error) {
