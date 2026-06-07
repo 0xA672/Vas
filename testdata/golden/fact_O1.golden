@@ -17,7 +17,10 @@ fact:
 	jle	base
 
 	mov	rbx, rax
-	xor	eax, eax
+	mov	rax, 1
+	mov	r10, rax
+	mov	rax, rbx
+	sub	rax, r10
 	call	fact
 	imul	rax, rbx
 	pop	rbx

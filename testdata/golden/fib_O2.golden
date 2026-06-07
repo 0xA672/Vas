@@ -12,8 +12,9 @@
 loop:
 	cmp	rdx, rcx
 	jge	done
+	mov	rsi, rbx
 	add	rbx, rax
-	mov	rax, rbx
+	mov	rax, rsi
 	mov	rsi, 1
 	add	rdx, rsi
 	jmp	loop
