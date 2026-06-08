@@ -545,7 +545,7 @@ func parseMacro(line string) (string, []string, error) {
 	}
 	var params []string
 	if paramStr != "" {
-		params = splitArgs(paramStr) // handles quoted commas, though formal parameter names rarely contain quotes
+		params = splitArgs(paramStr)
 	}
 	return name, params, nil
 }
@@ -560,7 +560,7 @@ func splitArgs(s string) []string {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if inQuote {
-			current.WriteByte(c) // keep all characters inside the quoted portion
+			current.WriteByte(c)
 			if c == quoteChar {
 				inQuote = false
 			}
@@ -747,19 +747,21 @@ func (ctx *prepContext) includeFile(filePath string, data []byte) (string, error
 		abs = real
 	}
 
-	// Cycle detection
+	// Cycle detection: build a closed loop path for clear error display.
 	for _, p := range ctx.includeStack {
 		if p == abs {
+			fullPath := append([]string{}, ctx.includeStack...)
+			fullPath = append(fullPath, abs)
 			var sb strings.Builder
 			sb.WriteString("circular include detected:\n")
-			for _, elem := range ctx.includeStack {
+			for i, elem := range fullPath {
 				sb.WriteString("\t")
 				sb.WriteString(elem)
+				if i == len(fullPath)-1 {
+					sb.WriteString("  <-- cycle back to here")
+				}
 				sb.WriteByte('\n')
 			}
-			sb.WriteString("\t")
-			sb.WriteString(abs)
-			sb.WriteString("  <-- already included (cycle)")
 			return "", errors.New(sb.String())
 		}
 	}
