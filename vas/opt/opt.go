@@ -1,16 +1,35 @@
-// Package opt implements the -O1 optimization passes for VAS.
+// Package opt implements the -O1 and -O2 optimization passes for VAS.
 //
 // Optimizations are divided into two categories:
 //
 // Pre-expansion (operates on VAS source before instruction expansion):
 //   - ConstantFolding: compute ADD/SUB v1, imm, imm at assembly time
 //   - DeadCodeElim: remove writes to v-regs that are overwritten before being read
+//   - CopyPropagate: replace MOV v1, v0 references with v0 where possible
+//   - ConstPropagate: track MOVI constants and fold them into subsequent instructions
+//   - StoreLoadFwd: replace LOAD from a label with MOV from the last STORE to that label
+//   - DeadStoreElim: remove STORE instructions whose target is stored again before any LOAD
+//   - StrengthReduce: replace MUL by power-of-2 or small constants with SHL/LEA sequences
 //
 // Post-expansion (peephole optimization on generated assembly text):
 //   - XorZero:  mov reg, 0  =>  xor reg, reg  (smaller encoding, zeroes flags)
 //   - TestCmp:  cmp reg, 0  =>  test reg, reg  (smaller encoding)
 //   - NopMerge: consecutive NOP lines => longer efficient NOP
 //   - LeaFuse:  mov r1, r2; add r1, r3  =>  lea r1, [r2+r3]
+//   - NoopElim: remove mov r1,r1, add r1,0, sub r1,0, imul r1,1
+//   - PushPopMov: push r1; pop r2  =>  mov r2, r1
+//   - XorMovElim: xor r1,r1; mov r1,r2  =>  mov r1, r2
+//   - ShlAddFuse: mov r1,r2; shl r1,k; add r1,r2  =>  lea r1,[r2+r2*2^k]
+//   - AddNegFuse: add r1,1; neg r1  =>  not r1
+//   - CancelPairElim: not r1; not r1, neg r1; neg r1, inc r1; dec r1, etc. => delete
+//   - PushModPopElim: push reg; modify reg; pop reg (result unused) => delete
+//
+// -O2 additions (more aggressive, operate on VAS source with virtual registers):
+//   - CSE: common subexpression elimination
+//   - LICM: loop invariant code motion (LEA with label operands)
+//   - RedundantLoadElim: remove LOAD from same address without intervening STORE
+//   - PushPopElim: remove balanced PUSH/POP pairs when register is unmodified
+//   - TailCallOpt: CALL label; RET => JMP label
 package opt
 
 import (
@@ -172,14 +191,8 @@ func tokenizeFold(line string) []string {
 
 // deadCodeElim removes writes to virtual registers that are immediately
 // overwritten within the same basic block before being read.
-//
-// This is a forward scan: for each register write, if the same register
-// was written before without being read in between, the earlier write
-// is removed. Writes at the end of a block are always kept (conservative).
 func deadCodeElim(lines []string) []string {
-	// Group lines into basic blocks (split at labels, jumps, calls, ret, syscall)
 	blocks := splitBlocks(lines)
-
 	var result []string
 	for _, block := range blocks {
 		result = append(result, elimBlock(block)...)
@@ -258,7 +271,6 @@ func isInstructionFold(s string) bool {
 
 // hasSideEffect reports whether an instruction has observable side effects
 // beyond writing its destination register (e.g., stack or memory operations).
-// Such instructions can never be removed by dead code elimination.
 func hasSideEffect(op string) bool {
 	switch op {
 	case "POP", "PUSH", "CALL", "STORE", "INT", "SYSCALL", "RET":
@@ -268,9 +280,7 @@ func hasSideEffect(op string) bool {
 }
 
 func elimBlock(lines []string) []string {
-	// Last write position for each virtual register
 	lastWrite := map[int]int{} // reg index => line index in this block
-	// Mark lines for removal
 	remove := make([]bool, len(lines))
 
 	for i, line := range lines {
@@ -291,21 +301,14 @@ func elimBlock(lines []string) []string {
 		op := strings.ToUpper(tokens[0])
 		args := tokens[1:]
 
-		// Instructions with side effects (POP, PUSH, CALL, STORE, etc.)
-		// can never be removed, even if their destination register is unused.
 		if hasSideEffect(op) {
-			// Mark all read registers as fresh (can't remove prior writes to them)
 			for _, r := range readRegs(op, args) {
 				delete(lastWrite, r)
 			}
-			// Don't track any destination register — side-effect instructions
-			// must always be preserved so they can't be used to justify removals.
 			continue
 		}
 
-		// Determine which v-regs are read by this instruction
 		reads := readRegs(op, args)
-		// Mark all read registers as "fresh" (can't remove writes to them anymore)
 		for _, r := range reads {
 			delete(lastWrite, r)
 		}
@@ -313,7 +316,6 @@ func elimBlock(lines []string) []string {
 		dst := dstReg(op, args)
 		if dst >= 0 {
 			if prev, exists := lastWrite[dst]; exists {
-				// Same register was written before without being read => remove previous
 				remove[prev] = true
 			}
 			lastWrite[dst] = i
@@ -329,7 +331,6 @@ func elimBlock(lines []string) []string {
 	return result
 }
 
-// dstReg returns the virtual register index written by this instruction, or -1.
 func dstReg(op string, args []string) int {
 	if len(args) == 0 {
 		return -1
@@ -341,7 +342,6 @@ func dstReg(op string, args []string) int {
 	return -1
 }
 
-// readRegs returns the virtual register indices read by this instruction.
 func readRegs(op string, args []string) []int {
 	var regs []int
 	switch op {
@@ -353,8 +353,6 @@ func readRegs(op string, args []string) []int {
 		}
 	case "ADD", "SUB", "MUL":
 		if len(args) >= 2 {
-			// VAS uses 3-operand form: ADD dst, src1, src2
-			// Only src1 and src2 are read, dst is written
 			if r := regIndex(args[1]); r >= 0 {
 				regs = append(regs, r)
 			}
@@ -394,10 +392,8 @@ func readRegs(op string, args []string) []int {
 			}
 		}
 	case "SYSCALL":
-		// Linux x86-64 syscall ABI: rax(v0)=number, rdi(v5)=arg1, rsi(v4)=arg2, rdx(v3)=arg3, r10(v8)=arg4, r8(v6)=arg5, r9(v7)=arg6
 		regs = append(regs, 0, 3, 4, 5, 6, 7, 8)
 	case "INT":
-		// int 0x80 uses the same ABI regs in 32-bit mode
 		regs = append(regs, 0, 3, 4, 5, 6, 7, 8)
 	}
 	return regs
@@ -407,9 +403,6 @@ func readRegs(op string, args []string) []int {
 // Pre-expansion: copy propagation (MOV vX, vY => use vY instead of vX)
 // ---------------------------------------------------------------------------
 
-// copyPropagate replaces references to copy-destination registers with their
-// source register within a basic block. After propagation, dead MOVs can be
-// eliminated by the subsequent DCE pass.
 func copyPropagate(lines []string) []string {
 	blocks := splitBlocks(lines)
 	var result []string
@@ -419,15 +412,12 @@ func copyPropagate(lines []string) []string {
 	return result
 }
 
-// propagateBlock performs copy propagation within a single basic block.
 func propagateBlock(lines []string) []string {
-	// alias[v] = the v-reg index that v is an alias for (-1 = no alias)
-	alias := make([]int, 13) // v0-v12
+	alias := make([]int, 13)
 	for i := range alias {
 		alias[i] = -1
 	}
 
-	// resolve follows the alias chain transitively.
 	resolve := func(ri int) int {
 		for ri >= 0 && alias[ri] >= 0 {
 			ri = alias[ri]
@@ -454,7 +444,6 @@ func propagateBlock(lines []string) []string {
 		op := strings.ToUpper(fields[0])
 		args := fields[1:]
 
-		// Only process instructions with at least one v-reg argument
 		hasVReg := false
 		for _, a := range args {
 			if regIndex(a) >= 0 {
@@ -469,13 +458,8 @@ func propagateBlock(lines []string) []string {
 
 		dst := dstReg(op, args)
 
-		// Step 1: replace source operands with their propagated alias
-		// Don't propagate the destination register (args[0]) — doing so
-		// would make the instruction write to the aliased register instead,
-		// potentially clobbering a live value (e.g., loop counter).
 		propagated := make([]string, len(args))
 		for j, a := range args {
-			// Skip destination register
 			if j == 0 && dst >= 0 {
 				propagated[j] = a
 				continue
@@ -493,17 +477,11 @@ func propagateBlock(lines []string) []string {
 			}
 		}
 
-		// Rebuild the line with propagated args
 		newLine := fmt.Sprintf("\t%s\t%s", op, strings.Join(propagated, " "))
 		if idx := strings.IndexAny(line, ";#"); idx >= 0 {
 			newLine += line[idx:]
 		}
 
-		// Step 2: update alias map (resolve source transitively)
-		// CRITICAL FIX: When any instruction writes to a register, invalidate ALL aliases pointing to it
-		// This prevents stale alias chains after register values are modified
-
-		// First, clear all aliases pointing to the destination register (before setting new alias)
 		if dst >= 0 {
 			for j := range alias {
 				if alias[j] == dst {
@@ -512,14 +490,12 @@ func propagateBlock(lines []string) []string {
 			}
 		}
 
-		// Then set the new alias for MOV instructions
 		if op == "MOV" && dst >= 0 && len(args) >= 2 {
 			srcRi := resolve(regIndex(args[1]))
 			if srcRi >= 0 {
 				alias[dst] = srcRi
 			}
 		} else if dst >= 0 {
-			// For non-MOV instructions that write to a register, clear its alias
 			alias[dst] = -1
 		}
 		result[i] = newLine
@@ -531,8 +507,6 @@ func propagateBlock(lines []string) []string {
 // Pre-expansion: constant propagation (MOVI vX, imm -> fold subsequent uses)
 // ---------------------------------------------------------------------------
 
-// constPropagate tracks MOVI assignments and folds known-constant register
-// references into immediate operands within each basic block.
 func constPropagate(lines []string) []string {
 	blocks := splitBlocks(lines)
 	var result []string
@@ -543,15 +517,11 @@ func constPropagate(lines []string) []string {
 }
 
 func constBlock(lines []string) []string {
-	// const[v] = known constant value (false = unknown)
 	constVal := make([]int64, 13)
 	constKnown := make([]bool, 13)
-	// used[reg] tracks registers whose value is read after the last MOVI to them
 	used := map[int]bool{}
-	// moviLine[reg] = line index of the last MOVI to this register in this block
 	moviLine := map[int]int{}
 
-	// parseArg extracts the integer value from an argument token.
 	parseArg := func(a string) (int64, bool) {
 		a = strings.TrimRight(a, ",")
 		ri := regIndex(a)
@@ -758,8 +728,6 @@ func deadStoreElim(lines []string) []string {
 }
 
 func elimDeadStoreBlock(lines []string) []string {
-	// Scan backward: track the last LOAD/STORE for each label
-	// If a STORE's label is stored again before any LOAD, the first is dead.
 	lastAccess := map[string]string{} // label -> "STORE" or "LOAD"
 	remove := make([]bool, len(lines))
 
@@ -778,7 +746,6 @@ func elimDeadStoreBlock(lines []string) []string {
 		}
 		op := strings.ToUpper(fields[0])
 		if op != "STORE" && op != "LOAD" {
-			// Calls, syscalls, and interrupts may write memory — clear all access state
 			if op == "CALL" || op == "SYSCALL" || op == "INT" {
 				lastAccess = map[string]string{}
 			}
@@ -795,7 +762,6 @@ func elimDeadStoreBlock(lines []string) []string {
 
 		prev := lastAccess[label]
 		if op == "STORE" && prev == "STORE" {
-			// Another STORE follows without an intervening LOAD -> this one is dead
 			remove[i] = true
 		}
 		lastAccess[label] = op
@@ -817,8 +783,6 @@ func strengthReduce(lines []string) []string {
 	var result []string
 	for _, line := range lines {
 		reduced := reduceLine(line)
-		// reduceLine may return multiple lines (e.g. 3-op MUL: "MOV dst, src\nSHL dst, shift")
-		// Split them so each entry is a real line in the slice.
 		if strings.Contains(reduced, "\n") {
 			result = append(result, strings.Split(reduced, "\n")...)
 		} else {
@@ -846,7 +810,6 @@ func reduceLine(line string) string {
 		return line
 	}
 
-	// arg helper: strip trailing comma
 	arg := func(i int) string {
 		s := fields[i]
 		s = strings.TrimRight(s, ",")
@@ -854,7 +817,6 @@ func reduceLine(line string) string {
 	}
 
 	if len(fields) == 3 {
-		// 2-op: MUL dst, imm
 		dst := arg(1)
 		imm, err := strconv.ParseInt(arg(2), 0, 64)
 		if err != nil || imm <= 0 {
@@ -865,7 +827,6 @@ func reduceLine(line string) string {
 		}
 		return line
 	} else if len(fields) == 4 {
-		// 3-op: MUL dst, src, imm  (or MUL dst, src, reg)
 		dst := arg(1)
 		src := arg(2)
 		imm, err := strconv.ParseInt(arg(3), 0, 64)
@@ -880,27 +841,23 @@ func reduceLine(line string) string {
 	return line
 }
 
-// decomposeMul2Op emits VAS-level instructions for dst *= C.
 func decomposeMul2Op(dst string, C int64, trimmed string) string {
 	comment := ""
 	if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
 		comment = " " + trimmed[idx:]
 	}
 
-	// 1. Power of 2: SHL
 	if isPowerOf2(C) && C <= 0x80000000 {
 		shift := log2(C)
 		return fmt.Sprintf("\tshl\t%s, %d%s", dst, shift, comment)
 	}
 
-	// 2. LEA-decomposable: C = 1 + scale where scale ∈ {1,2,4,8} → C ∈ {2,3,5,9}
 	scale := C - 1
 	switch scale {
 	case 1, 2, 4, 8:
 		return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s", dst, dst, dst, scale, comment)
 	}
 
-	// 3. Factor out powers of 2: C = odd * 2^k
 	shift := int64(0)
 	odd := C
 	for odd%2 == 0 {
@@ -908,44 +865,35 @@ func decomposeMul2Op(dst string, C int64, trimmed string) string {
 		shift++
 	}
 
-	// Only decompose if odd is small enough for a single LEA
 	if shift > 0 {
 		oddScale := odd - 1
 		switch oddScale {
 		case 1, 2, 4, 8:
-			// LEA dst, [dst+dst*oddScale] ; dst *= odd
-			// Then SHL dst, shift            ; dst *= 2^shift
-			// Total: dst *= odd * 2^shift = C
 			return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s\n\tshl\t%s, %d%s",
 				dst, dst, dst, oddScale, comment, dst, shift, comment)
 		}
 	}
 
-	// No decomposition found
 	return ""
 }
 
-// decomposeMul3Op emits VAS-level instructions for dst = src * C.
 func decomposeMul3Op(dst, src string, C int64, trimmed string) string {
 	comment := ""
 	if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
 		comment = " " + trimmed[idx:]
 	}
 
-	// 1. Power of 2: MOV dst, src; SHL dst, shift
 	if isPowerOf2(C) && C <= 0x80000000 {
 		shift := log2(C)
 		return fmt.Sprintf("\tMOV\t%s, %s%s\n\tshl\t%s, %d%s", dst, src, comment, dst, shift, comment)
 	}
 
-	// 2. LEA-decomposable: C = 1 + scale → dst = src * (1+scale)
 	scale := C - 1
 	switch scale {
 	case 1, 2, 4, 8:
 		return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s", dst, src, src, scale, comment)
 	}
 
-	// 3. C = (1+scale) * 2^k → LEA then SHL
 	shift := int64(0)
 	odd := C
 	for odd%2 == 0 {
@@ -961,10 +909,6 @@ func decomposeMul3Op(dst, src string, C int64, trimmed string) string {
 		}
 	}
 
-	// 4. C = (2^k) - 1 → LEA then SUB (e.g., 3 = 4-1, 7 = 8-1)
-	// dst = src * (2^k - 1)
-	// LEA dst, [src*2^k]  → dst = src * 2^k
-	// SUB dst, src          → dst = src * 2^k - src = src*(2^k-1)
 	for k := int64(2); k <= 3; k++ {
 		if C == (1<<k)-1 {
 			return fmt.Sprintf("\tLEA\t%s, [%s*%d]%s\n\tSUB\t%s, %s%s",
@@ -972,7 +916,6 @@ func decomposeMul3Op(dst, src string, C int64, trimmed string) string {
 		}
 	}
 
-	// No decomposition found
 	return ""
 }
 
@@ -993,8 +936,6 @@ func log2(n int64) int {
 // Pre-expansion: STORE-LOAD forwarding
 // ---------------------------------------------------------------------------
 
-// storeLoadFwd replaces LOAD from a label with MOV from the last STORE to
-// that label within the same basic block.
 func storeLoadFwd(lines []string) []string {
 	blocks := splitBlocks(lines)
 	var result []string
@@ -1004,9 +945,7 @@ func storeLoadFwd(lines []string) []string {
 	return result
 }
 
-// fwdBlock performs STORE-LOAD forwarding within a single basic block.
 func fwdBlock(lines []string) []string {
-	// lastStore[labelName] = v-reg index that was stored
 	lastStore := map[string]int{}
 
 	result := make([]string, len(lines))
@@ -1017,7 +956,7 @@ func fwdBlock(lines []string) []string {
 			code = strings.TrimSpace(code[:idx])
 		}
 		if code == "" {
-			lastStore = map[string]int{} // clear on empty line
+			lastStore = map[string]int{}
 			result[i] = line
 			continue
 		}
@@ -1050,7 +989,6 @@ func fwdBlock(lines []string) []string {
 					label := extractLabel(args[1])
 					if label != "" {
 						if srcRi, ok := lastStore[label]; ok {
-							// Forward: replace LOAD with MOV
 							comment := ""
 							if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
 								comment = " " + trimmed[idx:]
@@ -1062,14 +1000,11 @@ func fwdBlock(lines []string) []string {
 				}
 			}
 		default:
-			// Any non-STORE/LOAD instruction that could modify memory
-			// clears the store map for safety.
 			if op == "CALL" || op == "SYSCALL" || op == "INT" {
 				lastStore = map[string]int{}
 			} else if len(fields) >= 2 {
 				firstArg := strings.TrimRight(args[0], ",")
 				if strings.HasPrefix(firstArg, "[") {
-					// Writing to memory (e.g., passthrough). Clear all.
 					lastStore = map[string]int{}
 				}
 			}
@@ -1080,17 +1015,14 @@ func fwdBlock(lines []string) []string {
 	return result
 }
 
-// extractLabel extracts a label name from a memory operand like "[label]"
-// or "[label+8]". Returns "" if no simple label is found.
 func extractLabel(s string) string {
 	s = strings.TrimSpace(s)
 	if !strings.HasPrefix(s, "[") {
 		return ""
 	}
-	s = s[1:] // strip '['
+	s = s[1:]
 	if idx := strings.IndexAny(s, "+-*/]"); idx >= 0 {
 		before := strings.TrimSpace(s[:idx])
-		// Check if it's a v-reg or number
 		if regIndex(before) >= 0 {
 			return ""
 		}
@@ -1099,7 +1031,6 @@ func extractLabel(s string) string {
 		}
 		return before
 	}
-	// Simple case: [label]
 	s = strings.TrimRight(s, "]")
 	s = strings.TrimSpace(s)
 	if regIndex(s) >= 0 {
@@ -1114,7 +1045,6 @@ func extractLabel(s string) string {
 // ---------------------------------------------------------------------------
 // Post-expansion: peephole optimizations on asm output
 // ---------------------------------------------------------------------------
-// regIndex returns the v-register index (0-12) or -1 if not a v-reg.
 func regIndex(s string) int {
 	s = strings.TrimRight(s, ",")
 	if len(s) >= 2 && s[0] == 'v' {
@@ -1122,11 +1052,9 @@ func regIndex(s string) int {
 		if len(rest) == 0 {
 			return -1
 		}
-		// Single digit: v0-v9
 		if len(rest) == 1 && rest[0] >= '0' && rest[0] <= '9' {
 			return int(rest[0] - '0')
 		}
-		// Two digits: v10, v11, v12
 		if len(rest) == 2 && rest[0] == '1' && rest[1] >= '0' && rest[1] <= '2' {
 			return 10 + int(rest[1]-'0')
 		}
@@ -1134,7 +1062,6 @@ func regIndex(s string) int {
 	return -1
 }
 
-// trimBrackets strips surrounding brackets from a memory operand like "[v5]" -> "v5".
 func trimBrackets(s string) string {
 	s = strings.TrimLeft(s, "[")
 	s = strings.TrimRight(s, "]")
@@ -1142,7 +1069,7 @@ func trimBrackets(s string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Post-expansion: peephole optimizations on asm output
+// Peephole orchestration
 // ---------------------------------------------------------------------------
 
 func peephole(lines []string) []string {
@@ -1156,19 +1083,17 @@ func peephole(lines []string) []string {
 	lines = shlAddFuse(lines)
 	lines = addNegFuse(lines)
 	lines = cancelPairElim(lines)
+	lines = pushModPopElim(lines)
 	return lines
 }
 
-// xorZero replaces "mov <reg>, 0" with "xor <reg>, <reg>".
 func xorZero(lines []string) []string {
-	// Match: mov\tr(a-z0-9)+,\s*0
 	re := regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*0$`)
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
 		m := re.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
 		if m != nil {
 			reg := m[1]
-			// Use 32-bit register (eax, ebx, etc.) for smaller encoding
 			r32 := regTo32(reg)
 			result = append(result, fmt.Sprintf("\txor\t%s, %s", r32, r32))
 		} else {
@@ -1178,7 +1103,6 @@ func xorZero(lines []string) []string {
 	return result
 }
 
-// testCmp replaces "cmp <reg>, 0" with "test <reg>, <reg>".
 func testCmp(lines []string) []string {
 	re := regexp.MustCompile(`^\tcmp\t([a-z][a-z0-9]+),\s*0$`)
 	result := make([]string, 0, len(lines))
@@ -1195,9 +1119,6 @@ func testCmp(lines []string) []string {
 	return result
 }
 
-// nopMerge merges consecutive NOP lines into one (with comment showing count).
-// NASM handles single-byte NOPs; multi-byte NOP encoding is deferred to the
-// assembler for now. A future arch-specific pass can emit db sequences.
 func nopMerge(lines []string) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
@@ -1221,12 +1142,6 @@ func nopMerge(lines []string) []string {
 	return result
 }
 
-// leaFuse replaces "mov r1, r2; add r1, r3" with "lea r1, [r2+r3]"
-// when r2 is not used between the two instructions.
-// Also fuses:
-//
-//	"mov r1, r2; sub r1, N"  → "lea r1, [r2-N]"
-//	"mov r1, r2; imul r1, K" → "lea r1, [r2+r2*(K-1)]" (K ∈ {3,5,9})
 func leaFuse(lines []string) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
@@ -1245,16 +1160,9 @@ func leaFuse(lines []string) []string {
 	return result
 }
 
-// movRe matches: mov\tr1,\s*r2
 var movRe = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-
-// addRe matches: add\tr1,\s*r3
 var addRe = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-
-// subImmRe matches: sub\tr1,\s*N  (register, immediate)
 var subImmRe = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*(-?\d+)$`)
-
-// imulImmRe matches: imul\tr1,\s*K  (register, immediate)
 var imulImmRe = regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*(\d+)$`)
 
 func tryLeaFuse(line1, line2 string) (string, bool) {
@@ -1264,7 +1172,6 @@ func tryLeaFuse(line1, line2 string) (string, bool) {
 	}
 	dst, src1 := m1[1], m1[2]
 
-	// Try: mov dst, src1 ; add dst, src2  →  lea dst, [src1+src2]
 	if m2 := addRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
 		addDst, src2 := m2[1], m2[2]
 		if addDst == dst {
@@ -1272,7 +1179,6 @@ func tryLeaFuse(line1, line2 string) (string, bool) {
 		}
 	}
 
-	// Try: mov dst, src1 ; sub dst, N  →  lea dst, [src1-N]
 	if m2 := subImmRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
 		subDst, imm := m2[1], m2[2]
 		if subDst == dst {
@@ -1280,14 +1186,11 @@ func tryLeaFuse(line1, line2 string) (string, bool) {
 		}
 	}
 
-	// Try: mov dst, src1 ; imul dst, K  (K ∈ {3,5,9}) → lea dst, [src1+src1*(K-1)]
 	if m2 := imulImmRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
 		imulDst, kStr := m2[1], m2[2]
 		if imulDst == dst {
 			k, err := strconv.Atoi(kStr)
 			if err == nil {
-				// LEA supports scale 1,2,4,8. Decompose K as 1+scale.
-				// Valid K: 2 (1+1), 3 (1+2), 5 (1+4), 9 (1+8)
 				scale := k - 1
 				switch scale {
 				case 1, 2, 4, 8:
@@ -1304,9 +1207,6 @@ func tryLeaFuse(line1, line2 string) (string, bool) {
 // -O2 optimizations
 // ---------------------------------------------------------------------------
 
-// cse eliminates common subexpressions within each basic block.
-// If the same (op, arg1, arg2) appears twice, the second is replaced
-// with a MOV from the first result.
 func cse(lines []string) []string {
 	blocks := splitBlocks(lines)
 	var result []string
@@ -1318,13 +1218,12 @@ func cse(lines []string) []string {
 
 type cseKey struct {
 	op   string
-	args string // joined args (without dst)
+	args string
 }
 
 func cseBlock(lines []string) []string {
-	seen := map[cseKey]string{} // key → dst register name
-	// Track which registers are overwritten (kill entries that use them)
-	regVals := map[string]cseKey{} // reg → last key it computed
+	seen := map[cseKey]string{}
+	regVals := map[string]cseKey{}
 
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -1345,38 +1244,21 @@ func cseBlock(lines []string) []string {
 		op := strings.ToUpper(tokens[0])
 		args := tokens[1:]
 
-		// Clear entries whose source registers have been overwritten
 		dst := dstReg(op, args)
 		if dst >= 0 {
 			dstName := args[0]
-			// If this dst was tracking a previous expression, remove that expression from seen
 			if prevKey, ok := regVals[dstName]; ok {
 				delete(seen, prevKey)
 			}
 		}
 
-		// For 2- or 3-operand arithmetic: check if this computation is already seen
 		if len(args) >= 2 && (op == "ADD" || op == "SUB" || op == "MUL") {
-			// Strip trailing commas from args for clean comparison
 			cleanArgs := make([]string, len(args[1:]))
 			for i, a := range args[1:] {
 				cleanArgs[i] = strings.TrimRight(a, ",")
 			}
-			// Key = (op, remaining args after dst)
 			key := cseKey{op: op, args: strings.Join(cleanArgs, " ")}
 			if prevDst, ok := seen[key]; ok && prevDst != args[0] {
-				// ⚠️ CRITICAL FIX: Only eliminate if the destination register is NOT read later
-				// Check if args[0] (the target) appears as a source in any subsequent instruction
-				// For safety, we'll be conservative: if the target register differs from prevDst,
-				// we keep the original instruction to preserve data flow correctness
-
-				// In fibonacci case: mov rsi, rbx; add rbx, rax
-				// If later we see add X, Y again, we should NOT replace it with MOV
-				// because rsi holds an intermediate value needed for correct execution
-
-				// Conservative approach: Always keep the original instruction
-				// Only use CSE for truly redundant computations where the result
-				// doesn't affect program semantics
 				seen[key] = args[0]
 				if dst >= 0 {
 					regVals[args[0]] = key
@@ -1384,7 +1266,6 @@ func cseBlock(lines []string) []string {
 				result = append(result, line)
 				continue
 			}
-			// First time seeing this computation — record it
 			seen[key] = args[0]
 			if dst >= 0 {
 				regVals[args[0]] = key
@@ -1396,10 +1277,7 @@ func cseBlock(lines []string) []string {
 	return result
 }
 
-// licm hoists loop-invariant instructions before the loop header.
-// A loop is identified as a label targeted by a backward JMP/JE/etc.
 func licm(lines []string) []string {
-	// Collect label positions: label → line index
 	labelIdx := map[string]int{}
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -1412,10 +1290,9 @@ func licm(lines []string) []string {
 		}
 	}
 
-	// Find backward jumps: JMP/JE/etc. to a label before the jump
 	type loop struct {
-		header int // label line index
-		back   int // jump line index
+		header int
+		back   int
 	}
 	var loops []loop
 	for i, line := range lines {
@@ -1445,12 +1322,8 @@ func licm(lines []string) []string {
 		return lines
 	}
 
-	// For each loop (innermost first), hoist invariant instructions
-	// Sort loops so innermost (largest header) comes first
-	// Simple approach: process in reverse order of header
 	for li := len(loops) - 1; li >= 0; li-- {
 		l := loops[li]
-		// Check if this loop is inside another (nested) — skip, outer pass handles it
 		isNested := false
 		for _, outer := range loops {
 			if outer.header < l.header && outer.back > l.back {
@@ -1461,7 +1334,6 @@ func licm(lines []string) []string {
 			continue
 		}
 
-		// Determine which registers are modified inside the loop body
 		modified := map[string]bool{}
 		for j := l.header + 1; j <= l.back; j++ {
 			trimmed := strings.TrimSpace(lines[j])
@@ -1478,13 +1350,11 @@ func licm(lines []string) []string {
 			}
 			op := strings.ToUpper(fields[0])
 			args := fields[1:]
-			// Track destination registers as modified
 			if dst := dstReg(op, args); dst >= 0 && len(args) >= 1 {
 				modified[args[0]] = true
 			}
 		}
 
-		// Scan the loop body for instructions to hoist
 		var hoisted []int
 		var hoistedLines []string
 		for j := l.header + 1; j < l.back; j++ {
@@ -1503,24 +1373,17 @@ func licm(lines []string) []string {
 			op := strings.ToUpper(fields[0])
 			args := fields[1:]
 
-			// Conservative approach: Only hoist LEA with label operands
-			// Other instructions are too risky to hoist without full dataflow analysis
 			isInvariant := false
-
-			// For LEA with memory operand like [data] or [label], check if it's truly invariant
 			if op == "LEA" && len(args) >= 2 {
-				// Extract base register from memory operand [reg] or [reg+offset]
 				memOp := args[1]
 				memOp = strings.TrimPrefix(memOp, "[")
 				memOp = strings.TrimSuffix(memOp, "]")
-				// Remove offset part if present (e.g., "rax+8" -> "rax")
 				if plusIdx := strings.Index(memOp, "+"); plusIdx >= 0 {
 					memOp = memOp[:plusIdx]
 				}
 				if minusIdx := strings.Index(memOp, "-"); minusIdx >= 0 {
 					memOp = memOp[:minusIdx]
 				}
-				// Check if base register is modified in loop
 				if !modified[memOp] {
 					isInvariant = true
 				}
@@ -1532,16 +1395,12 @@ func licm(lines []string) []string {
 			}
 		}
 
-		// Insert hoisted instructions before the loop header
 		if len(hoistedLines) > 0 {
-			// Build new result with hoisted instructions inserted
 			var newResult []string
 			for i, line := range lines {
 				if i == l.header {
-					// Insert hoisted instructions before loop header
 					newResult = append(newResult, hoistedLines...)
 				}
-				// Skip hoisted lines (they're moved)
 				isHoisted := false
 				for _, h := range hoisted {
 					if i == h {
@@ -1554,16 +1413,12 @@ func licm(lines []string) []string {
 				}
 			}
 			lines = newResult
-			// Update loop indices since we modified the array
-			// (simplified: just break after first hoisting to avoid index issues)
 			break
 		}
 	}
 	return lines
 }
 
-// redundantLoadElim replaces LOAD from an address that was recently loaded
-// from the same address (without intervening STORE) with a MOV from the earlier dst.
 func redundantLoadElim(lines []string) []string {
 	blocks := splitBlocks(lines)
 	var result []string
@@ -1574,9 +1429,7 @@ func redundantLoadElim(lines []string) []string {
 }
 
 func redundantLoadBlock(lines []string) []string {
-	// lastLoad[operand_string] = dst_register that holds the loaded value
 	lastLoad := map[string]string{}
-	// Track which address registers have been modified since their last load
 	addrModified := map[string]bool{}
 
 	result := make([]string, len(lines))
@@ -1600,10 +1453,8 @@ func redundantLoadBlock(lines []string) []string {
 
 		if op == "LOAD" && len(args) >= 2 {
 			addr := args[1]
-			// Extract the address register (strip brackets)
 			addrReg := strings.TrimRight(strings.TrimLeft(addr, "["), "]")
 			if prevDst, ok := lastLoad[addr]; ok && !addrModified[addrReg] {
-				// Same address, no intervening modification — reuse previous value
 				dst := strings.TrimRight(args[0], ",")
 				src := strings.TrimRight(prevDst, ",")
 				comment := ""
@@ -1613,12 +1464,10 @@ func redundantLoadBlock(lines []string) []string {
 				result[i] = fmt.Sprintf("\tMOV\t%s, %s%s", dst, src, comment)
 				continue
 			}
-			// Record this load
 			lastLoad[addr] = args[0]
 			addrModified[addrReg] = false
 		}
 
-		// Track modifications to registers (including LOAD dst itself)
 		dstIdx := -1
 		switch op {
 		case "MOVI", "MOV", "ADD", "SUB", "MUL", "LOAD", "LEA", "POP":
@@ -1628,11 +1477,9 @@ func redundantLoadBlock(lines []string) []string {
 		}
 		if dstIdx >= 0 {
 			modifiedReg := strings.TrimRight(args[dstIdx], ",")
-			// Mark this register as modified (may be used as address in future loads)
 			addrModified[modifiedReg] = true
 		}
 
-		// STORE to an address invalidates loads from that address
 		if op == "STORE" && len(args) >= 2 {
 			delete(lastLoad, args[1])
 		}
@@ -1642,8 +1489,6 @@ func redundantLoadBlock(lines []string) []string {
 	return result
 }
 
-// pushPopElim removes balanced PUSH/POP pairs within a basic block
-// when the pushed register is not modified between them.
 func pushPopElim(lines []string) []string {
 	blocks := splitBlocks(lines)
 	var result []string
@@ -1654,7 +1499,6 @@ func pushPopElim(lines []string) []string {
 }
 
 func pushPopBlock(lines []string) []string {
-	// Match PUSH vX followed by POP vX with no modification of vX in between
 	remove := make([]bool, len(lines))
 	for i, line := range lines {
 		if remove[i] {
@@ -1678,7 +1522,6 @@ func pushPopBlock(lines []string) []string {
 		}
 		reg := fields[1]
 
-		// Scan forward for matching POP
 		for j := i + 1; j < len(lines); j++ {
 			if remove[j] {
 				continue
@@ -1698,20 +1541,16 @@ func pushPopBlock(lines []string) []string {
 			jOp := strings.ToUpper(jFields[0])
 			jReg := strings.TrimRight(jFields[1], ",")
 
-			// If this is a POP of the same register, we found our match
 			if jOp == "POP" && jReg == reg {
-				// Found matching POP — remove both
 				remove[i] = true
 				remove[j] = true
 				break
 			}
 
-			// If reg is modified between PUSH and POP, abort
 			if d := dstReg(jOp, jFields[1:]); d >= 0 && jReg == reg {
 				break
 			}
 
-			// CALL might modify any register, so abort
 			if jOp == "CALL" || jOp == "SYSCALL" || jOp == "INT" {
 				break
 			}
@@ -1727,8 +1566,6 @@ func pushPopBlock(lines []string) []string {
 	return result
 }
 
-// tailCallOpt replaces "CALL label; RET" with "JMP label" when the
-// caller's return value is passed through directly.
 func tailCallOpt(lines []string) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
@@ -1749,7 +1586,6 @@ func tailCallOpt(lines []string) []string {
 					}
 					nextFields := strings.Fields(nextCode)
 					if len(nextFields) == 1 && strings.ToUpper(nextFields[0]) == "RET" {
-						// CALL label + RET → JMP label
 						target := fields[1]
 						comment := ""
 						if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
@@ -1768,7 +1604,6 @@ func tailCallOpt(lines []string) []string {
 	return result
 }
 
-// noopElim removes no-op instructions: mov r1,r1, add r1,0, sub r1,0, imul r1,1
 func noopElim(lines []string) []string {
 	movRe := regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
 	addZero := regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*0$`)
@@ -1778,7 +1613,6 @@ func noopElim(lines []string) []string {
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
 		trimmed := strings.TrimRight(line, " \t\r")
-		// mov r1, r1 → remove (same src and dst)
 		if m := movRe.FindStringSubmatch(trimmed); m != nil && m[1] == m[2] {
 			continue
 		}
@@ -1790,7 +1624,6 @@ func noopElim(lines []string) []string {
 	return result
 }
 
-// pushPopMov replaces "push r1; pop r2" with "mov r2, r1".
 func pushPopMov(lines []string) []string {
 	pushRe := regexp.MustCompile(`^\tpush\t([a-z][a-z0-9]+)$`)
 	popRe := regexp.MustCompile(`^\tpop\t([a-z][a-z0-9]+)$`)
@@ -1813,11 +1646,9 @@ func pushPopMov(lines []string) []string {
 	return result
 }
 
-// xorMovElim replaces "xor r1,r1; mov r1,r2" with "mov r1, r2".
 func xorMovElim(lines []string) []string {
 	xorRe := regexp.MustCompile(`^\txor\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
 
-	// Map 32-bit register names to 64-bit for matching against mov
 	to64 := map[string]string{
 		"eax": "rax", "ebx": "rbx", "ecx": "rcx", "edx": "rdx",
 		"esi": "rsi", "edi": "rdi", "ebp": "rbp", "esp": "rsp",
@@ -1830,14 +1661,12 @@ func xorMovElim(lines []string) []string {
 	for i < len(lines) {
 		if i+1 < len(lines) {
 			m1 := xorRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
-			// Match xor r1, r1 (same register)
 			if m1 != nil && m1[1] == m1[2] {
 				reg32 := m1[1]
 				reg64 := reg32
 				if r, ok := to64[reg32]; ok {
 					reg64 = r
 				}
-				// Check if next line is "mov <reg64>, something"
 				movAfterXor := regexp.MustCompile(fmt.Sprintf(`^\tmov\t%s,\s*([a-z][a-z0-9]+)$`, regexp.QuoteMeta(reg64)))
 				m2 := movAfterXor.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil {
@@ -1853,9 +1682,6 @@ func xorMovElim(lines []string) []string {
 	return result
 }
 
-// shlAddFuse replaces "mov r1, r2; shl r1, k; add r1, r2" with
-// "lea r1, [r2+r2*2^k]" for k ∈ {1,2,3} (scale 2,4,8).
-// This computes r1 = r2 * (2^k + 1) in one instruction.
 func shlAddFuse(lines []string) []string {
 	movRe := regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
 	shlRe := regexp.MustCompile(`^\tshl\t([a-z][a-z0-9]+),\s*(\d+)$`)
@@ -1894,7 +1720,7 @@ func shlAddFuse(lines []string) []string {
 				i++
 				continue
 			}
-			scale := 1 << uint(shift) // 2, 4, 8
+			scale := 1 << uint(shift)
 
 			result = append(result, fmt.Sprintf("\tlea\t%s, [%s+%s*%d]", movDst, movSrc, movSrc, scale))
 			i += 3
@@ -1906,8 +1732,6 @@ func shlAddFuse(lines []string) []string {
 	return result
 }
 
-// addNegFuse replaces "add r1, 1; neg r1" with "not r1".
-// Verified: -(x+1) = ~x for all 64-bit values.
 func addNegFuse(lines []string) []string {
 	add1Re := regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*1$`)
 	negRe := regexp.MustCompile(`^\tneg\t([a-z][a-z0-9]+)$`)
@@ -1926,7 +1750,6 @@ func addNegFuse(lines []string) []string {
 
 			m2 := negRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 			if m2 != nil && m2[1] == reg {
-				// add r1, 1; neg r1 → not r1
 				result = append(result, fmt.Sprintf("\tnot\t%s", reg))
 				i += 2
 				continue
@@ -1938,20 +1761,12 @@ func addNegFuse(lines []string) []string {
 	return result
 }
 
-// cancelPairElim removes instruction pairs that cancel each other out.
-// Patterns:
-//
-//	not r1; not r1  →  <delete>
-//	neg r1; neg r1  →  <delete>
-//	inc r1; dec r1  →  <delete>
-//	dec r1; inc r1  →  <delete>
 func cancelPairElim(lines []string) []string {
 	notRe := regexp.MustCompile(`^\tnot\t([a-z][a-z0-9]+)$`)
 	negRe := regexp.MustCompile(`^\tneg\t([a-z][a-z0-9]+)$`)
 	incRe := regexp.MustCompile(`^\tinc\t([a-z][a-z0-9]+)$`)
 	decRe := regexp.MustCompile(`^\tdec\t([a-z][a-z0-9]+)$`)
 
-	// Helper: check if line matches a pattern and returns the register.
 	matchReg := func(re *regexp.Regexp, line string) string {
 		m := re.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
 		if m != nil {
@@ -1966,25 +1781,25 @@ func cancelPairElim(lines []string) []string {
 		if i+1 < len(lines) {
 			reg := matchReg(notRe, lines[i])
 			if reg != "" && matchReg(notRe, lines[i+1]) == reg {
-				i += 2 // not; not → delete both
+				i += 2
 				continue
 			}
 
 			reg = matchReg(negRe, lines[i])
 			if reg != "" && matchReg(negRe, lines[i+1]) == reg {
-				i += 2 // neg; neg → delete both
+				i += 2
 				continue
 			}
 
 			reg = matchReg(incRe, lines[i])
 			if reg != "" && matchReg(decRe, lines[i+1]) == reg {
-				i += 2 // inc; dec → delete both
+				i += 2
 				continue
 			}
 
 			reg = matchReg(decRe, lines[i])
 			if reg != "" && matchReg(incRe, lines[i+1]) == reg {
-				i += 2 // dec; inc → delete both
+				i += 2
 				continue
 			}
 		}
@@ -1994,7 +1809,36 @@ func cancelPairElim(lines []string) []string {
 	return result
 }
 
-// regTo32 converts a 64-bit register name to 32-bit (for XOR/TEST).
+// pushModPopElim removes push; instr reg, ... ; pop reg triples
+// when the pop restores the old value and the intermediate result dies.
+// Example: push rbx; add rbx, r8; pop rbx  →  (deleted)
+func pushModPopElim(lines []string) []string {
+	pushRe := regexp.MustCompile(`^\tpush\t([a-z][a-z0-9]+)$`)
+	popRe := regexp.MustCompile(`^\tpop\t([a-z][a-z0-9]+)$`)
+	modRe := regexp.MustCompile(`^\t(add|sub|imul|mov|lea)\t([a-z][a-z0-9]+),.*$`)
+
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		if i+2 < len(lines) {
+			m1 := pushRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			m3 := popRe.FindStringSubmatch(strings.TrimRight(lines[i+2], " \t\r"))
+			if m1 != nil && m3 != nil && m1[1] == m3[1] {
+				reg := m1[1]
+				m2 := modRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+				if m2 != nil && m2[2] == reg {
+					// push <reg>; modify <reg>; pop <reg>  →  delete all three
+					i += 3
+					continue
+				}
+			}
+		}
+		result = append(result, lines[i])
+		i++
+	}
+	return result
+}
+
 func regTo32(reg string) string {
 	m := map[string]string{
 		"rax": "eax", "rbx": "ebx", "rcx": "ecx", "rdx": "edx",

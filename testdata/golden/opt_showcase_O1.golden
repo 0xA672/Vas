@@ -20,9 +20,6 @@ loop:
 
     ; PUSH/POP elimination test
     ; (PUSH v1 / POP v1 around ADD is a no-op; -O2 removes both)
-	push	rbx
-	add	rbx, r8
-	pop	rbx
 
 	add	rcx, 1
 	cmp	rcx, rdx

@@ -118,11 +118,16 @@ func TestGoldenExamples(t *testing.T) {
 				// Skip error-producing inputs — they may use features not support by AssembleWithOpt
 				continue
 			}
+			// Normalize line endings and trim trailing whitespace for comparison
+			got = strings.ReplaceAll(got, "\r\n", "\n")
+			got = strings.TrimRight(got, "\n")
+
 			goldenFile := goldenDir + base + "_O" + r(opt) + ".golden"
 			if _, err := os.Stat(goldenFile); os.IsNotExist(err) {
 				// Write golden file on first run
 				os.MkdirAll(goldenDir, 0755)
-				if err := os.WriteFile(goldenFile, []byte(got), 0644); err != nil {
+				// Write with LF for consistency
+				if err := os.WriteFile(goldenFile, []byte(got+"\n"), 0644); err != nil {
 					t.Fatalf("write golden %s: %v", goldenFile, err)
 				}
 				t.Logf("created golden file: %s", goldenFile)
@@ -132,7 +137,11 @@ func TestGoldenExamples(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read golden %s: %v", goldenFile, err)
 			}
-			if got != string(want) {
+			wantStr := string(want)
+			wantStr = strings.ReplaceAll(wantStr, "\r\n", "\n")
+			wantStr = strings.TrimRight(wantStr, "\n")
+
+			if got != wantStr {
 				t.Errorf("%s -O%d output differs from golden\n  update: cp ... %s", base, opt, goldenFile)
 			}
 		}
