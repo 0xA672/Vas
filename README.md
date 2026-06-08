@@ -283,7 +283,9 @@ ADD  v1, v0   # this is also a comment
 
 ### Preprocessor Directives
 
-VAS supports several preprocessor directives for code organization and conditional compilation:
+The VAS preprocessor runs automatically whenever the source contains
+any preprocessor directive, even if no virtual registers are present.
+The supported directives are:
 
 #### File Inclusion (`.include`)
 
