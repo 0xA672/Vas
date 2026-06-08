@@ -1004,7 +1004,7 @@ MOVI v1, 2
 	if !strings.Contains(errMsg, "a.vas") || !strings.Contains(errMsg, "b.vas") {
 		t.Errorf("expected both files in error message, got: %s", errMsg)
 	}
-	if !strings.Contains(errMsg, "cycle back to here") {
+	if !strings.Contains(errMsg, "cycle starts here") {
 		t.Errorf("expected cycle indicator, got: %s", errMsg)
 	}
 }

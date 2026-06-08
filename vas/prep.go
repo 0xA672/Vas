@@ -430,7 +430,6 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 				return "", fmt.Errorf(".once end requires a block name")
 			}
 			if ctx.skipBlockDepth > 0 {
-				// Inside a skipped block; just decrement depth, do not touch stack.
 				ctx.skipBlockDepth--
 				continue
 			}
@@ -752,15 +751,23 @@ func (ctx *prepContext) includeFile(filePath string, data []byte) (string, error
 		if p == abs {
 			fullPath := append([]string{}, ctx.includeStack...)
 			fullPath = append(fullPath, abs)
+
 			var sb strings.Builder
 			sb.WriteString("circular include detected:\n")
 			for i, elem := range fullPath {
-				sb.WriteString("\t")
-				sb.WriteString(elem)
-				if i == len(fullPath)-1 {
-					sb.WriteString("  <-- cycle back to here")
+				if i == 0 {
+					sb.WriteString("    ")
+					sb.WriteString(elem)
+					sb.WriteString("  <-- cycle starts here\n")
+				} else if i == len(fullPath)-1 {
+					sb.WriteString("    └──→ ")
+					sb.WriteString(elem)
+					sb.WriteByte('\n')
+				} else {
+					sb.WriteString("    ")
+					sb.WriteString(elem)
+					sb.WriteByte('\n')
 				}
-				sb.WriteByte('\n')
 			}
 			return "", errors.New(sb.String())
 		}
