@@ -76,15 +76,15 @@ func withInheritContext(parent *prepContext) PreprocessOption {
 
 // prepContext tracks state during preprocessing.
 type prepContext struct {
-	dir      string
-	included map[string]bool // file‑level deduplication (absolute paths)
-	resolver PackageResolver
-	vasPath  []string
-	consts   map[string]string   // .const NAME = value
-	macros   map[string]macroDef // .macro definitions
-	defines  map[string]bool     // defined names (for .ifdef)
-	ifStack  []ifState
-	macroBuf []string // lines collected for current macro definition
+	dir          string
+	included     map[string]bool // file‑level deduplication (absolute paths)
+	resolver     PackageResolver
+	vasPath      []string
+	consts       map[string]string   // .const NAME = value
+	macros       map[string]macroDef // .macro definitions
+	defines      map[string]bool     // defined names (for .ifdef)
+	ifStack      []ifState
+	macroBuf     []string // lines collected for current macro definition
 	macroName    string
 	macroParams  []string
 	inMacro      bool
