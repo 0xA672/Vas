@@ -7,10 +7,6 @@
 	push	rax
 	xor	ebx, ebx
 
-	lea	rax, [data]
-	lea	rax, [data]
-	lea	rax, [data]
-	lea	rax, [data]
 outer:
 	pop	rax
 	mov	rsi, rax
@@ -28,6 +24,7 @@ inner:
     ; addr of a[j] = data + j*8
 	mov	rdi, rdx
 	shl	rdi, 3
+	lea	rax, [data]
 	add	rdi, rax
 	mov	r9, [rdi]
 
@@ -35,6 +32,7 @@ inner:
 	mov	r8, 1
 	lea	rdi, [rdx+r8]
 	shl	rdi, 3
+	lea	rax, [data]
 	add	rdi, rax
 	mov	r8, [rdi]
 
@@ -45,12 +43,14 @@ inner:
 ; swap: STORE a[j+1] (v6) to a[j], a[j] (v7) to a[j+1]
 	mov	rdi, rdx
 	shl	rdi, 3
+	lea	rax, [data]
 	add	rdi, rax
 	mov	[rdi], r8
 
 	mov	rax, 1
 	lea	rdi, [rdx+rax]
 	shl	rdi, 3
+	lea	rax, [data]
 	add	rdi, rax
 	mov	[rdi], r9
 

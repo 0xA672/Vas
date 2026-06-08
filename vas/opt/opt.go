@@ -1384,7 +1384,9 @@ func licm(lines []string) []string {
 				if minusIdx := strings.Index(memOp, "-"); minusIdx >= 0 {
 					memOp = memOp[:minusIdx]
 				}
-				if !modified[memOp] {
+				// Check both source base and destination register for modification
+				dstName := strings.TrimRight(args[0], ",")
+				if !modified[memOp] && !modified[dstName] {
 					isInvariant = true
 				}
 			}
