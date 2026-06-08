@@ -26,9 +26,6 @@ var regMap = map[string]string{
 }
 
 func mapReg(s string) (string, error) {
-	// First pass: validate all virtual register names before replacement
-	// (check must happen before replacement to avoid false negatives like
-	//  v10 becoming rbx0 after v1->rbx substitution)
 	for i := 0; i < len(s); i++ {
 		if s[i] == 'v' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
 			j := i + 1
@@ -41,7 +38,6 @@ func mapReg(s string) (string, error) {
 			}
 		}
 	}
-	// Second pass: replace valid virtual registers with physical registers
 	for i := 19; i >= 0; i-- {
 		old := fmt.Sprintf("v%d", i)
 		if phys, ok := regMap[old]; ok {
@@ -68,9 +64,42 @@ func Assemble(input string) (string, error) {
 	return AssembleWithOpt(input, 0)
 }
 
+// hasPreprocessorDirectives checks whether the source text contains any
+// line that begins with a preprocessor directive (after optional whitespace).
+func hasPreprocessorDirectives(src string) bool {
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, ".include") ||
+			strings.HasPrefix(trimmed, ".const") ||
+			strings.HasPrefix(trimmed, ".macro") ||
+			strings.HasPrefix(trimmed, ".ifdef") ||
+			strings.HasPrefix(trimmed, ".ifndef") ||
+			strings.HasPrefix(trimmed, ".once") ||
+			strings.HasPrefix(trimmed, ".rept") ||
+			strings.HasPrefix(trimmed, ".endm") ||
+			strings.HasPrefix(trimmed, ".endr") ||
+			strings.HasPrefix(trimmed, ".endif") ||
+			strings.HasPrefix(trimmed, ".else") ||
+			strings.HasPrefix(trimmed, ".include_bytes") {
+			return true
+		}
+	}
+	return false
+}
+
 // AssembleWithOpt assembles VAS source with the given optimization level.
 // level 0 = no optimization, level >=1 = -O1 (constant folding + DCE + peephole).
 func AssembleWithOpt(input string, optLevel int) (string, error) {
+	// Preprocessing: if the source contains any preprocessor directive,
+	// run the full preprocessor before anything else.
+	if hasPreprocessorDirectives(input) {
+		preprocessed, err := Preprocess(input, "")
+		if err != nil {
+			return "", fmt.Errorf("preprocessing: %w", err)
+		}
+		input = preprocessed
+	}
+
 	// Pre-expansion optimization: constant folding
 	lines := strings.Split(input, "\n")
 	if optLevel >= 1 {
@@ -78,7 +107,7 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 		input = strings.Join(lines, "\n")
 	}
 
-	// Pre-expansion optimization: dead code elimination
+	// Pre-expansion optimization: dead code elimination and other passes
 	if optLevel >= 1 {
 		input = opt.Optimize(input, optLevel)
 	}
@@ -121,7 +150,7 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 
 	output := strings.Join(outLines, "\n")
 
-	// Post-expansion peephole optimization (only safe passes that understand physical registers)
+	// Post-expansion peephole optimization
 	if optLevel >= 1 {
 		output = opt.PeepholeOnly(output)
 	}
@@ -144,8 +173,6 @@ func isInstruction(s string) bool {
 	return false
 }
 
-// nasmKeywords lists identifiers that are reserved by NASM and should not be
-// used as user labels. VAS emits a warning when it sees them in passthrough.
 var nasmKeywords = map[string]bool{
 	"ptr":  true,
 	"byte": true, "word": true, "dword": true, "qword": true, "tword": true, "oword": true,
@@ -162,7 +189,6 @@ func checkNasmKeyword(line string) {
 	if trimmed == "" {
 		return
 	}
-	// Skip lines that look like known VAS directives or instructions
 	fields := strings.Fields(trimmed)
 	if len(fields) == 0 {
 		return
@@ -174,7 +200,6 @@ func checkNasmKeyword(line string) {
 		"RESB", "RESW", "RESD", "RESQ", "EQU", "TIMES", "INCBIN":
 		return
 	}
-	// Strip trailing colon for label check
 	first := fields[0]
 	hasColon := strings.HasSuffix(first, ":")
 	if hasColon {
@@ -239,14 +264,10 @@ func processInstruction(line string) ([]string, error) {
 		}
 		t := strings.TrimLeft(mapped, " \t")
 		if strings.HasPrefix(t, ".") {
-			// GAS -> NASM: strip leading dot from directive keyword
-			// .section -> section, .global -> global, .globl -> global
 			t = t[1:]
-			// .globl -> global (not just globl)
 			if strings.HasPrefix(t, "globl") {
 				t = "global" + t[5:]
 			}
-			// .data / .bss / .text -> section .data / section .bss / section .text
 			if t == "data" || strings.HasPrefix(t, "data ") || strings.HasPrefix(t, "data\t") {
 				t = "section .data"
 			} else if t == "bss" || strings.HasPrefix(t, "bss ") || strings.HasPrefix(t, "bss\t") {
@@ -310,12 +331,9 @@ func expand2op(mnemonic string, args []string) ([]string, error) {
 		}
 		var lines []string
 		if dst == src2 {
-			// dst == src2: src2 would be overwritten by the mov from src1.
 			if mnemonic == "add" || mnemonic == "imul" {
-				// Commutative: dst = src1 + dst  ==  dst + src1
 				lines = append(lines, fmt.Sprintf("\t%s\t%s, %s", mnemonic, dst, src1))
 			} else {
-				// Non-commutative: save src2 via r10 first
 				lines = append(lines, fmt.Sprintf("\tmov\tr10, %s", src2))
 				if dst != src1 {
 					lines = append(lines, fmt.Sprintf("\tmov\t%s, %s", dst, src1))
@@ -356,7 +374,6 @@ func expandMul(args []string) ([]string, error) {
 		}
 		var lines []string
 		if dst == src2 {
-			// dst == src2: imul is commutative, swap src1/src2
 			lines = append(lines, fmt.Sprintf("\timul\t%s, %s", dst, src1))
 		} else {
 			if dst != src1 {
@@ -392,8 +409,6 @@ func expandStore(args []string) ([]string, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("STORE expects 2 operands, got %d", len(args))
 	}
-	// STORE src, [mem]  →  args[0]=src, args[1]=[mem]
-	// Output: mov [mem], src  (Intel syntax: destination first)
 	src, err := mapReg(args[0])
 	if err != nil {
 		return nil, err
@@ -442,7 +457,6 @@ func expandCmp(args []string) ([]string, error) {
 	}
 	b, err := mapReg(args[1])
 	if err != nil {
-		// If it looks like a number, treat as immediate
 		if _, parseErr := strconv.ParseInt(args[1], 0, 64); parseErr == nil {
 			b = args[1]
 		} else {
@@ -505,7 +519,6 @@ func expandLea(args []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	// NASM requires brackets for LEA: lea rax, [data]
 	if !strings.HasPrefix(mem, "[") {
 		mem = "[" + mem + "]"
 	}

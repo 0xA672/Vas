@@ -906,6 +906,7 @@ func (ctx *prepContext) applyConsts(src string) (string, error) {
 			if inString {
 				if c == '"' {
 					inString = false
+					codeStart = i + 1
 				}
 				outLine.WriteByte(c)
 				continue
