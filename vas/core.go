@@ -123,7 +123,6 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 
 	// Post-expansion peephole optimization (only safe passes that understand physical registers)
 	if optLevel >= 1 {
-		// Only run peephole on NASM output - other optimizations only work on VAS source
 		output = opt.PeepholeOnly(output)
 	}
 
@@ -542,16 +541,12 @@ func AssembleStandaloneTargetOpt(input, target string, optLevel int) (string, er
 }
 
 // hasBoilerplate checks if the assembled output already defines a .text section.
-// Only then can we safely skip adding the wrapper (section directives, entry point, etc.).
-// Sections like .data or .bss alone are not sufficient — without .text there's no code section
-// and the entry point won't be emitted.
 func hasBoilerplate(s string) bool {
 	for _, line := range strings.Split(s, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
-		// Skip comments
 		if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
 			trimmed = strings.TrimSpace(trimmed[:idx])
 		}
@@ -565,13 +560,10 @@ func hasBoilerplate(s string) bool {
 func wrapStandalone(vasInput, asmOutput string) string {
 	memRefs := collectMemRefs(vasInput)
 
-	// In standalone mode, always filter out user's global directives to avoid duplicates
-	// The wrapper will add the appropriate global declaration
 	lines := strings.Split(asmOutput, "\n")
 	var filtered []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		// Skip global directives in standalone mode (wrapper handles this)
 		if strings.HasPrefix(trimmed, "global ") {
 			continue
 		}
@@ -579,7 +571,6 @@ func wrapStandalone(vasInput, asmOutput string) string {
 	}
 	asmOutput = strings.Join(filtered, "\n")
 
-	// Check if user already defines an entry point
 	hasStart := strings.Contains(asmOutput, "_start:")
 	hasMain := strings.Contains(asmOutput, "main:")
 
@@ -587,9 +578,7 @@ func wrapStandalone(vasInput, asmOutput string) string {
 	sb.WriteString("\tdefault rel\n\n")
 	sb.WriteString("\tsection .text\n")
 
-	// Add appropriate global declaration based on what entry point exists
 	if !hasStart && !hasMain {
-		// No entry point defined - add default _start wrapper
 		sb.WriteString("\tglobal _start\n")
 		sb.WriteString("_start:\n")
 		sb.WriteString("\tcall\tvas_main\n")
@@ -597,21 +586,16 @@ func wrapStandalone(vasInput, asmOutput string) string {
 		sb.WriteString("\tmov\teax, 60\n")
 		sb.WriteString("\tsyscall\n")
 	} else if hasMain && !hasStart {
-		// User defined main but not _start - add global main
 		sb.WriteString("\tglobal main\n")
 	} else if hasStart {
-		// User defined _start - add global _start
 		sb.WriteString("\tglobal _start\n")
 	}
 
 	sb.WriteString("vas_main:\n")
-
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 
 	if len(memRefs) > 0 {
-		// Only add auto-generated data entries for references not already defined
-		// in the program's own .data/.bss sections
 		var dataLines []string
 		for _, ref := range memRefs {
 			if !strings.Contains(asmOutput, ref+":") {
@@ -632,13 +616,10 @@ func wrapStandalone(vasInput, asmOutput string) string {
 func wrapStandaloneWin64(vasInput, asmOutput string) string {
 	memRefs := collectMemRefs(vasInput)
 
-	// In standalone mode, always filter out user's global directives to avoid duplicates
-	// The wrapper will add the appropriate global declaration
 	lines := strings.Split(asmOutput, "\n")
 	var filtered []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		// Skip global directives in standalone mode (wrapper handles this)
 		if strings.HasPrefix(trimmed, "global ") {
 			continue
 		}
@@ -646,7 +627,6 @@ func wrapStandaloneWin64(vasInput, asmOutput string) string {
 	}
 	asmOutput = strings.Join(filtered, "\n")
 
-	// Check if user already defines an entry point
 	hasStart := strings.Contains(asmOutput, "_start:")
 	hasMain := strings.Contains(asmOutput, "main:")
 
@@ -654,24 +634,18 @@ func wrapStandaloneWin64(vasInput, asmOutput string) string {
 	sb.WriteString("\tdefault rel\n\n")
 	sb.WriteString("\tsection .text\n")
 
-	// Add appropriate global declaration based on what entry point exists
 	if !hasStart && !hasMain {
-		// No entry point defined - add default main for Win64
 		sb.WriteString("\tglobal main\n")
 		sb.WriteString("main:\n")
 	} else if hasMain && !hasStart {
-		// User defined main but not _start - add global main
 		sb.WriteString("\tglobal main\n")
 	} else if hasStart {
-		// User defined _start - add global _start
 		sb.WriteString("\tglobal _start\n")
 	}
 
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 
-	// On Windows, exit via ret (rax = 0)
-	// Check the last instruction line, ignoring section directives and comments
 	lastInst := lastInstructionLine(asmOutput)
 	if !strings.HasSuffix(lastInst, "ret") {
 		sb.WriteString("\txor\teax, eax\n")
@@ -679,8 +653,6 @@ func wrapStandaloneWin64(vasInput, asmOutput string) string {
 	}
 
 	if len(memRefs) > 0 {
-		// Only add auto-generated data entries for references not already defined
-		// in the program's own .data/.bss sections
 		var dataLines []string
 		for _, ref := range memRefs {
 			if !strings.Contains(asmOutput, ref+":") {
@@ -698,9 +670,7 @@ func wrapStandaloneWin64(vasInput, asmOutput string) string {
 	return sb.String()
 }
 
-// lastInstructionLine returns the last line in asmOutput that looks like
-// an actual instruction (not a section directive, label, comment, data definition, or blank).
-// Used by the wrappers to decide whether to append a default exit sequence.
+// lastInstructionLine returns the last line that looks like an instruction.
 func lastInstructionLine(asmOutput string) string {
 	lines := strings.Split(asmOutput, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -715,7 +685,6 @@ func lastInstructionLine(asmOutput string) string {
 		if strings.HasSuffix(line, ":") {
 			continue
 		}
-		// Skip data definition lines (e.g. "result: dq 0")
 		if strings.Contains(line, ":\t") || strings.Contains(line, ": ") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
@@ -734,17 +703,17 @@ func collectMemRefs(input string) []string {
 	var refs []string
 	seen := map[string]bool{}
 
-	// collectFrom scans a single line for [...] patterns, handling nested brackets.
 	var collectFrom func(text string)
 	collectFrom = func(text string) {
+	loop:
 		for {
 			start := strings.Index(text, "[")
 			if start == -1 {
-				break
+				break loop
 			}
-			// Scan forward with depth tracking to find matching ]
 			depth := 1
 			end := -1
+		scan:
 			for j := start + 1; j < len(text); j++ {
 				switch text[j] {
 				case '[':
@@ -753,26 +722,25 @@ func collectMemRefs(input string) []string {
 					depth--
 					if depth == 0 {
 						end = j
-						break
+						break scan
 					}
 				}
 			}
 			if end == -1 {
-				break
+				break loop
 			}
 			inner := strings.TrimSpace(text[start+1 : end])
 			text = text[end+1:]
 
-			// Recursively scan inner content for nested brackets
 			collectFrom(inner)
 
-			// Extract the base symbol (before + - or *)
 			sym := inner
-			for _, sep := range []string{"+", "-", "*"} {
-				if idx := strings.Index(sym, sep); idx > 0 {
-					sym = strings.TrimSpace(sym[:idx])
-					break
-				}
+			if idx := strings.Index(sym, "+"); idx > 0 {
+				sym = strings.TrimSpace(sym[:idx])
+			} else if idx := strings.Index(sym, "-"); idx > 0 {
+				sym = strings.TrimSpace(sym[:idx])
+			} else if idx := strings.Index(sym, "*"); idx > 0 {
+				sym = strings.TrimSpace(sym[:idx])
 			}
 			if sym == "" || seen[sym] {
 				continue
