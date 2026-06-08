@@ -775,4 +775,6 @@ Virtual register mapping:
   v4 -> rsi   v5 -> rdi   v6 -> r8    v7 -> r9
   v8 -> r11   v9 -> r12   v10 -> r13  v11 -> r14
   v12 -> r15
+
+Tip: run 'vas list' to see all instructions, syntax, and virtual register mapping.  
 `
