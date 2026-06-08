@@ -69,8 +69,8 @@ func TestParseIncludePathTraversal(t *testing.T) {
 		want   string
 		wantOK bool
 	}{
-		{`.include "../secret.vas"`, "../secret.vas", true}, // Path traversal
-		{`.include "./local.vas"`, "./local.vas", true},     // Relative path
+		{`.include "../secret.vas"`, "../secret.vas", true},
+		{`.include "./local.vas"`, "./local.vas", true},
 	}
 	for _, tt := range tests {
 		got, _, ok := parseInclude(tt.line)
@@ -145,7 +145,6 @@ func TestPreprocessNoInclude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// Preprocessor always ensures a trailing newline, preserving the original empty line.
 	if got != src+"\n" {
 		t.Errorf("expected:\n%q\ngot:\n%q", src+"\n", got)
 	}
@@ -183,14 +182,16 @@ func TestConstMultiple(t *testing.T) {
 
 func TestConstUndefined(t *testing.T) {
 	src := "MOVI v0, UNDEFINED_CONST\n"
-	_, err := testPrep(t, src)
-	if err == nil {
-		t.Fatal("expected error for undefined constant")
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("unexpected error for undefined constant: %v", err)
+	}
+	if !strings.Contains(got, "UNDEFINED_CONST") {
+		t.Errorf("expected UNDEFINED_CONST to remain, got:\n%s", got)
 	}
 }
 
 func TestConstRedefinition(t *testing.T) {
-	// Constants can now be redefined (last assignment wins).
 	src := ".const A = 1\n.const A = 2\nMOVI v0, A\n"
 	got, err := testPrep(t, src)
 	if err != nil {
@@ -213,7 +214,6 @@ func TestConstString(t *testing.T) {
 	if strings.Contains(got, ".const") {
 		t.Errorf(".const line should be stripped, got:\n%s", got)
 	}
-	// Depending on implementation: string might be inlined or just stripped
 }
 
 // ── .macro tests ──────────────────────────────────────────────────────────
@@ -252,7 +252,6 @@ myloop
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// Should have two different labels
 	if !strings.Contains(got, ".loop_1:") || !strings.Contains(got, ".loop_2:") {
 		t.Errorf("expected unique labels .loop_1 and .loop_2, got:\n%s", got)
 	}
@@ -299,6 +298,21 @@ debug_cond 42
 	}
 	if !strings.Contains(got, "MOVI v0, 42") {
 		t.Errorf("expected expanded macro with ifdef inside, got:\n%s", got)
+	}
+}
+
+func TestMacroQuotedArgs(t *testing.T) {
+	src := `.macro greet msg
+  db \msg, 0
+.endm
+greet "hello, world"
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, "db \"hello, world\", 0") {
+		t.Errorf("expected quoted argument preserved, got:\n%s", got)
 	}
 }
 
@@ -612,9 +626,7 @@ MOVI v2, C
 	if !strings.Contains(got, "MOVI v1, 2") {
 		t.Errorf("expected inner block const (first occurrence), got:\n%s", got)
 	}
-	// second outer block skipped, so D should not appear
 	if strings.Contains(got, "D") || strings.Contains(got, "4") {
-		// but "4" might appear in other contexts, so check if MOVI v? anything with 4
 		lines := strings.Split(got, "\n")
 		found := false
 		for _, l := range lines {
@@ -768,11 +780,9 @@ MOVI v0, FEATURE_ENABLED
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// First block should be processed (FEATURE_ENABLED defined and resolved to 1)
 	if !strings.Contains(got, "MOVI v0, 1") {
 		t.Errorf("expected first block to be included with const resolved to 1, got:\n%s", got)
 	}
-	// Second block should be skipped entirely
 	if strings.Contains(got, "SHOULD_NOT_APPEAR") || strings.Contains(got, "999") {
 		t.Errorf("second block should be skipped regardless of ifdef, got:\n%s", got)
 	}
@@ -810,12 +820,10 @@ DB 0x00
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// First block should expand rept
 	count := strings.Count(got, "0xFF")
 	if count != 3 {
 		t.Errorf("expected 3 occurrences of 0xFF, got %d:\n%s", count, got)
 	}
-	// Second block should be skipped
 	if strings.Contains(got, "0x00") {
 		t.Errorf("second rept block should be skipped, got:\n%s", got)
 	}
@@ -924,32 +932,25 @@ MOVI v2, C
 func TestIncludeFileRollbackOnError(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create a file with a syntax error (unclosed .ifdef)
 	brokenPath := filepath.Join(dir, "broken.vas")
 	os.WriteFile(brokenPath, []byte(".ifdef X\nNOP\n"), 0644)
 
 	src := `.include "broken.vas"
 MOVI v0, 1
 `
-	// First attempt must fail due to unclosed .ifdef
 	_, err := Preprocess(src, dir)
 	if err == nil {
 		t.Fatal("expected error due to unclosed ifdef")
 	}
 
-	// Fix the file: two unconditional NOPs
 	os.WriteFile(brokenPath, []byte("NOP\nNOP\n"), 0644)
-
-	// Second attempt must succeed and include the fixed content
 	got, err := Preprocess(src, dir)
 	if err != nil {
 		t.Fatalf("Preprocess after fix: %v", err)
 	}
-	// The fixed file contains two NOPs
 	if strings.Count(got, "NOP") != 2 {
 		t.Errorf("expected two NOPs from fixed file, got:\n%s", got)
 	}
-	// The main source line must also be present
 	if !strings.Contains(got, "MOVI v0, 1") {
 		t.Errorf("expected MOVI from main source, got:\n%s", got)
 	}
@@ -958,19 +959,16 @@ MOVI v0, 1
 func TestCircularIncludeDetection(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create A.vas that includes B.vas
 	aPath := filepath.Join(dir, "a.vas")
 	os.WriteFile(aPath, []byte(`.include "b.vas"
 MOVI v0, 1
 `), 0644)
 
-	// Create B.vas that includes A.vas (circular)
 	bPath := filepath.Join(dir, "b.vas")
 	os.WriteFile(bPath, []byte(`.include "a.vas"
 MOVI v1, 2
 `), 0644)
 
-	// Main source includes A.vas
 	src := `.include "a.vas"`
 	_, err := Preprocess(src, dir)
 	if err == nil {
@@ -978,6 +976,36 @@ MOVI v1, 2
 	}
 	if !strings.Contains(err.Error(), "circular include") {
 		t.Errorf("expected 'circular include' error, got: %v", err)
+	}
+}
+
+func TestCircularIncludeErrorMessage(t *testing.T) {
+	dir := t.TempDir()
+
+	aPath := filepath.Join(dir, "a.vas")
+	os.WriteFile(aPath, []byte(`.include "b.vas"
+MOVI v0, 1
+`), 0644)
+
+	bPath := filepath.Join(dir, "b.vas")
+	os.WriteFile(bPath, []byte(`.include "a.vas"
+MOVI v1, 2
+`), 0644)
+
+	src := `.include "a.vas"`
+	_, err := Preprocess(src, dir)
+	if err == nil {
+		t.Fatal("expected circular include error, got nil")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "circular include detected:") {
+		t.Errorf("expected 'circular include detected' message, got: %v", err)
+	}
+	if !strings.Contains(errMsg, "a.vas") || !strings.Contains(errMsg, "b.vas") {
+		t.Errorf("expected both files in error message, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "already included (cycle)") {
+		t.Errorf("expected cycle indicator, got: %s", errMsg)
 	}
 }
 
@@ -1000,7 +1028,6 @@ func TestPkgCacheDirDefault(t *testing.T) {
 }
 
 func TestLoadPackageIncludeWithResolver(t *testing.T) {
-	// Custom resolver that returns a simple instruction
 	resolver := &mockResolver{src: "NOP\n"}
 
 	src := `.include <test/mock>
@@ -1010,7 +1037,6 @@ RET
 	if err != nil {
 		t.Fatalf("Preprocess: %v", err)
 	}
-	// The included content should appear, and the .include directive should be stripped
 	if !strings.Contains(got, "NOP") {
 		t.Errorf("expected NOP from package, got:\n%s", got)
 	}
@@ -1025,12 +1051,10 @@ RET
 type mockResolver struct{ src string }
 
 func (m *mockResolver) ResolvePackage(pkgPath string) (string, error) {
-	// The source is already "preprocessed" – just return it.
 	return m.src, nil
 }
 
 func TestPackageNotFoundHint(t *testing.T) {
-	// Default resolver, no such package exists
 	_, err := Preprocess(`.include <nonexistent>`, "/tmp")
 	if err == nil {
 		t.Fatal("expected error")
@@ -1056,35 +1080,52 @@ func TestPackageNotFoundWithPmEnv(t *testing.T) {
 	}
 }
 
-func TestCircularIncludeErrorMessage(t *testing.T) {
-	dir := t.TempDir()
+// ── Platform define tests ─────────────────────────────────────────────────
 
-	// Create A.vas that includes B.vas
-	aPath := filepath.Join(dir, "a.vas")
-	os.WriteFile(aPath, []byte(`.include "b.vas"
-MOVI v0, 1
-`), 0644)
+func TestInitPlatformDefinesDefault(t *testing.T) {
+	ctx := &prepContext{defines: map[string]bool{}}
+	ctx.initPlatformDefines()
+	foundOS, foundArch := false, false
+	for k := range ctx.defines {
+		if strings.HasPrefix(k, "__VAS_OS_") {
+			foundOS = true
+		}
+		if strings.HasPrefix(k, "__VAS_ARCH_") {
+			foundArch = true
+		}
+	}
+	if !foundOS || !foundArch {
+		t.Errorf("expected platform defines, got %v", ctx.defines)
+	}
+}
 
-	// Create B.vas that includes A.vas (circular)
-	bPath := filepath.Join(dir, "b.vas")
-	os.WriteFile(bPath, []byte(`.include "a.vas"
-MOVI v1, 2
-`), 0644)
+func TestInitPlatformDefinesCrossCompile(t *testing.T) {
+	os.Setenv("GOOS", "plan9")
+	os.Setenv("GOARCH", "mips")
+	defer func() {
+		os.Unsetenv("GOOS")
+		os.Unsetenv("GOARCH")
+	}()
+	ctx := &prepContext{defines: map[string]bool{}}
+	ctx.initPlatformDefines()
+	if !ctx.defines["__VAS_OS_PLAN9__"] {
+		t.Error("expected __VAS_OS_PLAN9__")
+	}
+	if !ctx.defines["__VAS_ARCH_MIPS__"] {
+		t.Error("expected __VAS_ARCH_MIPS__")
+	}
+}
 
-	src := `.include "a.vas"`
-	_, err := Preprocess(src, dir)
-	if err == nil {
-		t.Fatal("expected circular include error, got nil")
-	}
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "circular include detected:") {
-		t.Errorf("expected 'circular include detected' message, got: %v", err)
-	}
-	// Should list both files in the chain
-	if !strings.Contains(errMsg, "a.vas") || !strings.Contains(errMsg, "b.vas") {
-		t.Errorf("expected both files in error message, got: %s", errMsg)
-	}
-	if !strings.Contains(errMsg, "already included (cycle)") {
-		t.Errorf("expected cycle indicator, got: %s", errMsg)
+func TestInitPlatformDefinesEmptyEnv(t *testing.T) {
+	os.Setenv("GOOS", "")
+	os.Setenv("GOARCH", "")
+	defer func() {
+		os.Unsetenv("GOOS")
+		os.Unsetenv("GOARCH")
+	}()
+	ctx := &prepContext{defines: map[string]bool{}}
+	ctx.initPlatformDefines()
+	if len(ctx.defines) < 2 {
+		t.Errorf("expected at least OS+ARCH defines, got %d", len(ctx.defines))
 	}
 }

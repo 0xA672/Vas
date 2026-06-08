@@ -15,7 +15,7 @@ It does not perform register allocation, instruction scheduling, or linking. Its
 
 ### 1. Write Pseudocode (`hello.vas`)
 
-``asm
+```asm
 ; hello.vas - print "hello world" via Linux write syscall
 MOVI v0, 1        ; rax = 1 (write syscall number)
 MOVI v5, 1        ; rdi = 1 (stdout fd)
@@ -406,6 +406,17 @@ strlen msg, v1  ; Expands with unique labels (.loop_1, .done_1)
 .include_bytes "data.bin"
 ; Converts to db directives with hex bytes
 ```
+
+### Symbol Visibility in Package Includes
+
+When including a package with angle brackets (`.include <pkg>`), VAS processes the package in a **separate context**. This means:
+- Macros and constants defined in the package are **not** visible to the including file.
+- The package cannot see macros/constants from the including file either.
+- This isolation enforces modular boundaries – packages must be self-contained.
+
+For sharing definitions across files, use **file includes** (`.include "file.vas"`), which process everything in the same context.
+
+Cross-context deduplication still applies: the same package or file is never processed twice, even if included from multiple locations.
 
 ---
 

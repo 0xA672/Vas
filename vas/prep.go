@@ -1,9 +1,13 @@
 package vas
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -12,8 +16,7 @@ import (
 type ifState int
 
 const (
-	ifNone ifState = iota
-	ifTrue
+	ifTrue ifState = iota
 	ifFalse
 )
 
@@ -59,18 +62,30 @@ func WithPostHook(hook PostHook) PreprocessOption {
 	}
 }
 
+// withInheritContext is an internal option that allows the default resolver
+// to inherit the parent preprocessing state (included files, package stack,
+// recursion depth) when recursively processing included packages.
+func withInheritContext(parent *prepContext) PreprocessOption {
+	return func(child *prepContext) {
+		child.included = parent.included
+		child.pkgStack = parent.pkgStack
+		child.pkgIncluded = parent.pkgIncluded
+		child.depth = parent.depth
+	}
+}
+
 // prepContext tracks state during preprocessing.
 type prepContext struct {
-	dir          string
-	included     map[string]bool // file-level deduplication (absolute paths)
-	resolver     PackageResolver
-	vasPath      []string
-	consts       map[string]string   // .const NAME = value
-	macros       map[string]macroDef // .macro definitions
-	defines      map[string]bool     // defined names (for .ifdef)
-	ifStack      []ifState
-	macroBuf     []string // lines collected for current macro definition
-	macroName    string   // name of macro being defined
+	dir      string
+	included map[string]bool // file‑level deduplication (absolute paths)
+	resolver PackageResolver
+	vasPath  []string
+	consts   map[string]string   // .const NAME = value
+	macros   map[string]macroDef // .macro definitions
+	defines  map[string]bool     // defined names (for .ifdef)
+	ifStack  []ifState
+	macroBuf []string // lines collected for current macro definition
+	macroName    string
 	macroParams  []string
 	inMacro      bool
 	labelCounter int // for unique labels (\@)
@@ -78,11 +93,19 @@ type prepContext struct {
 	reptCount    int
 	reptBuf      []string
 	// Block-level deduplication for .once begin/end
-	blockOnceStack []string        // stack of active block names (.once begin <name>)
-	blockIncluded  map[string]bool // set of completed block names that were marked with .once
-	skipBlockDepth int             // depth of nested blocks being skipped (for .once end matching)
+	blockOnceStack []string        // stack of active block names
+	blockIncluded  map[string]bool // completed block names
+	skipBlockDepth int
 
 	includeStack []string // tracks current include chain for cycle detection
+
+	// Package inclusion tracking (shared across nested contexts)
+	pkgStack    []string
+	pkgIncluded map[string]bool
+
+	// Global recursion depth (file + package includes).
+	// Incremented before entering a new include, decremented when leaving.
+	depth int
 
 	preHook  PreHook
 	postHook PostHook
@@ -93,16 +116,23 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 	ctx := &prepContext{
 		dir:           baseDir,
 		included:      map[string]bool{},
-		resolver:      &defaultResolver{pkgDir: pkgCacheDir(), vasPath: searchPath()},
+		resolver:      nil, // set later, may be overridden by WithResolver
 		vasPath:       searchPath(),
 		consts:        map[string]string{},
 		macros:        map[string]macroDef{},
 		defines:       map[string]bool{},
 		blockIncluded: map[string]bool{},
+		pkgIncluded:   map[string]bool{},
+		depth:         0,
 	}
+	ctx.resolver = &defaultResolver{pkgDir: pkgCacheDir(), vasPath: ctx.vasPath, parentCtx: ctx}
+
 	for _, opt := range opts {
 		opt(ctx)
 	}
+
+	// Automatically define platform symbols based on the target environment.
+	ctx.initPlatformDefines()
 
 	if ctx.preHook != nil {
 		var err error
@@ -113,7 +143,7 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 	}
 
 	// Pass 1: resolve include, collect macros/consts, handle ifdef
-	out, err := ctx.resolve(src, baseDir, 0)
+	out, err := ctx.resolve(src, baseDir)
 	if err != nil {
 		return "", err
 	}
@@ -137,9 +167,78 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 	return out, nil
 }
 
-func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
-	if depth > 100 {
-		return "", fmt.Errorf("preprocessing recursion limit exceeded")
+// initPlatformDefines populates ctx.defines with symbols that reflect the
+// compilation target (GOOS and GOARCH). It prefers the GOOS/GOARCH environment
+// variables for cross-compilation, falling back to runtime.GOOS/GOARCH.
+// Unknown but non-empty platforms are handled with a dynamically generated
+// macro, providing forward compatibility.
+func (ctx *prepContext) initPlatformDefines() {
+	goos := os.Getenv("GOOS")
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	goarch := os.Getenv("GOARCH")
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
+
+	// Operating system
+	switch goos {
+	case "linux":
+		ctx.defines["__VAS_OS_LINUX__"] = true
+	case "windows":
+		ctx.defines["__VAS_OS_WINDOWS__"] = true
+	case "darwin":
+		ctx.defines["__VAS_OS_DARWIN__"] = true
+	case "freebsd":
+		ctx.defines["__VAS_OS_FREEBSD__"] = true
+	case "openbsd":
+		ctx.defines["__VAS_OS_OPENBSD__"] = true
+	case "netbsd":
+		ctx.defines["__VAS_OS_NETBSD__"] = true
+	case "dragonfly":
+		ctx.defines["__VAS_OS_DRAGONFLY__"] = true
+	case "solaris":
+		ctx.defines["__VAS_OS_SOLARIS__"] = true
+	default:
+		if goos != "" {
+			ctx.defines["__VAS_OS_"+strings.ToUpper(goos)+"__"] = true
+		}
+	}
+
+	// Architecture
+	switch goarch {
+	case "amd64":
+		ctx.defines["__VAS_ARCH_AMD64__"] = true
+	case "386":
+		ctx.defines["__VAS_ARCH_386__"] = true
+	case "arm64":
+		ctx.defines["__VAS_ARCH_ARM64__"] = true
+	case "arm":
+		ctx.defines["__VAS_ARCH_ARM__"] = true
+	case "mips64":
+		ctx.defines["__VAS_ARCH_MIPS64__"] = true
+	case "mips64le":
+		ctx.defines["__VAS_ARCH_MIPS64LE__"] = true
+	case "ppc64":
+		ctx.defines["__VAS_ARCH_PPC64__"] = true
+	case "ppc64le":
+		ctx.defines["__VAS_ARCH_PPC64LE__"] = true
+	case "s390x":
+		ctx.defines["__VAS_ARCH_S390X__"] = true
+	case "riscv64":
+		ctx.defines["__VAS_ARCH_RISCV64__"] = true
+	default:
+		if goarch != "" {
+			ctx.defines["__VAS_ARCH_"+strings.ToUpper(goarch)+"__"] = true
+		}
+	}
+}
+
+// resolve is the main directive resolution pass.
+func (ctx *prepContext) resolve(src, dir string) (string, error) {
+	if ctx.depth > 100 {
+		return "", fmt.Errorf("preprocessing recursion limit exceeded (check for circular or very deep includes)")
 	}
 	ctx.dir = dir
 	var out strings.Builder
@@ -193,22 +292,32 @@ func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
 		// Handle conditional inclusion skipping (ifdef / ifndef false branch)
 		if len(ctx.ifStack) > 0 && ctx.ifStack[len(ctx.ifStack)-1] == ifFalse {
 			if strings.HasPrefix(trimmed, ".ifdef") || strings.HasPrefix(trimmed, ".ifndef") {
-				ctx.ifStack = append(ctx.ifStack, ifFalse)
+				ctx.ifStack = append(ctx.ifStack, ifFalse) // nested skip, .else ignored
 			} else if strings.HasPrefix(trimmed, ".endif") {
 				ctx.ifStack = ctx.ifStack[:len(ctx.ifStack)-1]
 			} else if strings.HasPrefix(trimmed, ".else") {
-				ctx.ifStack[len(ctx.ifStack)-1] = ifTrue
+				// Allow flipping if this is the outermost false branch, or if it is nested inside a true branch.
+				hasTrue := false
+				for _, st := range ctx.ifStack {
+					if st == ifTrue {
+						hasTrue = true
+						break
+					}
+				}
+				if (len(ctx.ifStack) == 1 || hasTrue) && ctx.ifStack[len(ctx.ifStack)-1] == ifFalse {
+					ctx.ifStack[len(ctx.ifStack)-1] = ifTrue
+				}
 			}
 			continue
 		}
 
-		// Directives processing
+		// Directives processing (active branches)
 		if strings.HasPrefix(trimmed, ".include_bytes") {
-			path, ok := parseIncludeBytes(line)
+			path, isPkg, ok := parseIncludeBytes(line)
 			if !ok {
 				return "", fmt.Errorf("invalid .include_bytes syntax: %s", line)
 			}
-			data, err := ctx.loadFileBytes(path)
+			data, err := ctx.loadFileBytes(path, isPkg)
 			if err != nil {
 				return "", err
 			}
@@ -217,7 +326,7 @@ func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
 				for i, b := range data {
 					hexParts[i] = fmt.Sprintf("0x%02x", b)
 				}
-				out.WriteString("db " + strings.Join(hexParts, ", "))
+				fmt.Fprintf(&out, "db %s", strings.Join(hexParts, ", "))
 			}
 			out.WriteByte('\n')
 			continue
@@ -228,7 +337,7 @@ func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
 			if !ok {
 				return "", fmt.Errorf("invalid .include syntax: %s", line)
 			}
-			resolved, err := ctx.loadInclude(path, isPkg, depth)
+			resolved, err := ctx.loadInclude(path, isPkg)
 			if err != nil {
 				return "", err
 			}
@@ -288,7 +397,7 @@ func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
 			}
 			if ctx.ifStack[len(ctx.ifStack)-1] == ifTrue {
 				ctx.ifStack[len(ctx.ifStack)-1] = ifFalse
-			} else {
+			} else if ctx.ifStack[len(ctx.ifStack)-1] == ifFalse {
 				ctx.ifStack[len(ctx.ifStack)-1] = ifTrue
 			}
 			continue
@@ -319,6 +428,11 @@ func (ctx *prepContext) resolve(src, dir string, depth int) (string, error) {
 			name := strings.TrimSpace(strings.TrimPrefix(trimmed, ".once end"))
 			if name == "" {
 				return "", fmt.Errorf(".once end requires a block name")
+			}
+			if ctx.skipBlockDepth > 0 {
+				// Inside a skipped block; just decrement depth, do not touch stack.
+				ctx.skipBlockDepth--
+				continue
 			}
 			if len(ctx.blockOnceStack) == 0 {
 				return "", fmt.Errorf(".once end %q without matching .once begin", name)
@@ -387,19 +501,25 @@ func parseInclude(line string) (path string, isPkg bool, ok bool) {
 	return "", false, false
 }
 
-func parseIncludeBytes(line string) (string, bool) {
+func parseIncludeBytes(line string) (path string, isPkg bool, ok bool) {
 	rest, found := strings.CutPrefix(strings.TrimSpace(line), ".include_bytes")
 	if !found {
-		return "", false
+		return "", false, false
 	}
 	rest = strings.TrimSpace(rest)
 	if len(rest) >= 2 && rest[0] == '"' {
 		end := strings.IndexByte(rest[1:], '"')
 		if end >= 0 {
-			return rest[1 : end+1], true
+			return rest[1 : end+1], false, true
 		}
 	}
-	return "", false
+	if len(rest) >= 2 && rest[0] == '<' {
+		end := strings.IndexByte(rest[1:], '>')
+		if end >= 0 {
+			return rest[1 : end+1], true, true
+		}
+	}
+	return "", false, false
 }
 
 func parseConst(line string) (string, string, error) {
@@ -425,43 +545,106 @@ func parseMacro(line string) (string, []string, error) {
 	}
 	var params []string
 	if paramStr != "" {
-		params = strings.Split(paramStr, ",")
-		for i := range params {
-			params[i] = strings.TrimSpace(params[i])
-		}
+		params = splitArgs(paramStr) // handles quoted commas, though formal parameter names rarely contain quotes
 	}
 	return name, params, nil
 }
 
-func (ctx *prepContext) loadInclude(path string, isPkg bool, depth int) (string, error) {
-	if isPkg {
-		return ctx.loadPackageInclude(path, depth)
+// splitArgs splits a string by commas, respecting quoted substrings.
+// Both opening and closing quotes are preserved in the returned arguments.
+func splitArgs(s string) []string {
+	var args []string
+	var current strings.Builder
+	inQuote := false
+	quoteChar := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inQuote {
+			current.WriteByte(c) // keep all characters inside the quoted portion
+			if c == quoteChar {
+				inQuote = false
+			}
+		} else {
+			if c == ',' {
+				args = append(args, strings.TrimSpace(current.String()))
+				current.Reset()
+			} else if c == '"' || c == '\'' {
+				inQuote = true
+				quoteChar = c
+				current.WriteByte(c) // write the opening quote
+			} else {
+				current.WriteByte(c)
+			}
+		}
 	}
-	return ctx.loadFileInclude(path, depth)
+	args = append(args, strings.TrimSpace(current.String()))
+	return args
 }
 
-func (ctx *prepContext) loadFileInclude(path string, depth int) (string, error) {
+func (ctx *prepContext) loadInclude(path string, isPkg bool) (string, error) {
+	if isPkg {
+		return ctx.loadPackageInclude(path)
+	}
+	return ctx.loadFileInclude(path)
+}
+
+// loadFileInclude resolves a file include, incrementing the global depth counter.
+func (ctx *prepContext) loadFileInclude(path string) (string, error) {
+	ctx.depth++
+	defer func() { ctx.depth-- }()
+
 	if !filepath.IsAbs(path) {
 		cand := filepath.Join(ctx.dir, path)
 		if data, err := os.ReadFile(cand); err == nil {
-			return ctx.includeFile(cand, data, depth)
+			return ctx.includeFile(cand, data)
 		}
 	}
 	if filepath.IsAbs(path) {
 		if data, err := os.ReadFile(path); err == nil {
-			return ctx.includeFile(path, data, depth)
+			return ctx.includeFile(path, data)
 		}
 	}
 	for _, dir := range ctx.vasPath {
 		cand := filepath.Join(dir, path)
 		if data, err := os.ReadFile(cand); err == nil {
-			return ctx.includeFile(cand, data, depth)
+			return ctx.includeFile(cand, data)
 		}
 	}
 	return "", fmt.Errorf("%q not found in search path", path)
 }
 
-func (ctx *prepContext) loadFileBytes(path string) ([]byte, error) {
+func (ctx *prepContext) loadFileBytes(path string, isPkg bool) ([]byte, error) {
+	if isPkg {
+		parts := strings.SplitN(path, "/", 2)
+		pkgName := parts[0]
+		modPath := ""
+		if len(parts) > 1 {
+			modPath = parts[1]
+		} else {
+			modPath = pkgName
+		}
+		searchDirs := []string{}
+		if pkgDir := pkgCacheDir(); pkgDir != "" {
+			searchDirs = append(searchDirs, pkgDir)
+		}
+		searchDirs = append(searchDirs, ctx.vasPath...)
+		for _, root := range searchDirs {
+			cands := []string{
+				filepath.Join(root, pkgName, modPath),
+				filepath.Join(root, pkgName, modPath+".bin"),
+				filepath.Join(root, pkgName, modPath+".bytes"),
+			}
+			for _, cand := range cands {
+				if !isPathSafe(root, cand) {
+					continue
+				}
+				if data, err := os.ReadFile(cand); err == nil {
+					return data, nil
+				}
+			}
+		}
+		return nil, fmt.Errorf("binary %q not found", path)
+	}
 	if !filepath.IsAbs(path) {
 		cand := filepath.Join(ctx.dir, path)
 		if data, err := os.ReadFile(cand); err == nil {
@@ -476,9 +659,31 @@ func (ctx *prepContext) loadFileBytes(path string) ([]byte, error) {
 	return nil, fmt.Errorf("%q not found for .include_bytes", path)
 }
 
-func (ctx *prepContext) loadPackageInclude(pkgPath string, depth int) (string, error) {
+// loadPackageInclude resolves a package include (<pkg>) and enforces cycle detection
+// via the shared pkgStack. It also increments the global depth counter so that
+// long package chains are caught by the recursion limit.
+func (ctx *prepContext) loadPackageInclude(pkgPath string) (string, error) {
+	pkgKey := "pkg:" + pkgPath
+
+	for _, p := range ctx.pkgStack {
+		if p == pkgKey {
+			return "", fmt.Errorf("circular package include: %s", pkgPath)
+		}
+	}
+	if ctx.pkgIncluded[pkgKey] {
+		return "", nil
+	}
+
+	ctx.depth++
+	defer func() { ctx.depth-- }()
+
+	ctx.pkgStack = append(ctx.pkgStack, pkgKey)
+	ctx.pkgIncluded[pkgKey] = true
+
 	resolved, err := ctx.resolver.ResolvePackage(pkgPath)
+	ctx.pkgStack = ctx.pkgStack[:len(ctx.pkgStack)-1]
 	if err != nil {
+		delete(ctx.pkgIncluded, pkgKey) // allow retry
 		parts := strings.SplitN(pkgPath, "/", 2)
 		pkgName := parts[0]
 		var installHint string
@@ -495,8 +700,9 @@ func (ctx *prepContext) loadPackageInclude(pkgPath string, depth int) (string, e
 // defaultResolver implements PackageResolver by reading files from the
 // directory returned by pkgCacheDir() (and additional search paths).
 type defaultResolver struct {
-	pkgDir  string
-	vasPath []string
+	pkgDir    string
+	vasPath   []string
+	parentCtx *prepContext
 }
 
 func (r *defaultResolver) ResolvePackage(pkgPath string) (string, error) {
@@ -525,16 +731,14 @@ func (r *defaultResolver) ResolvePackage(pkgPath string) (string, error) {
 				continue
 			}
 			if data, err := os.ReadFile(cand); err == nil {
-				// Preprocess the package to resolve its own directives.
-				// Uses a fresh Preprocess call with the same default resolver.
-				return Preprocess(string(data), filepath.Dir(cand))
+				return Preprocess(string(data), filepath.Dir(cand), withInheritContext(r.parentCtx))
 			}
 		}
 	}
 	return "", fmt.Errorf("package %q not found", pkgPath)
 }
 
-func (ctx *prepContext) includeFile(filePath string, data []byte, depth int) (string, error) {
+func (ctx *prepContext) includeFile(filePath string, data []byte) (string, error) {
 	abs, err := filepath.Abs(filePath)
 	if err != nil {
 		abs = filePath
@@ -543,10 +747,9 @@ func (ctx *prepContext) includeFile(filePath string, data []byte, depth int) (st
 		abs = real
 	}
 
-	// Cycle detection: check if this file is already on the current include stack
+	// Cycle detection
 	for _, p := range ctx.includeStack {
 		if p == abs {
-			// Build a human-readable include chain
 			var sb strings.Builder
 			sb.WriteString("circular include detected:\n")
 			for _, elem := range ctx.includeStack {
@@ -557,27 +760,23 @@ func (ctx *prepContext) includeFile(filePath string, data []byte, depth int) (st
 			sb.WriteString("\t")
 			sb.WriteString(abs)
 			sb.WriteString("  <-- already included (cycle)")
-			return "", fmt.Errorf("%s", sb.String())
+			return "", errors.New(sb.String())
 		}
 	}
 
-	// Already fully included (and not currently on stack) → skip
 	if ctx.included[abs] {
 		return "", nil
 	}
 
-	// Push onto stack and mark as included
 	ctx.includeStack = append(ctx.includeStack, abs)
 	ctx.included[abs] = true
 
-	resolved, err := ctx.resolve(string(data), filepath.Dir(filePath), depth+1)
+	resolved, err := ctx.resolve(string(data), filepath.Dir(filePath))
 
-	// Pop stack (clear for GC)
 	ctx.includeStack[len(ctx.includeStack)-1] = ""
 	ctx.includeStack = ctx.includeStack[:len(ctx.includeStack)-1]
 
 	if err != nil {
-		// Rollback on failure to allow future attempts
 		delete(ctx.included, abs)
 		return "", err
 	}
@@ -598,19 +797,30 @@ func (ctx *prepContext) expandMacros(src string) (string, error) {
 			var args []string
 			if len(parts) > 1 {
 				argStr := strings.Join(parts[1:], " ")
-				args = strings.Split(argStr, ",")
-				for i := range args {
-					args[i] = strings.TrimSpace(args[i])
-				}
+				args = splitArgs(argStr)
 			}
 			if len(args) != len(macro.params) {
 				return "", fmt.Errorf("macro argument mismatch for %s: expected %d, got %d", parts[0], len(macro.params), len(args))
 			}
 			ctx.labelCounter++
+
+			// Sort parameter names by length descending to avoid partial replacement
+			type paramPair struct {
+				name string
+				idx  int
+			}
+			ordered := make([]paramPair, len(macro.params))
+			for i, p := range macro.params {
+				ordered[i] = paramPair{p, i}
+			}
+			sort.Slice(ordered, func(i, j int) bool {
+				return len(ordered[i].name) > len(ordered[j].name)
+			})
+
 			for _, mline := range macro.body {
 				expanded := mline
-				for pi, param := range macro.params {
-					expanded = strings.ReplaceAll(expanded, `\`+param, args[pi])
+				for _, pp := range ordered {
+					expanded = strings.ReplaceAll(expanded, `\`+pp.name, args[pp.idx])
 				}
 				expanded = strings.ReplaceAll(expanded, `\@`, fmt.Sprintf("_%d", ctx.labelCounter))
 				outLines = append(outLines, expanded)
@@ -630,25 +840,34 @@ func (ctx *prepContext) expandMacros(src string) (string, error) {
 }
 
 func (ctx *prepContext) applyConsts(src string) (string, error) {
-	for name, value := range ctx.consts {
-		src = replaceWord(src, name, value)
+	if len(ctx.consts) == 0 {
+		return src, nil
 	}
-	lines := strings.Split(src, "\n")
-	for _, line := range lines {
-		tokens := strings.Fields(line)
-		for _, token := range tokens {
-			if isUndefConst(token) {
-				if _, ok := ctx.consts[token]; !ok {
-					return "", fmt.Errorf("undefined constant: %s", token)
-				}
-			}
+
+	var names []string
+	for name := range ctx.consts {
+		names = append(names, regexp.QuoteMeta(name))
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return len(names[i]) > len(names[j])
+	})
+	pattern := `\b(` + strings.Join(names, "|") + `)\b`
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return "", fmt.Errorf("const pattern: %w", err)
+	}
+
+	result := re.ReplaceAllStringFunc(src, func(match string) string {
+		if val, ok := ctx.consts[match]; ok {
+			return val
 		}
-	}
-	return src, nil
+		return match
+	})
+	return result, nil
 }
 
 func isInstructionOrDirective(s string) bool {
-	switch s {
+	switch strings.ToUpper(s) {
 	case "ADD", "SUB", "MUL", "LOAD", "STORE", "LEA", "MOV", "MOVI",
 		"CMP", "JMP", "JE", "JNE", "JG", "JL", "JGE", "JLE",
 		"CALL", "RET", "NOP", "PUSH", "POP", "INT", "SYSCALL",
@@ -661,32 +880,28 @@ func isInstructionOrDirective(s string) bool {
 	return false
 }
 
+// isUndefConst is used by tests to detect tokens that look like undefined constants.
 func isUndefConst(s string) bool {
 	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, ":") ||
 		strings.HasPrefix(s, "\"") || strings.HasPrefix(s, "'") {
 		return false
 	}
-	upper := strings.ToUpper(s)
-	if isInstructionOrDirective(upper) {
+	if isInstructionOrDirective(s) {
 		return false
 	}
-	if strings.HasPrefix(s, "v") && len(s) <= 3 {
-		if _, err := strconv.Atoi(s[1:]); err == nil {
-			return false
-		}
-	}
-	hasLetter := false
+	hasUpper := false
 	for _, r := range s {
 		if r >= 'a' && r <= 'z' {
 			return false
 		}
 		if (r >= 'A' && r <= 'Z') || r == '_' {
-			hasLetter = true
+			hasUpper = true
 		}
 	}
-	return hasLetter
+	return hasUpper
 }
 
+// replaceWord is deprecated and no longer used by the preprocessor core.
 func replaceWord(src, old, new string) string {
 	var out strings.Builder
 	lines := strings.Split(src, "\n")
@@ -697,7 +912,12 @@ func replaceWord(src, old, new string) string {
 				tokens[j] = new
 			}
 		}
-		out.WriteString(strings.Join(tokens, " "))
+		for j, token := range tokens {
+			if j > 0 {
+				out.WriteByte(' ')
+			}
+			out.WriteString(token)
+		}
 		if i < len(lines)-1 {
 			out.WriteByte('\n')
 		}
@@ -706,20 +926,29 @@ func replaceWord(src, old, new string) string {
 }
 
 func isPathSafe(root, candidate string) bool {
-	abs, err := filepath.Abs(candidate)
-	if err != nil {
-		return false
-	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return false
 	}
-	return strings.HasPrefix(abs, absRoot+string(os.PathSeparator)) || abs == absRoot
+	absCand, err := filepath.Abs(candidate)
+	if err != nil {
+		return false
+	}
+	realRoot, err := filepath.EvalSymlinks(absRoot)
+	if err == nil {
+		absRoot = realRoot
+	}
+	realCand, err := filepath.EvalSymlinks(absCand)
+	if err == nil {
+		absCand = realCand
+	}
+	rel, err := filepath.Rel(absRoot, absCand)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, "..") && rel != ".."
 }
 
-// pkgCacheDir returns the directory for installed packages.
-// It respects the VAS_PKG_CACHE environment variable; otherwise
-// defaults to $HOME/.vas/pkg (cross-platform).
 func pkgCacheDir() string {
 	if dir := os.Getenv("VAS_PKG_CACHE"); dir != "" {
 		return dir
@@ -731,12 +960,19 @@ func pkgCacheDir() string {
 	return filepath.Join(home, ".vas", "pkg")
 }
 
-// pmName returns the package manager command name, taken from the
-// VAS_PM environment variable. If unset, it returns an empty string.
 func pmName() string {
 	return os.Getenv("VAS_PM")
 }
 
-// searchPath returns additional directories to search for included files.
-// (Placeholder – could be extended via an environment variable.)
-func searchPath() []string { return nil }
+// searchPath returns the list of directories specified in VAS_PATH.
+func searchPath() []string {
+	env := os.Getenv("VAS_PATH")
+	if env == "" {
+		return nil
+	}
+	sep := ":"
+	if runtime.GOOS == "windows" {
+		sep = ";"
+	}
+	return strings.Split(env, sep)
+}
