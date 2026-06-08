@@ -16,18 +16,26 @@ It does not perform register allocation, instruction scheduling, or linking. Its
 ### 1. Write Pseudocode (`hello.vas`)
 
 ```asm
-; hello.vas - print "hello world" via Linux write syscall
-MOVI v0, 1        ; rax = 1 (write syscall number)
-MOVI v5, 1        ; rdi = 1 (stdout fd)
-LEA  v4, [msg]    ; rsi = address of msg
-MOVI v3, 12       ; rdx = length
-SYSCALL
-MOVI v0, 60       ; rax = 60 (exit syscall)
-MOVI v5, 0        ; rdi = 0 (exit code)
-SYSCALL
+; hello.vas -- print "hello world" via Linux write syscall
+default rel
 
-.data
-msg: db "hello world", 10
+section .data
+    msg db 'Hello, World from VAS!', 10
+    msglen equ $ - msg
+
+section .text
+    global _start
+
+_start:
+    MOVI    v5, 1           ; rdi = 1 (stdout)
+    LEA     v4, [msg]       ; rsi = msg address
+    MOVI    v3, msglen      ; rdx = message length
+    MOVI    v0, 1           ; rax = 1 (sys_write)
+    SYSCALL
+
+    MOVI    v5, 0           ; rdi = exit code 0
+    MOVI    v0, 60          ; rax = 60 (sys_exit)
+    SYSCALL
 ```
 
 ### 2. Translate to NASM Assembly
@@ -39,27 +47,27 @@ vas -o hello.asm hello.vas
 Generated `hello.asm`:
 
 ```
-default rel
+; hello.vas -- print "hello world" via Linux write syscall
+
+        default rel
+
+        section .data
+        msg db 'Hello, World from VAS!', 10
+        msglen equ $ - msg
 
         section .text
         global _start
+
 _start:
-        call    vas_main
-        mov     edi, eax
-        mov     eax, 60
-        syscall
-vas_main:
-        mov     rax, 1
         mov     rdi, 1
         lea     rsi, [msg]
-        mov     rdx, 12
-        syscall
-        mov     rax, 60
-        mov     rdi, 0
+        mov     rdx, msglen
+        mov     rax, 1
         syscall
 
-        section .data
-msg: db "hello world", 10
+        mov     rdi, 0
+        mov     rax, 60
+        syscall
 ```
 
 ### 3. Build and Run
