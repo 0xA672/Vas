@@ -201,23 +201,25 @@ These directives pass through unchanged (no v-register substitution):
 ## Command Line Usage
 
 ```bash
-vas                         # Read from stdin, output to stdout
-vas input.vas               # Translate input.vas, output to stdout
-vas -o output.asm input.vas # Write to file
-vas input.vas -o output.asm # Same as above
-vas -target win64 input.vas # Output Windows x64 skeleton
-vas -O1 input.vas           # Enable optimizations
-vas diff input.vas          # Show VAS source vs NASM output
-vas stats input.vas         # Show instruction and register statistics
-vas check input.vas         # Validate syntax (exit: 0=ok, 1=error)
-vas list                    # List all instructions and syntax
-vas version                 # Print version
+vas                           # Read from stdin, output to stdout
+vas input.vas                 # Translate input.vas, output to stdout
+vas -o output.asm input.vas   # Write to file
+vas input.vas -o output.asm   # Same as above
+vas -target win64 input.vas   # Output Windows x64 skeleton
+vas -O1 input.vas             # Enable -O1 optimizations
+vas -O2 input.vas             # Enable -O2 optimizations (includes -O1)
+vas diff input.vas            # Show VAS source vs NASM output
+vas stats input.vas           # Show instruction and register statistics
+vas check input.vas           # Validate syntax (exit: 0=ok, 1=error)
+vas list                      # List all instructions and syntax
+vas version                   # Print version
 ```
 
 Options:
 - `-o <file>`         - Write output to file instead of stdout
 - `-target <arch>`    - Target platform: `elf64` (default) or `win64`
 - `-O1`               - Enable optimizations (constant folding, dead code elimination, peephole)
+- `-O2`               - Enable -O2 optimizations (LICM, CSE, redundant load elimination, PUSH/POP elimination, tail call)
 - `-v`, `--version`   - Print version and exit
 - `-h`, `--help`      - Show help
 
