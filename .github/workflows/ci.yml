@@ -61,6 +61,12 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Build WASM (vas.wasm)
+        if: runner.os == 'Linux'
+        working-directory: wasm
+        run: |
+          GOOS=js GOARCH=wasm go build -o vas.wasm wasm.go
+
       - name: Short test
         run: go test -short ./...
 
