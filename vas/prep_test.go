@@ -216,6 +216,28 @@ func TestConstString(t *testing.T) {
 	}
 }
 
+func TestConstNotInString(t *testing.T) {
+	src := ".const SYS_write = 1\ndb \"SYS_write = 1\", 0\n"
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, `"SYS_write = 1"`) {
+		t.Errorf("constant inside string should not be replaced, got:\n%s", got)
+	}
+}
+
+func TestConstNotInComment(t *testing.T) {
+	src := ".const SYS_write = 1\n; SYS_write\n"
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, "; SYS_write") {
+		t.Errorf("constant inside comment should not be replaced, got:\n%s", got)
+	}
+}
+
 // ── .macro tests ──────────────────────────────────────────────────────────
 
 func TestMacroBasic(t *testing.T) {
@@ -415,6 +437,18 @@ func TestIfdefUnclosed(t *testing.T) {
 	_, err := testPrep(t, ".ifdef X\nNOP\n")
 	if err == nil {
 		t.Fatal("expected error for unclosed ifdef")
+	}
+}
+
+func TestIfdefNestedSkippingElseIgnored(t *testing.T) {
+	// Outer false, inner true with else → else should be ignored because outer false
+	src := ".ifdef UNDEFINED\n.ifdef X\nNOP\n.else\nMOVI v0, 999\n.endif\n.endif\n"
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if strings.Contains(got, "MOVI v0, 999") {
+		t.Errorf("inner else in false outer branch should be skipped, got:\n%s", got)
 	}
 }
 
@@ -1127,5 +1161,31 @@ func TestInitPlatformDefinesEmptyEnv(t *testing.T) {
 	ctx.initPlatformDefines()
 	if len(ctx.defines) < 2 {
 		t.Errorf("expected at least OS+ARCH defines, got %d", len(ctx.defines))
+	}
+}
+
+// ── .rept nesting tests ──────────────────────────────────────────────────
+
+func TestReptNested(t *testing.T) {
+	src := `.rept 2
+.rept 3
+NOP
+.endr
+.endr
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	count := strings.Count(got, "NOP")
+	if count != 6 {
+		t.Errorf("expected 6 NOPs, got %d:\n%s", count, got)
+	}
+}
+
+func TestReptUnclosed(t *testing.T) {
+	_, err := testPrep(t, ".rept 5\nNOP\n")
+	if err == nil {
+		t.Fatal("expected error for unclosed .rept")
 	}
 }

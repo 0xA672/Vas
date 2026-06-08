@@ -18,11 +18,17 @@ type ifState int
 const (
 	ifTrue ifState = iota
 	ifFalse
+	ifSkipping // nested block inside a false branch, unconditionally skipped
 )
 
 type macroDef struct {
 	params []string
 	body   []string
+}
+
+type reptState struct {
+	count int
+	buf   []string
 }
 
 // PackageResolver resolves a package path (e.g. "io" or "term/color")
@@ -89,9 +95,8 @@ type prepContext struct {
 	macroParams  []string
 	inMacro      bool
 	labelCounter int // for unique labels (\@)
-	inRept       bool
-	reptCount    int
-	reptBuf      []string
+	// .rept stack for nested support
+	reptStack []reptState
 	// Block-level deduplication for .once begin/end
 	blockOnceStack []string        // stack of active block names
 	blockIncluded  map[string]bool // completed block names
@@ -262,20 +267,43 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			continue
 		}
 
-		// Handle rept collection
-		if ctx.inRept {
+		// Handle rept collection (nested via stack, no recursive resolve)
+		if len(ctx.reptStack) > 0 {
+			if strings.HasPrefix(trimmed, ".rept") {
+				countStr := strings.TrimSpace(strings.TrimPrefix(trimmed, ".rept"))
+				count, err := strconv.Atoi(countStr)
+				if err != nil {
+					return "", fmt.Errorf("invalid .rept count: %s", countStr)
+				}
+				ctx.reptStack = append(ctx.reptStack, reptState{count: count, buf: []string{}})
+				continue
+			}
 			if strings.HasPrefix(trimmed, ".endr") {
-				for i := 0; i < ctx.reptCount; i++ {
-					for _, rline := range ctx.reptBuf {
-						out.WriteString(rline)
+				top := ctx.reptStack[len(ctx.reptStack)-1]
+				ctx.reptStack = ctx.reptStack[:len(ctx.reptStack)-1]
+
+				// Expand: repeat the collected lines top.count times
+				var expanded []string
+				for i := 0; i < top.count; i++ {
+					expanded = append(expanded, top.buf...)
+				}
+
+				if len(ctx.reptStack) > 0 {
+					// Nested: append expanded lines to parent buffer
+					parent := &ctx.reptStack[len(ctx.reptStack)-1]
+					parent.buf = append(parent.buf, expanded...)
+				} else {
+					// Top-level: write directly to output
+					for _, l := range expanded {
+						out.WriteString(l)
 						out.WriteByte('\n')
 					}
 				}
-				ctx.inRept = false
-				ctx.reptBuf = nil
 				continue
 			}
-			ctx.reptBuf = append(ctx.reptBuf, line)
+			// Inside a rept: collect raw line into top buffer
+			ctx.reptStack[len(ctx.reptStack)-1].buf = append(
+				ctx.reptStack[len(ctx.reptStack)-1].buf, line)
 			continue
 		}
 
@@ -289,26 +317,23 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			continue
 		}
 
-		// Handle conditional inclusion skipping (ifdef / ifndef false branch)
-		if len(ctx.ifStack) > 0 && ctx.ifStack[len(ctx.ifStack)-1] == ifFalse {
-			if strings.HasPrefix(trimmed, ".ifdef") || strings.HasPrefix(trimmed, ".ifndef") {
-				ctx.ifStack = append(ctx.ifStack, ifFalse) // nested skip, .else ignored
-			} else if strings.HasPrefix(trimmed, ".endif") {
-				ctx.ifStack = ctx.ifStack[:len(ctx.ifStack)-1]
-			} else if strings.HasPrefix(trimmed, ".else") {
-				// Allow flipping if this is the outermost false branch, or if it is nested inside a true branch.
-				hasTrue := false
-				for _, st := range ctx.ifStack {
-					if st == ifTrue {
-						hasTrue = true
-						break
+		// Handle conditional inclusion skipping (ifdef / ifndef false or skipping branches)
+		if len(ctx.ifStack) > 0 {
+			top := ctx.ifStack[len(ctx.ifStack)-1]
+			if top == ifFalse || top == ifSkipping {
+				if strings.HasPrefix(trimmed, ".ifdef") || strings.HasPrefix(trimmed, ".ifndef") {
+					ctx.ifStack = append(ctx.ifStack, ifSkipping)
+				} else if strings.HasPrefix(trimmed, ".endif") {
+					ctx.ifStack = ctx.ifStack[:len(ctx.ifStack)-1]
+				} else if strings.HasPrefix(trimmed, ".else") {
+					if top == ifFalse {
+						if len(ctx.ifStack) == 1 || ctx.ifStack[len(ctx.ifStack)-2] == ifTrue {
+							ctx.ifStack[len(ctx.ifStack)-1] = ifTrue
+						}
 					}
 				}
-				if (len(ctx.ifStack) == 1 || hasTrue) && ctx.ifStack[len(ctx.ifStack)-1] == ifFalse {
-					ctx.ifStack[len(ctx.ifStack)-1] = ifTrue
-				}
+				continue
 			}
-			continue
 		}
 
 		// Directives processing (active branches)
@@ -455,9 +480,7 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("invalid .rept count: %s", countStr)
 			}
-			ctx.reptCount = count
-			ctx.reptBuf = []string{}
-			ctx.inRept = true
+			ctx.reptStack = append(ctx.reptStack, reptState{count: count, buf: []string{}})
 			continue
 		}
 
@@ -474,6 +497,9 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	}
 	if len(ctx.blockOnceStack) > 0 {
 		return "", fmt.Errorf("unclosed .once begin block: %s", ctx.blockOnceStack[len(ctx.blockOnceStack)-1])
+	}
+	if len(ctx.reptStack) > 0 {
+		return "", fmt.Errorf("unclosed .rept")
 	}
 
 	return out.String(), nil
@@ -587,7 +613,6 @@ func (ctx *prepContext) loadInclude(path string, isPkg bool) (string, error) {
 	return ctx.loadFileInclude(path)
 }
 
-// loadFileInclude resolves a file include, incrementing the global depth counter.
 func (ctx *prepContext) loadFileInclude(path string) (string, error) {
 	ctx.depth++
 	defer func() { ctx.depth-- }()
@@ -658,9 +683,6 @@ func (ctx *prepContext) loadFileBytes(path string, isPkg bool) ([]byte, error) {
 	return nil, fmt.Errorf("%q not found for .include_bytes", path)
 }
 
-// loadPackageInclude resolves a package include (<pkg>) and enforces cycle detection
-// via the shared pkgStack. It also increments the global depth counter so that
-// long package chains are caught by the recursion limit.
 func (ctx *prepContext) loadPackageInclude(pkgPath string) (string, error) {
 	pkgKey := "pkg:" + pkgPath
 
@@ -696,8 +718,6 @@ func (ctx *prepContext) loadPackageInclude(pkgPath string) (string, error) {
 	return resolved, nil
 }
 
-// defaultResolver implements PackageResolver by reading files from the
-// directory returned by pkgCacheDir() (and additional search paths).
 type defaultResolver struct {
 	pkgDir    string
 	vasPath   []string
@@ -746,7 +766,6 @@ func (ctx *prepContext) includeFile(filePath string, data []byte) (string, error
 		abs = real
 	}
 
-	// Cycle detection: build a closed loop path for clear error display.
 	for _, p := range ctx.includeStack {
 		if p == abs {
 			fullPath := append([]string{}, ctx.includeStack...)
@@ -813,7 +832,6 @@ func (ctx *prepContext) expandMacros(src string) (string, error) {
 			}
 			ctx.labelCounter++
 
-			// Sort parameter names by length descending to avoid partial replacement
 			type paramPair struct {
 				name string
 				idx  int
@@ -860,19 +878,67 @@ func (ctx *prepContext) applyConsts(src string) (string, error) {
 	sort.Slice(names, func(i, j int) bool {
 		return len(names[i]) > len(names[j])
 	})
-	pattern := `\b(` + strings.Join(names, "|") + `)\b`
-	re, err := regexp.Compile(pattern)
+	re, err := regexp.Compile(`\b(` + strings.Join(names, "|") + `)\b`)
 	if err != nil {
 		return "", fmt.Errorf("const pattern: %w", err)
 	}
 
-	result := re.ReplaceAllStringFunc(src, func(match string) string {
+	replace := func(match string) string {
 		if val, ok := ctx.consts[match]; ok {
 			return val
 		}
 		return match
-	})
-	return result, nil
+	}
+
+	var result strings.Builder
+	lines := strings.Split(src, "\n")
+	for _, line := range lines {
+		var outLine strings.Builder
+		inString := false
+		inComment := false
+		codeStart := 0
+		for i := 0; i < len(line); i++ {
+			c := line[i]
+			if inComment {
+				outLine.WriteByte(c)
+				continue
+			}
+			if inString {
+				if c == '"' {
+					inString = false
+				}
+				outLine.WriteByte(c)
+				continue
+			}
+			if c == '"' {
+				code := line[codeStart:i]
+				outLine.WriteString(re.ReplaceAllStringFunc(code, replace))
+				outLine.WriteByte(c)
+				inString = true
+				codeStart = i + 1
+				continue
+			}
+			if c == ';' || c == '#' {
+				code := line[codeStart:i]
+				outLine.WriteString(re.ReplaceAllStringFunc(code, replace))
+				outLine.WriteByte(c)
+				inComment = true
+				codeStart = i + 1
+				continue
+			}
+		}
+		if !inComment && !inString {
+			code := line[codeStart:]
+			outLine.WriteString(re.ReplaceAllStringFunc(code, replace))
+		}
+		result.WriteString(outLine.String())
+		result.WriteByte('\n')
+	}
+	final := result.String()
+	if len(final) > 0 && final[len(final)-1] == '\n' {
+		final = final[:len(final)-1]
+	}
+	return final, nil
 }
 
 func isInstructionOrDirective(s string) bool {
@@ -889,7 +955,6 @@ func isInstructionOrDirective(s string) bool {
 	return false
 }
 
-// isUndefConst is used by tests to detect tokens that look like undefined constants.
 func isUndefConst(s string) bool {
 	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, ":") ||
 		strings.HasPrefix(s, "\"") || strings.HasPrefix(s, "'") {
@@ -910,7 +975,6 @@ func isUndefConst(s string) bool {
 	return hasUpper
 }
 
-// replaceWord is deprecated and no longer used by the preprocessor core.
 func replaceWord(src, old, new string) string {
 	var out strings.Builder
 	lines := strings.Split(src, "\n")
@@ -973,7 +1037,6 @@ func pmName() string {
 	return os.Getenv("VAS_PM")
 }
 
-// searchPath returns the list of directories specified in VAS_PATH.
 func searchPath() []string {
 	env := os.Getenv("VAS_PATH")
 	if env == "" {
