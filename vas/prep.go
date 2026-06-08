@@ -762,7 +762,7 @@ func (ctx *prepContext) includeFile(filePath string, data []byte) (string, error
 				} else if i == len(fullPath)-1 {
 					sb.WriteString("    └──→ ")
 					sb.WriteString(elem)
-					sb.WriteByte('\n')
+					sb.WriteString("  <-- cycle back to here\n")
 				} else {
 					sb.WriteString("    ")
 					sb.WriteString(elem)
