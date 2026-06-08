@@ -356,7 +356,7 @@ For fine-grained control over code blocks, use `.once begin <name>` and `.once e
 MOVI v0, SYS_write     ; → MOVI v0, 1
 ```
 
-Constants are pure text substitutions. Defined constants are automatically available for `.ifdef` checks.
+Constants are pure text substitutions. Defined constants are automatically available for `.ifdef` checks. **Important**: constant replacement only occurs in code regions, not inside quoted strings or comments. For example, a constant named `SYS_write` inside a `db "SYS_write"` statement or in a comment will not be replaced.
 
 #### Conditional Compilation (`.ifdef` / `.ifndef` / `.else` / `.endif`)
 
@@ -370,7 +370,7 @@ Constants are pure text substitutions. Defined constants are automatically avail
 .endif
 ```
 
-Only checks if a name is defined (via `.const`), does not support value comparison.
+Only checks if a name is defined (via `.const`), does not support value comparison. Nested conditionals are supported, with proper handling of `.else` in true/false branches. The `.else` is ignored when the corresponding block is inside a skipped false branch.
 
 #### Macros (`.macro` / `.endm`)
 
@@ -398,6 +398,17 @@ strlen msg, v1  ; Expands with unique labels (.loop_1, .done_1)
   NOP
 .endr
 ; Expands to 5 NOP instructions
+```
+
+**Nested rept blocks are supported.** Inner `.rept` blocks expand correctly:
+
+```asm
+.rept 2
+  .rept 3
+    NOP
+  .endr
+.endr
+; Expands to 6 NOPs (2 × 3)
 ```
 
 #### Binary Data Inclusion (`.include_bytes`)
