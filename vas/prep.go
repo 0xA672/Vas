@@ -252,6 +252,16 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
+		// .author is a metadata directive that always emits a comment.
+		if strings.HasPrefix(trimmed, ".author") {
+			author, err := parseAuthor(line)
+			if err != nil {
+				return "", err
+			}
+			out.WriteString("; Author: " + author + "\n")
+			continue
+		}
+
 		// Handle macro definition collection
 		if ctx.inMacro {
 			if strings.HasPrefix(trimmed, ".endm") {
@@ -503,6 +513,18 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	}
 
 	return out.String(), nil
+}
+
+func parseAuthor(line string) (string, error) {
+	trimmed := strings.TrimSpace(line)
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, ".author"))
+	if len(rest) >= 2 && rest[0] == '"' {
+		end := strings.IndexByte(rest[1:], '"')
+		if end >= 0 {
+			return rest[1 : end+1], nil
+		}
+	}
+	return "", fmt.Errorf("invalid .author syntax: %s", line)
 }
 
 func parseInclude(line string) (path string, isPkg bool, ok bool) {
