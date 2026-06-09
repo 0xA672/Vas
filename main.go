@@ -479,12 +479,14 @@ func cmdDiff(args []string) {
 func cmdCheck(args []string) {
 	var inputFile string
 	strict := false
+
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--strict":
 			strict = true
 		case args[i] == "-h" || args[i] == "--help":
 			fmt.Println("usage: vas check [--strict] <input.vas>")
+			fmt.Println("       --strict  treat dangerous instruction warnings as errors (exit 1)")
 			return
 		case !strings.HasPrefix(args[i], "-"):
 			inputFile = args[i]
@@ -493,6 +495,7 @@ func cmdCheck(args []string) {
 			os.Exit(1)
 		}
 	}
+
 	if inputFile == "" {
 		fmt.Fprintln(os.Stderr, "usage: vas check [--strict] <input.vas>")
 		os.Exit(1)
@@ -505,7 +508,7 @@ func cmdCheck(args []string) {
 	}
 	input := string(data)
 
-	// Run lint
+	// Run lint checks first
 	violations := lint.Run(input)
 	hasError := false
 	for _, v := range violations {
@@ -516,7 +519,9 @@ func cmdCheck(args []string) {
 			fmt.Fprintf(os.Stderr, "lint warning at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
 		}
 	}
+
 	if strict && hasError {
+		fmt.Fprintln(os.Stderr, "strict mode: lint errors found")
 		os.Exit(1)
 	}
 
@@ -766,7 +771,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "       vas diff <input.vas>")
 	fmt.Fprintln(os.Stderr, "       vas prep <input.vas>")
 	fmt.Fprintln(os.Stderr, "       vas stats <input.vas>")
-	fmt.Fprintln(os.Stderr, "       vas check <input.vas>")
+	fmt.Fprintln(os.Stderr, "       vas check [--strict] <input.vas>")
 	fmt.Fprintln(os.Stderr, "       vas build <input.vas> [build-options]")
 	fmt.Fprintln(os.Stderr, "       vas list")
 	fmt.Fprintln(os.Stderr, "       vas version")
@@ -782,6 +787,7 @@ Usage:
   vas prep <input.vas>      Resolve .include directives (print flattened source)
   vas stats <input.vas>     Show instruction and register statistics
   vas check <input.vas>     Validate VAS syntax (exit code: 0=ok, 1=error)
+  vas check --strict <input.vas>  Also fail on dangerous instruction patterns
   vas build <input.vas>     Build a .vas file into an executable
   vas list                  List all supported instructions and syntax
   vas version               Print version and exit
@@ -790,8 +796,12 @@ Options:
   -o <file>       Write output to file instead of stdout
   -target <arch>  Target platform: elf64 (default) or win64
   -O1             Enable optimizations (constant folding, dead code elim, peephole)
+  -O2             Enable -O2 optimizations (CSE, LICM, redundant load elim, …)
   -v, --version   Print version and exit
   -h, --help      Show this help message
+
+Check options:
+  --strict        Treat dangerous instruction warnings as errors (exit 1)
 
 Build options (for "vas build"):
   -o <file>         Output filename
