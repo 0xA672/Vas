@@ -1,6 +1,7 @@
 # VAS - Virtual Assembler
 [![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=for-the-badge&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/0xA672/Vas)
 [![Playground](https://img.shields.io/badge/Playground-Online-blue?style=for-the-badge&logo=github&color=181717&labelColor=24292f)](https://0xa672.github.io/Vas/)
+
 ```
 .vas pseudocode  ->  VAS  ->  x86-64 NASM assembly (.asm)  ->  nasm + ld / gcc  ->  executable
 ```
@@ -8,8 +9,6 @@
 VAS (Virtual Assembler) is a lightweight text-replacement translator. It reads pseudo-instructions that use **virtual registers** (v0-v12) and outputs standard **x86-64 NASM** assembly.
 
 It does not perform register allocation, instruction scheduling, or linking. Its sole purpose is to turn educational/prototype pseudo-code into NASM-assemblable source.
-
----
 
 ## Quick Start
 
@@ -46,7 +45,7 @@ vas -o hello.asm hello.vas
 
 Generated `hello.asm`:
 
-```
+```asm
 ; hello.vas -- print "hello world" via Linux write syscall
 
         default rel
@@ -80,14 +79,12 @@ ld -o hello hello.o
 ```
 
 **Windows** (nasm + ld):
-```
+```bash
 vas -target win64 hello.vas -o hello.asm
 nasm -f win64 -o hello.obj hello.asm
 ld -e main -o hello.exe hello.obj
 hello.exe
 ```
-
----
 
 ## Virtual Register Mapping
 
@@ -108,8 +105,6 @@ hello.exe
 | v12              | `r15`             |
 
 Virtual registers can be used in any operand position, including memory addressing (e.g. `[v0+8]`, `[v1+v2*8]`), and are automatically replaced during translation.
-
----
 
 ## Supported Pseudo-Instructions
 
@@ -196,92 +191,6 @@ These directives pass through unchanged (no v-register substitution):
 
 **GAS-to-NASM conversion**: Dot-prefixed directives (`.section`, `.global`, `.globl`, `.data`, `.text`, `.bss`) are automatically converted to NASM syntax (dot stripped, `.globl` -> `global`, `.data` -> `section .data`).
 
----
-
-## Command Line Usage
-
-```bash
-vas                           # Read from stdin, output to stdout
-vas input.vas                 # Translate input.vas, output to stdout
-vas -o output.asm input.vas   # Write to file
-vas input.vas -o output.asm   # Same as above
-vas -target win64 input.vas   # Output Windows x64 skeleton
-vas -O1 input.vas             # Enable -O1 optimizations
-vas -O2 input.vas             # Enable -O2 optimizations (includes -O1)
-vas diff input.vas            # Show VAS source vs NASM output
-vas stats input.vas           # Show instruction and register statistics
-vas check input.vas           # Validate syntax (exit: 0=ok, 1=error)
-vas check --strict input.vas  # Also fail on dangerous instruction patterns
-vas list                      # List all instructions and syntax
-vas version                   # Print version
-```
-
-Options:
-- `-o <file>`         - Write output to file instead of stdout
-- `-target <arch>`    - Target platform: `elf64` (default) or `win64`
-- `-O1`               - Enable optimizations (constant folding, dead code elimination, peephole)
-- `-O2`               - Enable -O2 optimizations (LICM, CSE, redundant load elimination, PUSH/POP elimination, tail call)
-- `-v`, `--version`   - Print version and exit
-- `-h`, `--help`      - Show help
-- `--strict`          - In check mode, treat lint errors as failures
-
----
-
-## Standalone Mode
-
-When the assembled output does not contain a `section .text` directive, VAS automatically wraps it in a minimal standalone skeleton that can be assembled and run directly. If the input already defines its own `.text` section, the skeleton is skipped.
-
-### ELF64 (Linux / WSL, default)
-
-```bash
-echo "MOVI v0, 42" | vas
-```
-
-Output includes: `default rel`, `section .text`, `global _start`, `_start:` entry that calls `vas_main` and then performs `exit(eax)` via syscall. User code is placed under `vas_main:`.
-
-### Win64 (Windows)
-
-```bash
-echo "MOVI v0, 42" | vas -target win64
-```
-
-Uses `main:` as the entry point. Ends with `xor eax, eax; ret` unless the user's last instruction is already `RET`.
-
-### Skip Standalone Mode
-
-If the assembled output already defines a `.text` section, output is passed through as-is without wrapping.
-
----
-
-## Optimization (-O1)
-
-`-O1` enables:
-
-1. **Constant Folding**: Computes literal arithmetic at compile time. `ADD v1, 1, 2` becomes `MOVI v1, 3`.
-2. **Dead Code Elimination**: Removes register writes that are never read before being overwritten.
-3. **Peephole Optimizations**:
-   - `mov reg, 0` -> `xor reg, reg` (smaller encoding)
-   - `cmp reg, 0` -> `test reg, reg` (smaller encoding)
-   - Multi-nop sequences merged into one
-   - `mov + add` fused into `lea`
-
----
-
-## Optimization (-O2)
-
-`-O2` includes all `-O1` passes plus:
-
-1. **Common Subexpression Elimination (CSE)**: Repeats of (op, arg1, arg2) replaced with MOV from the first result.
-2. **Loop Invariant Code Motion (LICM)**: LEA with label operand hoisted before loop header.
-3. **Redundant Load Elimination**: LOAD from same address replaced with MOV from previous load.
-4. **PUSH/POP Elimination**: Balanced push/pop pairs removed when the register is unmodified.
-5. **Tail Call Optimization**: `CALL label; RET` -> `JMP label`.
-
-## Formal Verification
-
-VAS's optimization passes have been formally verified via exhaustive enumeration + SMT solver (Z3) for window size W=2, confirming that all hand-written optimizations are sound and no valid optimization within the window is missed. Users are welcome to run their own verification using the open-source toolchain.
-
----
 ## Syntax Details
 
 ### Comments
@@ -432,7 +341,7 @@ strlen msg, v1  ; Expands with unique labels (.loop_1, .done_1)
 ; Converts to db directives with hex bytes
 ```
 
-### Symbol Visibility in Package Includes
+#### Symbol Visibility in Package Includes
 
 When including a package with angle brackets (`.include <pkg>`), VAS processes the package in a **separate context**. This means:
 - Macros and constants defined in the package are **not** visible to the including file.
@@ -443,9 +352,7 @@ For sharing definitions across files, use **file includes** (`.include "file.vas
 
 Cross-context deduplication still applies: the same package or file is never processed twice, even if included from multiple locations.
 
----
-
-## Labels
+### Labels
 
 Lines ending with `:` that are not known pseudo-instructions pass through as labels with virtual register substitution:
 
@@ -458,9 +365,7 @@ global _start
 _start:
 ```
 
----
-
-## Error Handling
+### Error Handling
 
 Errors include source context when reading from a file:
 
@@ -476,7 +381,92 @@ line 3: "MOVI v99, 42": virtual register v99 out of range (valid: v0-v12)
 - **Input file not found**: reports the path
 - **Unknown instruction**: passes through silently (only virtual register substitution applied)
 
----
+## Command Line Usage
+
+```bash
+vas                           # Read from stdin, output to stdout
+vas input.vas                 # Translate input.vas, output to stdout
+vas -o output.asm input.vas   # Write to file
+vas input.vas -o output.asm   # Same as above
+vas -target win64 input.vas   # Output Windows x64 skeleton
+vas -O1 input.vas             # Enable -O1 optimizations
+vas -O2 input.vas             # Enable -O2 optimizations (includes -O1)
+vas diff input.vas            # Show VAS source vs NASM output
+vas stats input.vas           # Show instruction and register statistics
+vas check input.vas           # Validate syntax (exit: 0=ok, 1=error)
+vas check --strict input.vas  # Also fail on dangerous instruction patterns
+vas list                      # List all instructions and syntax
+vas version                   # Print version
+```
+
+Options:
+- `-o <file>`         - Write output to file instead of stdout
+- `-target <arch>`    - Target platform: `elf64` (default) or `win64`
+- `-O1`               - Enable optimizations (constant folding, dead code elimination, peephole)
+- `-O2`               - Enable -O2 optimizations (LICM, CSE, redundant load elimination, PUSH/POP elimination, tail call)
+- `-v`, `--version`   - Print version and exit
+- `-h`, `--help`      - Show help
+- `--strict`          - In check mode, treat lint errors as failures
+
+### Prep – View Preprocessed Output
+
+`vas prep` resolves all preprocessor directives (includes, macros, constants, conditionals) and outputs the fully expanded source. This is useful for debugging complex include chains or macro expansions. The same preprocessing step is performed automatically by `vas build` before assembly, so you don't need to prep separately unless you want to inspect the intermediate result.
+
+Example:
+```bash
+vas prep app.vas
+vas prep -v app.vas   # show statistics
+```
+
+## Standalone Mode
+
+When the assembled output does not contain a `section .text` directive, VAS automatically wraps it in a minimal standalone skeleton that can be assembled and run directly. If the input already defines its own `.text` section, the skeleton is skipped.
+
+### ELF64 (Linux / WSL, default)
+
+```bash
+echo "MOVI v0, 42" | vas
+```
+
+Output includes: `default rel`, `section .text`, `global _start`, `_start:` entry that calls `vas_main` and then performs `exit(eax)` via syscall. User code is placed under `vas_main:`.
+
+### Win64 (Windows)
+
+```bash
+echo "MOVI v0, 42" | vas -target win64
+```
+
+Uses `main:` as the entry point. Ends with `xor eax, eax; ret` unless the user's last instruction is already `RET`.
+
+### Skip Standalone Mode
+
+If the assembled output already defines a `.text` section, output is passed through as-is without wrapping.
+
+## Optimization (-O1)
+
+`-O1` enables:
+
+1. **Constant Folding**: Computes literal arithmetic at compile time. `ADD v1, 1, 2` becomes `MOVI v1, 3`.
+2. **Dead Code Elimination**: Removes register writes that are never read before being overwritten.
+3. **Peephole Optimizations**:
+   - `mov reg, 0` -> `xor reg, reg` (smaller encoding)
+   - `cmp reg, 0` -> `test reg, reg` (smaller encoding)
+   - Multi-nop sequences merged into one
+   - `mov + add` fused into `lea`
+
+## Optimization (-O2)
+
+`-O2` includes all `-O1` passes plus:
+
+1. **Common Subexpression Elimination (CSE)**: Repeats of (op, arg1, arg2) replaced with MOV from the first result.
+2. **Loop Invariant Code Motion (LICM)**: LEA with label operand hoisted before loop header.
+3. **Redundant Load Elimination**: LOAD from same address replaced with MOV from previous load.
+4. **PUSH/POP Elimination**: Balanced push/pop pairs removed when the register is unmodified.
+5. **Tail Call Optimization**: `CALL label; RET` -> `JMP label`.
+
+## Formal Verification
+
+VAS's optimization passes have been formally verified via exhaustive enumeration + SMT solver (Z3) for window size W=2, confirming that all hand-written optimizations are sound and no valid optimization within the window is missed. Users are welcome to run their own verification using the open-source toolchain.
 
 ## Examples
 
@@ -505,8 +495,6 @@ ld -e main -o win-ops.exe win-ops.obj
 win-ops.exe
 ```
 
----
-
 ## Installation and Build
 
 **Prerequisites**: Go 1.21+, no third-party dependencies.
@@ -528,8 +516,6 @@ go install
 
 `vas version` and `vas -v` print the embedded version string.
 
----
-
 ## Project Structure
 
 ```
@@ -548,8 +534,6 @@ vas/
 +-- LICENSE
 ```
 
----
-
 ## Distinction from a Real Assembler
 
 VAS explicitly does not perform:
@@ -558,8 +542,6 @@ VAS explicitly does not perform:
 - Linking or relocation
 
 Generated `.asm` files must be assembled by NASM and linked by ld to produce an executable. VAS is a thin translation layer; NASM handles the rest.
-
----
 
 ## License
 
