@@ -25,3 +25,5 @@ HANDBOOK.md
 
 #exe
 goreleaser.exe
+completions/
+manpages/
