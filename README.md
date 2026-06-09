@@ -211,6 +211,7 @@ vas -O2 input.vas             # Enable -O2 optimizations (includes -O1)
 vas diff input.vas            # Show VAS source vs NASM output
 vas stats input.vas           # Show instruction and register statistics
 vas check input.vas           # Validate syntax (exit: 0=ok, 1=error)
+vas check --strict input.vas  # Also fail on dangerous instruction patterns
 vas list                      # List all instructions and syntax
 vas version                   # Print version
 ```
@@ -222,6 +223,7 @@ Options:
 - `-O2`               - Enable -O2 optimizations (LICM, CSE, redundant load elimination, PUSH/POP elimination, tail call)
 - `-v`, `--version`   - Print version and exit
 - `-h`, `--help`      - Show help
+- `--strict`          - In check mode, treat lint errors as failures
 
 ---
 
