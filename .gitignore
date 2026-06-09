@@ -22,3 +22,6 @@ test-*.asm
 
 # Internal docs
 HANDBOOK.md
+
+#exe
+goreleaser.exe
