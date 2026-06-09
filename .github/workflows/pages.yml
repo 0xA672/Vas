@@ -1,39 +1,66 @@
-# Deploy VAS Playground (WASM) to GitHub Pages
-name: Deploy Pages
+# Deploy the VAS Playground (WASM) to GitHub Pages
+# This workflow automatically builds the WebAssembly binary from Go source
+# and deploys it to Pages whenever relevant files are pushed to main.
+name: Deploy WASM Playground to Pages
 
 on:
   push:
     branches: [ "main" ]
     paths:
+      # Trigger only when Go source files or the WASM frontend change
       - 'wasm/**'
-  workflow_dispatch:
+      - 'vas/**'
+      - 'main.go'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:  # Allow manual triggering from the Actions tab
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: read      # Required to check out the repository
+  pages: write        # Required to upload the Pages artifact
+  id-token: write     # Required for OIDC authentication with Pages
 
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: false  # Allow in-flight deployments to complete
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # Check out the repository code
       - uses: actions/checkout@v4
 
+      # Install the Go toolchain (match your go.mod version)
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'    # Adjust to your module's required Go version
+          check-latest: true
+
+      # Compile the Go code to WebAssembly (targeting js/wasm)
+      # The entry point is assumed to be the main package inside ./wasm
+      - name: Build vas.wasm
+        run: |
+          GOOS=js GOARCH=wasm go build -o wasm/vas.wasm ./wasm
+          # Copy the official wasm_exec.js from the Go distribution so it
+          # always matches the Go version used during the build.
+          cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" wasm/wasm_exec.js
+
+      # Configure Pages to prepare the deployment artifact
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload artifact (wasm/)
+      # Upload the wasm/ directory as the Pages artifact
+      - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: wasm
 
+      # Deploy to GitHub Pages
       - name: Deploy to Pages
         id: deployment
         uses: actions/deploy-pages@v4
