@@ -461,6 +461,9 @@ echo "MOVI v0, 42" | vas
 
 Output includes: `default rel`, `section .text`, `global _start`, `_start:` entry that calls `vas_main` and then performs `exit(eax)` via syscall. User code is placed under `vas_main:`.
 
+If your code does not end with `RET`, `SYSCALL`, `JMP`, or `HLT`, VAS
+automatically inserts a `ret` so the program exits cleanly.
+
 ### Win64 (Windows)
 
 ```bash
