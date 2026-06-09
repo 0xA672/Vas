@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"vas/vas/lint"
 	"vas/vas/opt"
 )
 
@@ -98,6 +99,19 @@ func AssembleWithOpt(input string, optLevel int) (string, error) {
 			return "", fmt.Errorf("preprocessing: %w", err)
 		}
 		input = preprocessed
+	}
+
+	// ── Semantic lint for dangerous instructions ─────────────────────────
+	// Runs after preprocessing so we can see the expanded source.
+	violations := lint.Run(input)
+	for _, v := range violations {
+		if v.Severity == "error" {
+			// Lint errors are emitted to stderr but do not stop translation
+			// (they become fatal only under `vas check --strict`).
+			fmt.Fprintf(os.Stderr, "lint error at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
+		} else {
+			fmt.Fprintf(os.Stderr, "lint warning at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
+		}
 	}
 
 	// Pre-expansion optimization: constant folding

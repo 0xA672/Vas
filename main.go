@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"vas/vas"
+	"vas/vas/lint"
 )
 
 // Version is set at build time via -ldflags "-X main.Version=v0.2.0".
@@ -476,18 +477,51 @@ func cmdDiff(args []string) {
 // ── check subcommand ─────────────────────────────────────────────────────
 
 func cmdCheck(args []string) {
-	if len(args) < 1 || args[0] == "" || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: vas check <input.vas>")
+	var inputFile string
+	strict := false
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--strict":
+			strict = true
+		case args[i] == "-h" || args[i] == "--help":
+			fmt.Println("usage: vas check [--strict] <input.vas>")
+			return
+		case !strings.HasPrefix(args[i], "-"):
+			inputFile = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			os.Exit(1)
+		}
+	}
+	if inputFile == "" {
+		fmt.Fprintln(os.Stderr, "usage: vas check [--strict] <input.vas>")
 		os.Exit(1)
 	}
 
-	data, err := os.ReadFile(args[0])
+	data, err := os.ReadFile(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check error: %v\n", err)
 		os.Exit(1)
 	}
+	input := string(data)
 
-	_, err = vas.Assemble(string(data))
+	// Run lint
+	violations := lint.Run(input)
+	hasError := false
+	for _, v := range violations {
+		if v.Severity == "error" {
+			hasError = true
+			fmt.Fprintf(os.Stderr, "lint error at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
+		} else {
+			fmt.Fprintf(os.Stderr, "lint warning at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
+		}
+	}
+	if strict && hasError {
+		os.Exit(1)
+	}
+
+	// Proceed with normal assembly check
+	_, err = vas.Assemble(input)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check error: %v\n", err)
 		os.Exit(1)
