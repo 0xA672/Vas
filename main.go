@@ -24,8 +24,9 @@ func main() {
 	args := os.Args[1:]
 
 	if len(args) == 0 {
-		printUsage()
-		os.Exit(1)
+		// No arguments – read from stdin (supports pipelines on all platforms)
+		cmdAssemble(nil)
+		return
 	}
 
 	// Subcommand dispatch
@@ -49,7 +50,6 @@ func main() {
 	case "-h", "--help":
 		fmt.Print(helpText)
 	default:
-		// Existing behaviour: flags + input file
 		cmdAssemble(args)
 	}
 }
