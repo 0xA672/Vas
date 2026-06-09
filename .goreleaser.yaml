@@ -39,7 +39,7 @@ builds:
 
 archives:
   - id: vas-archive
-    builds:
+    ids:
       - vas-cli
     name_template: "vas_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
@@ -50,7 +50,7 @@ archives:
       - LICENSE
 
   - id: vas-wasm-archive
-    builds:
+    ids:
       - vas-wasm
     name_template: "vas_wasm_{{ .Version }}"
     formats:
@@ -63,7 +63,7 @@ checksum:
   name_template: 'checksums.txt'
 
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ .Version }}-next"
 
 changelog:
   sort: asc
