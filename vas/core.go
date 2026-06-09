@@ -27,25 +27,57 @@ var regMap = map[string]string{
 }
 
 func mapReg(s string) (string, error) {
-	for i := 0; i < len(s); i++ {
+	var out strings.Builder
+	inQuote := false
+	quoteChar := byte(0)
+
+	for i := 0; i < len(s); {
+		if inQuote {
+			out.WriteByte(s[i])
+			if s[i] == quoteChar {
+				inQuote = false
+			}
+			i++
+			continue
+		}
+
+		if s[i] == '"' || s[i] == '\'' {
+			inQuote = true
+			quoteChar = s[i]
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+
 		if s[i] == 'v' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
 			j := i + 1
 			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
 				j++
 			}
 			name := s[i:j]
-			if _, ok := regMap[name]; !ok {
-				return "", fmt.Errorf("virtual register %s out of range (valid: v0-v12)", name)
+
+			// If followed by colon, it's a label — but still validate the name.
+			if j < len(s) && s[j] == ':' {
+				if _, ok := regMap[name]; !ok {
+					return "", fmt.Errorf("virtual register %s out of range (valid: v0-v12)", name)
+				}
+				out.WriteString(name)
+				i = j
+				continue
 			}
+
+			if phys, ok := regMap[name]; ok {
+				out.WriteString(phys)
+				i = j
+				continue
+			}
+			return "", fmt.Errorf("virtual register %s out of range (valid: v0-v12)", name)
 		}
+
+		out.WriteByte(s[i])
+		i++
 	}
-	for i := 19; i >= 0; i-- {
-		old := fmt.Sprintf("v%d", i)
-		if phys, ok := regMap[old]; ok {
-			s = strings.ReplaceAll(s, old, phys)
-		}
-	}
-	return s, nil
+	return out.String(), nil
 }
 
 func stripComment(line string) string {

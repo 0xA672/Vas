@@ -588,7 +588,26 @@ func parseMacro(line string) (string, []string, error) {
 	if paramStr != "" {
 		params = splitArgs(paramStr)
 	}
+	// Disallow virtual register names as macro parameters
+	for _, p := range params {
+		if isVReg(p) {
+			return "", nil, fmt.Errorf("macro parameter %q is a reserved virtual register", p)
+		}
+	}
 	return name, params, nil
+}
+
+// isVReg reports whether s is a reserved virtual register name (v0‑v12).
+func isVReg(s string) bool {
+	if len(s) < 2 || s[0] != 'v' {
+		return false
+	}
+	for _, c := range s[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // splitArgs splits a string by commas, respecting quoted substrings.
