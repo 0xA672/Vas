@@ -22,9 +22,10 @@ test-*.asm
 
 # Internal docs
 HANDBOOK.md
-
-#exe
-goreleaser.exe
 completions/
 manpages/
 LICENSE.md
+
+#exe
+goreleaser.exe
+wasm/vas.wasm
