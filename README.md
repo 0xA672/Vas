@@ -357,6 +357,19 @@ strlen msg, v1  ; Expands with unique labels (.loop_1, .done_1)
 ; Converts to db directives with hex bytes
 ```
 
+### Author Metadata (`.author`)
+
+Embed author or copyright information that appears as a comment in the
+preprocessed output:
+
+```asm
+.author "Jane Hacker <jane@example.com>"
+```
+
+This produces `; Author: Jane Hacker <jane@example.com>` in the output.
+Useful for identifying the origin of a file, especially when sharing
+libraries via `.include`.
+
 ### Symbol Visibility in Package Includes
 
 When including a package with angle brackets (`.include <pkg>`), VAS processes the package in a **separate context**. This means:
@@ -383,7 +396,9 @@ _start:
 
 ### Error Handling
 
-Errors include source context when reading from a file:
+VAS provides friendly, descriptive error messages that explain what went
+wrong and how to fix it. Errors include source context when reading from
+a file:
 
 ```
 error at line 3:
