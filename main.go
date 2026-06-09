@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"vas/vas"
 	"vas/vas/lint"
@@ -352,12 +353,15 @@ func cmdBuild(args []string) {
 
 func cmdPrep(args []string) {
 	var inputFile, outFile string
+	verbose := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "-o" && i+1 < len(args):
 			outFile = args[i+1]
 			i++
+		case args[i] == "-v" || args[i] == "--verbose":
+			verbose = true
 		case args[i] == "-h" || args[i] == "--help":
 			fmt.Print(prepHelpText)
 			return
@@ -375,7 +379,7 @@ func cmdPrep(args []string) {
 	if inputFile != "" {
 		data, err := os.ReadFile(inputFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "read file: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 		input = string(data)
@@ -383,22 +387,34 @@ func cmdPrep(args []string) {
 	} else {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 		input = string(data)
 		baseDir, _ = os.Getwd()
 	}
 
+	start := time.Now()
 	output, err := vas.Preprocess(input, baseDir)
+	elapsed := time.Since(start)
+
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "preprocess error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		if strings.Contains(err.Error(), "circular include") {
+			fmt.Fprintf(os.Stderr, "Tip: use 'vas prep -v' to trace included files.\n")
+		}
 		os.Exit(1)
+	}
+
+	if verbose {
+		inLines := strings.Count(input, "\n") + 1
+		outLines := strings.Count(output, "\n") + 1
+		fmt.Fprintf(os.Stderr, "preprocessing: %d lines -> %d lines, took %v\n", inLines, outLines, elapsed)
 	}
 
 	if outFile != "" {
 		if err := os.WriteFile(outFile, []byte(output), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "write file: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 	} else {
@@ -408,11 +424,20 @@ func cmdPrep(args []string) {
 
 const prepHelpText = `usage: vas prep [options] <input.vas>
 
-Resolves .include directives and prints the flattened source.
+Resolves all preprocessor directives (.include, .macro, .const, .ifdef, .once, …)
+and prints the fully expanded source. This is the same step that 'vas build' performs
+internally before assembly. Use 'vas prep' when you want to inspect the expanded code
+without assembling it.
 
 Options:
   -o <file>   Write output to file instead of stdout
+  -v, --verbose  Print processing statistics (line counts, time)
   -h, --help  Show this help message
+
+Examples:
+  vas prep app.vas               show expanded source
+  vas prep -v app.vas            show expansion stats
+  vas prep -o expanded.vas app.vas   write to file
 `
 
 const buildHelpText = `usage: vas build <input.vas> [options]
@@ -799,6 +824,7 @@ Options:
   -O2             Enable -O2 optimizations (CSE, LICM, redundant load elim, …)
   -v, --version   Print version and exit
   -h, --help      Show this help message
+  -v, --verbose   Print verbose output (for 'prep' and 'build')
 
 Check options:
   --strict        Treat dangerous instruction warnings as errors (exit 1)
