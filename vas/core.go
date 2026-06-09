@@ -622,6 +622,14 @@ func wrapStandalone(vasInput, asmOutput string) string {
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 
+	lastInst := lastInstructionLine(asmOutput)
+	if !strings.HasSuffix(lastInst, "ret") &&
+		!strings.HasPrefix(lastInst, "syscall") &&
+		!strings.HasPrefix(lastInst, "jmp") &&
+		!strings.HasPrefix(lastInst, "hlt") {
+		sb.WriteString("\tret\n")
+	}
+
 	if len(memRefs) > 0 {
 		var dataLines []string
 		for _, ref := range memRefs {
