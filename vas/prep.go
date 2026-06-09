@@ -175,8 +175,6 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 // initPlatformDefines populates ctx.defines with symbols that reflect the
 // compilation target (GOOS and GOARCH). It prefers the GOOS/GOARCH environment
 // variables for cross-compilation, falling back to runtime.GOOS/GOARCH.
-// Unknown but non-empty platforms are handled with a dynamically generated
-// macro, providing forward compatibility.
 func (ctx *prepContext) initPlatformDefines() {
 	goos := os.Getenv("GOOS")
 	if goos == "" {
@@ -187,7 +185,6 @@ func (ctx *prepContext) initPlatformDefines() {
 		goarch = runtime.GOARCH
 	}
 
-	// Operating system
 	switch goos {
 	case "linux":
 		ctx.defines["__VAS_OS_LINUX__"] = true
@@ -211,7 +208,6 @@ func (ctx *prepContext) initPlatformDefines() {
 		}
 	}
 
-	// Architecture
 	switch goarch {
 	case "amd64":
 		ctx.defines["__VAS_ARCH_AMD64__"] = true
@@ -252,13 +248,15 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// .author is a metadata directive that always emits a comment.
+		// .author metadata directive
 		if strings.HasPrefix(trimmed, ".author") {
 			author, err := parseAuthor(line)
 			if err != nil {
 				return "", err
 			}
-			out.WriteString("; Author: " + author + "\n")
+			out.WriteString("; Author: ")
+			out.WriteString(author)
+			out.WriteString("\n")
 			continue
 		}
 
@@ -277,7 +275,7 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			continue
 		}
 
-		// Handle rept collection (nested via stack, no recursive resolve)
+		// Handle rept collection (nested via stack)
 		if len(ctx.reptStack) > 0 {
 			if strings.HasPrefix(trimmed, ".rept") {
 				countStr := strings.TrimSpace(strings.TrimPrefix(trimmed, ".rept"))
@@ -292,18 +290,15 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 				top := ctx.reptStack[len(ctx.reptStack)-1]
 				ctx.reptStack = ctx.reptStack[:len(ctx.reptStack)-1]
 
-				// Expand: repeat the collected lines top.count times
 				var expanded []string
 				for i := 0; i < top.count; i++ {
 					expanded = append(expanded, top.buf...)
 				}
 
 				if len(ctx.reptStack) > 0 {
-					// Nested: append expanded lines to parent buffer
 					parent := &ctx.reptStack[len(ctx.reptStack)-1]
 					parent.buf = append(parent.buf, expanded...)
 				} else {
-					// Top-level: write directly to output
 					for _, l := range expanded {
 						out.WriteString(l)
 						out.WriteByte('\n')
@@ -311,13 +306,12 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 				}
 				continue
 			}
-			// Inside a rept: collect raw line into top buffer
 			ctx.reptStack[len(ctx.reptStack)-1].buf = append(
 				ctx.reptStack[len(ctx.reptStack)-1].buf, line)
 			continue
 		}
 
-		// Handle skipping for .once blocks (second+ encounter)
+		// Handle skipping for .once blocks
 		if ctx.skipBlockDepth > 0 {
 			if strings.HasPrefix(trimmed, ".once begin") {
 				ctx.skipBlockDepth++
@@ -327,7 +321,7 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			continue
 		}
 
-		// Handle conditional inclusion skipping (ifdef / ifndef false or skipping branches)
+		// Handle conditional inclusion skipping
 		if len(ctx.ifStack) > 0 {
 			top := ctx.ifStack[len(ctx.ifStack)-1]
 			if top == ifFalse || top == ifSkipping {
@@ -403,7 +397,7 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 		}
 
 		if strings.HasPrefix(trimmed, ".endm") {
-			return "", fmt.Errorf("orphan .endm")
+			return "", fmt.Errorf("found .endm without a matching .macro")
 		}
 
 		if strings.HasPrefix(trimmed, ".ifdef") {
@@ -428,7 +422,7 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 
 		if strings.HasPrefix(trimmed, ".else") {
 			if len(ctx.ifStack) == 0 {
-				return "", fmt.Errorf("orphan .else")
+				return "", fmt.Errorf("found .else without a matching .ifdef/.ifndef")
 			}
 			if ctx.ifStack[len(ctx.ifStack)-1] == ifTrue {
 				ctx.ifStack[len(ctx.ifStack)-1] = ifFalse
@@ -440,7 +434,7 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 
 		if strings.HasPrefix(trimmed, ".endif") {
 			if len(ctx.ifStack) == 0 {
-				return "", fmt.Errorf("orphan .endif")
+				return "", fmt.Errorf("found .endif without a matching .ifdef/.ifndef")
 			}
 			ctx.ifStack = ctx.ifStack[:len(ctx.ifStack)-1]
 			continue
@@ -500,16 +494,16 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	}
 
 	if ctx.inMacro {
-		return "", fmt.Errorf("unclosed macro: %s", ctx.macroName)
+		return "", fmt.Errorf("macro %q is missing a closing .endm", ctx.macroName)
 	}
 	if len(ctx.ifStack) > 0 {
-		return "", fmt.Errorf("unclosed ifdef")
+		return "", fmt.Errorf("unclosed .ifdef/.ifndef (missing .endif)")
 	}
 	if len(ctx.blockOnceStack) > 0 {
-		return "", fmt.Errorf("unclosed .once begin block: %s", ctx.blockOnceStack[len(ctx.blockOnceStack)-1])
+		return "", fmt.Errorf("block %q is missing a closing .once end", ctx.blockOnceStack[len(ctx.blockOnceStack)-1])
 	}
 	if len(ctx.reptStack) > 0 {
-		return "", fmt.Errorf("unclosed .rept")
+		return "", fmt.Errorf(".rept block is missing a closing .endr")
 	}
 
 	return out.String(), nil
@@ -598,7 +592,6 @@ func parseMacro(line string) (string, []string, error) {
 }
 
 // splitArgs splits a string by commas, respecting quoted substrings.
-// Both opening and closing quotes are preserved in the returned arguments.
 func splitArgs(s string) []string {
 	var args []string
 	var current strings.Builder
@@ -612,14 +605,15 @@ func splitArgs(s string) []string {
 				inQuote = false
 			}
 		} else {
-			if c == ',' {
+			switch c {
+			case ',':
 				args = append(args, strings.TrimSpace(current.String()))
 				current.Reset()
-			} else if c == '"' || c == '\'' {
+			case '"', '\'':
 				inQuote = true
 				quoteChar = c
-				current.WriteByte(c) // write the opening quote
-			} else {
+				current.WriteByte(c)
+			default:
 				current.WriteByte(c)
 			}
 		}
