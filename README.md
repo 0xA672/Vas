@@ -195,9 +195,9 @@ Any line not recognized as a pseudo-instruction passes through with virtual regi
 
 Virtual register substitution works inside passthrough, so `div v6` becomes `div r8`.
 
-### Directives (Passthrough without Register Substitution)
+### Directives (Passthrough with Register Substitution)
 
-These directives pass through unchanged (no v-register substitution):
+These directives pass through with virtual register substitution applied:
 - `SECTION .text`, `SECTION .data`, `SECTION .bss`
 - `GLOBAL label`, `EXTERN label`
 - `DB`, `DW`, `DD`, `DQ`, `BYTE`, `WORD`, `DWORD`, `QWORD`
@@ -480,10 +480,6 @@ If the assembled output already defines a `.text` section, output is passed thro
 4. **PUSH/POP Elimination**: Balanced push/pop pairs removed when the register is unmodified.
 5. **Tail Call Optimization**: `CALL label; RET` -> `JMP label`.
 
-## Formal Verification
-
-VAS's optimization passes have been formally verified via exhaustive enumeration + SMT solver (Z3) for window size W=2, confirming that all hand-written optimizations are sound and no valid optimization within the window is missed. Users are welcome to run their own verification using the open-source toolchain.
-
 ## Examples
 
 | File | Description | Instructions Used | Complexity |
@@ -540,11 +536,20 @@ vas/
 +-- go.mod                   # Go module
 +-- vas/
 |   +-- core.go              # Core translation: scan -> expand -> wrap (includes regMap)
+|   +-- prep.go              # Preprocessor: includes, macros, constants, conditionals
+|   +-- lint/
+|   |   +-- lint.go          # Linting and static analysis
 |   +-- opt/
-|       +-- opt.go           # -O1 optimizer (DCE + constant folding + peephole)
+|   |   +-- opt.go           # -O1 / -O2 optimizer passes
+|   +-- arch/
+|       +-- arch.go          # Architecture-specific target definitions (elf64, win64)
 +-- test/
-|   +-- assembler_test.go    # Unit tests
+|   +-- assembler_test.go    # Unit tests for assembler
+|   +-- invariant_test.go    # Property-based invariant tests
++-- testdata/
+|   +-- golden/              # Golden test outputs
 +-- examples/                # Example .vas files
++-- wasm/                    # WebAssembly playground support
 +-- bin/                     # Build artifacts (gitignored)
 +-- README.md
 +-- LICENSE
