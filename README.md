@@ -71,6 +71,8 @@ _start:
 
 ### 3. Build and Run
 
+**Choose your platform:**
+
 **Linux / WSL** (nasm + ld):
 ```bash
 nasm -f elf64 -o hello.o hello.asm
@@ -85,6 +87,8 @@ nasm -f win64 -o hello.obj hello.asm
 ld -e main -o hello.exe hello.obj
 hello.exe
 ```
+
+> **Tip**: If your code doesn't define its own `section .text`, VAS automatically wraps it in a runnable skeleton. See [Standalone Mode](#standalone-mode) for details.
 
 ## Virtual Register Mapping
 
@@ -105,6 +109,16 @@ hello.exe
 | v12              | `r15`             |
 
 Virtual registers can be used in any operand position, including memory addressing (e.g. `[v0+8]`, `[v1+v2*8]`), and are automatically replaced during translation.
+
+For example:
+```asm
+; VAS input
+ADD v1, [v0+8], v2
+
+; NASM output
+mov rbx, [rax+8]
+add rbx, r12
+```
 
 ## Supported Pseudo-Instructions
 
@@ -168,7 +182,7 @@ Address expressions (e.g. `[v1]`, `[v0+8]`, `[label]`) pass through with only vi
 
 ### Passthrough (Raw x86 Instructions)
 
-Any line not recognized as a pseudo-instruction passes through with virtual registers substituted. This lets you use raw x86 instructions directly:
+Any line not recognized as a pseudo-instruction passes through with virtual registers substituted. **You don't need to memorize which instructions are supported—you can write any x86-64 instruction using v0-v12 as registers.** This lets you use raw x86 instructions directly:
 
 | Instruction | Example | Notes |
 |-------------|---------|-------|
@@ -208,7 +222,7 @@ The VAS preprocessor runs automatically whenever the source contains
 any preprocessor directive, even if no virtual registers are present.
 The supported directives are:
 
-#### File Inclusion (`.include`)
+### File Inclusion (`.include`)
 
 ```asm
 .include "utils.vas"      ; Include from current directory or search path
@@ -217,7 +231,9 @@ The supported directives are:
 
 **Automatic Deduplication**: VAS automatically prevents duplicate file inclusion based on absolute paths. The same file will only be expanded once, regardless of how many times it's included. This eliminates One Definition Rule (ODR) issues without requiring manual guards.
 
-#### Optional Single-Inclusion Marker (`.once`)
+### Single-Inclusion Guards
+
+The `.once` directive (optional) documents that a file is designed for single inclusion:
 
 ```asm
 ; utils.vas
@@ -230,9 +246,7 @@ The supported directives are:
 .endm
 ```
 
-**Note**: The `.once` directive is optional and serves as documentation only. Since VAS already handles automatic deduplication at the file level, `.once` has no functional effect. It can be placed at the top of header files to indicate design intent, but the actual prevention of duplicate inclusion works regardless of this directive.
-
-#### Block-Level Single-Inclusion (`.once begin` / `.once end`)
+**Note**: Since VAS already handles automatic deduplication at the file level, `.once` has no functional effect. It serves as documentation only.
 
 For fine-grained control over code blocks, use `.once begin <name>` and `.once end [<name>]`:
 
@@ -270,7 +284,9 @@ For fine-grained control over code blocks, use `.once begin <name>` and `.once e
 - Conditionally include different implementations
 - Prevent ODR issues for specific code blocks without affecting the entire file
 
-#### Constants (`.const`)
+### Constants and Conditional Compilation
+
+Constants are pure text substitutions, defined with `.const`:
 
 ```asm
 .const SYS_write = 1
@@ -279,9 +295,9 @@ For fine-grained control over code blocks, use `.once begin <name>` and `.once e
 MOVI v0, SYS_write     ; → MOVI v0, 1
 ```
 
-Constants are pure text substitutions. Defined constants are automatically available for `.ifdef` checks. **Important**: constant replacement only occurs in code regions, not inside quoted strings or comments. For example, a constant named `SYS_write` inside a `db "SYS_write"` statement or in a comment will not be replaced.
+Defined constants are automatically available for `.ifdef` checks. **Important**: constant replacement only occurs in code regions, not inside quoted strings or comments.
 
-#### Conditional Compilation (`.ifdef` / `.ifndef` / `.else` / `.endif`)
+Conditional compilation uses `.ifdef` / `.ifndef` / `.else` / `.endif`:
 
 ```asm
 .const DEBUG = 1
@@ -295,7 +311,7 @@ Constants are pure text substitutions. Defined constants are automatically avail
 
 Only checks if a name is defined (via `.const`), does not support value comparison. Nested conditionals are supported, with proper handling of `.else` in true/false branches. The `.else` is ignored when the corresponding block is inside a skipped false branch.
 
-#### Macros (`.macro` / `.endm`)
+### Macros (`.macro` / `.endm`)
 
 ```asm
 .macro strlen ptr, len
@@ -314,7 +330,7 @@ strlen msg, v1  ; Expands with unique labels (.loop_1, .done_1)
 - `\param` - Parameter substitution
 - `\@` - Unique label generation (auto-incrementing counter)
 
-#### Repetition (`.rept` / `.endr`)
+### Repetition (`.rept` / `.endr`)
 
 ```asm
 .rept 5
@@ -334,14 +350,14 @@ strlen msg, v1  ; Expands with unique labels (.loop_1, .done_1)
 ; Expands to 6 NOPs (2 × 3)
 ```
 
-#### Binary Data Inclusion (`.include_bytes`)
+### Binary Data Inclusion (`.include_bytes`)
 
 ```asm
 .include_bytes "data.bin"
 ; Converts to db directives with hex bytes
 ```
 
-#### Symbol Visibility in Package Includes
+### Symbol Visibility in Package Includes
 
 When including a package with angle brackets (`.include <pkg>`), VAS processes the package in a **separate context**. This means:
 - Macros and constants defined in the package are **not** visible to the including file.
@@ -470,17 +486,17 @@ VAS's optimization passes have been formally verified via exhaustive enumeration
 
 ## Examples
 
-| File | Description | Instructions Used |
-|------|-------------|-------------------|
-| `hello.vas` | Linux write syscall | MOVI, LEA, SYSCALL |
-| `calc.vas` | Sum 1..n arithmetic | MOVI, ADD, CMP, JLE, MOV, SYSCALL |
-| `fib.vas` | Iterative Fibonacci | MOVI, MOV, ADD, CMP, JGE, JMP |
-| `fact.vas` | Recursive factorial | CALL, RET, PUSH, POP |
-| `sort.vas` | Bubble sort of 8 elements | LOAD, STORE, CMP, JMP, PUSH, POP |
-| `greet.vas` | CLI tool with args | POP, CMP, STORE, LOAD, SYSCALL |
-| `win-ops.vas` | Win64 arithmetic chain | ADD, MUL, SUB, RET |
-| `win-edge.vas` | Win64 edge cases | PUSH, POP, STORE, LOAD, CMP, JE, RET |
-| `multitool.vas` | Multi-function demo | strlen, Fibonacci, prime, factorial |
+| File | Description | Instructions Used | Complexity |
+|------|-------------|-------------------|------------|
+| `hello.vas` | Linux write syscall | MOVI, LEA, SYSCALL | ★☆☆ |
+| `calc.vas` | Sum 1..n arithmetic | MOVI, ADD, CMP, JLE, MOV, SYSCALL | ★☆☆ |
+| `fib.vas` | Iterative Fibonacci | MOVI, MOV, ADD, CMP, JGE, JMP | ★★☆ |
+| `fact.vas` | Recursive factorial | CALL, RET, PUSH, POP | ★★☆ |
+| `sort.vas` | Bubble sort of 8 elements | LOAD, STORE, CMP, JMP, PUSH, POP | ★★☆ |
+| `greet.vas` | CLI tool with args | POP, CMP, STORE, LOAD, SYSCALL | ★★☆ |
+| `win-ops.vas` | Win64 arithmetic chain | ADD, MUL, SUB, RET | ★☆☆ |
+| `win-edge.vas` | Win64 edge cases | PUSH, POP, STORE, LOAD, CMP, JE, RET | ★★☆ |
+| `multitool.vas` | Multi-function demo | strlen, Fibonacci, prime, factorial | ★★★ |
 
 Build and run Linux examples:
 ```bash
@@ -542,6 +558,8 @@ VAS explicitly does not perform:
 - Linking or relocation
 
 Generated `.asm` files must be assembled by NASM and linked by ld to produce an executable. VAS is a thin translation layer; NASM handles the rest.
+
+VAS is designed for learning, prototyping, and small utilities. For production code or performance-critical sections, consider writing NASM directly or using a higher-level language with inline assembly.
 
 ## License
 
