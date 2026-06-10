@@ -1189,3 +1189,162 @@ func TestReptUnclosed(t *testing.T) {
 		t.Fatal("expected error for unclosed .rept")
 	}
 }
+
+// ── .macro default argument tests ────────────────────────────────────────
+
+func TestMacroDefaultAllDefaults(t *testing.T) {
+	src := `.macro foo a=1, b=2
+  MOVI \a, \b
+.endm
+foo
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, "MOVI 1, 2") {
+		t.Errorf("expected default values (1,2), got:\n%s", got)
+	}
+}
+
+func TestMacroDefaultOverrideSome(t *testing.T) {
+	src := `.macro foo a=1, b=2
+  MOVI \a, \b
+.endm
+foo 10
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, "MOVI 10, 2") {
+		t.Errorf("expected a=10, b=2 (default), got:\n%s", got)
+	}
+}
+
+func TestMacroDefaultOverrideAll(t *testing.T) {
+	src := `.macro foo a=1, b=2
+  MOVI \a, \b
+.endm
+foo 10, 20
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, "MOVI 10, 20") {
+		t.Errorf("expected all overridden (10,20), got:\n%s", got)
+	}
+}
+
+func TestMacroMixedRequiredAndDefaults(t *testing.T) {
+	src := `.macro bar x, y=5, z=10
+  DB \x, \y, \z
+.endm
+bar 42
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, "DB 42, 5, 10") {
+		t.Errorf("expected x=42, y=5(default), z=10(default), got:\n%s", got)
+	}
+
+	// Provide some defaults
+	src2 := `.macro bar x, y=5, z=10
+  DB \x, \y, \z
+.endm
+bar 42, 99
+`
+	got2, err := testPrep(t, src2)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got2, "DB 42, 99, 10") {
+		t.Errorf("expected x=42, y=99, z=10(default), got:\n%s", got2)
+	}
+}
+
+func TestMacroMissingRequiredError(t *testing.T) {
+	src := `.macro bar x, y=5
+  DB \x, \y
+.endm
+bar
+`
+	_, err := testPrep(t, src)
+	if err == nil {
+		t.Fatal("expected error for missing required argument 'x'")
+	}
+	if !strings.Contains(err.Error(), "missing required argument") {
+		t.Errorf("expected 'missing required argument' error, got: %v", err)
+	}
+}
+
+func TestMacroTooManyArgumentsError(t *testing.T) {
+	src := `.macro bar x, y=5
+  DB \x, \y
+.endm
+bar 1, 2, 3
+`
+	_, err := testPrep(t, src)
+	if err == nil {
+		t.Fatal("expected error for too many arguments")
+	}
+	if !strings.Contains(err.Error(), "too many arguments") {
+		t.Errorf("expected 'too many arguments' error, got: %v", err)
+	}
+}
+
+func TestMacroDefaultQuotedComma(t *testing.T) {
+	src := `.macro greet msg="hello, world"
+  db \msg, 0
+.endm
+greet
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, `db "hello, world", 0`) {
+		t.Errorf("expected quoted default with comma preserved, got:\n%s", got)
+	}
+}
+
+func TestMacroDefaultOverrideWithQuoted(t *testing.T) {
+	src := `.macro greet msg="hello"
+  db \msg, 0
+.endm
+greet "hey, you"
+`
+	got, err := testPrep(t, src)
+	if err != nil {
+		t.Fatalf("Preprocess: %v", err)
+	}
+	if !strings.Contains(got, `db "hey, you", 0`) {
+		t.Errorf("expected overridden quoted argument, got:\n%s", got)
+	}
+}
+
+func TestParseMacroDefaultSyntax(t *testing.T) {
+	// Test parseMacro directly.
+	name, params, defaults, err := parseMacro(".macro foo a, b=2, c=\"x,y\"")
+	if err != nil {
+		t.Fatalf("parseMacro: %v", err)
+	}
+	if name != "foo" {
+		t.Errorf("name: got %q, want \"foo\"", name)
+	}
+	if len(params) != 3 || params[0] != "a" || params[1] != "b" || params[2] != "c" {
+		t.Errorf("params: got %v", params)
+	}
+	if len(defaults) != 2 {
+		t.Errorf("defaults count: got %d, want 2", len(defaults))
+	}
+	if defaults["b"] != "2" {
+		t.Errorf("defaults[b]: got %q, want \"2\"", defaults["b"])
+	}
+	if defaults["c"] != `"x,y"` {
+		t.Errorf("defaults[c]: got %q, want \"x,y\"", defaults["c"])
+	}
+}

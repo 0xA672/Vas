@@ -39,7 +39,7 @@ func TestMapRegSkipsQuotedStrings(t *testing.T) {
 }
 
 func TestMacroParamVRegNameFails(t *testing.T) {
-	_, _, err := parseMacro(".macro test v0, v1")
+	_, _, _, err := parseMacro(".macro test v0, v1")
 	if err == nil {
 		t.Fatal("expected error for using v0 as macro parameter name")
 	}

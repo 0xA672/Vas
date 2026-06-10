@@ -18,12 +18,14 @@ type ifState int
 const (
 	ifTrue ifState = iota
 	ifFalse
-	ifSkipping // nested block inside a false branch, unconditionally skipped
+	ifSkipping
 )
 
+// macroDef holds a macro definition with optional parameter defaults.
 type macroDef struct {
-	params []string
-	body   []string
+	params   []string
+	defaults map[string]string
+	body     []string
 }
 
 type reptState struct {
@@ -32,45 +34,34 @@ type reptState struct {
 }
 
 // PackageResolver resolves a package path (e.g. "io" or "term/color")
-// into preprocessed source text. Implementations may read from the file system,
-// an in‑memory cache, or a network resource.
+// into preprocessed source text.
 type PackageResolver interface {
 	ResolvePackage(pkgPath string) (string, error)
 }
 
-// PreprocessOption configures a Preprocess call.
 type PreprocessOption func(*prepContext)
 
-// WithResolver replaces the default package resolver.
 func WithResolver(r PackageResolver) PreprocessOption {
 	return func(ctx *prepContext) {
 		ctx.resolver = r
 	}
 }
 
-// PreHook is called once before preprocessing starts.
 type PreHook func(src string) (string, error)
-
-// PostHook is called once after preprocessing finishes.
 type PostHook func(src string) (string, error)
 
-// WithPreHook sets a hook that transforms the input source before processing.
 func WithPreHook(hook PreHook) PreprocessOption {
 	return func(ctx *prepContext) {
 		ctx.preHook = hook
 	}
 }
 
-// WithPostHook sets a hook that transforms the output source after processing.
 func WithPostHook(hook PostHook) PreprocessOption {
 	return func(ctx *prepContext) {
 		ctx.postHook = hook
 	}
 }
 
-// withInheritContext is an internal option that allows the default resolver
-// to inherit the parent preprocessing state (included files, package stack,
-// recursion depth) when recursively processing included packages.
 func withInheritContext(parent *prepContext) PreprocessOption {
 	return func(child *prepContext) {
 		child.included = parent.included
@@ -80,55 +71,43 @@ func withInheritContext(parent *prepContext) PreprocessOption {
 	}
 }
 
-// prepContext tracks state during preprocessing.
 type prepContext struct {
-	dir          string
-	included     map[string]bool // file‑level deduplication (absolute paths)
-	resolver     PackageResolver
-	vasPath      []string
-	consts       map[string]string   // .const NAME = value
-	macros       map[string]macroDef // .macro definitions
-	defines      map[string]bool     // defined names (for .ifdef)
-	ifStack      []ifState
-	macroBuf     []string // lines collected for current macro definition
-	macroName    string
-	macroParams  []string
-	inMacro      bool
-	labelCounter int // for unique labels (\@)
-	// .rept stack for nested support
-	reptStack []reptState
-	// Block-level deduplication for .once begin/end
-	blockOnceStack []string        // stack of active block names
-	blockIncluded  map[string]bool // completed block names
+	dir            string
+	included       map[string]bool
+	resolver       PackageResolver
+	vasPath        []string
+	consts         map[string]string
+	macros         map[string]macroDef
+	defines        map[string]bool
+	ifStack        []ifState
+	macroBuf       []string
+	macroName      string
+	macroParams    []string
+	macroDefaults  map[string]string
+	inMacro        bool
+	labelCounter   int
+	reptStack      []reptState
+	blockOnceStack []string
+	blockIncluded  map[string]bool
 	skipBlockDepth int
-
-	includeStack []string // tracks current include chain for cycle detection
-
-	// Package inclusion tracking (shared across nested contexts)
-	pkgStack    []string
-	pkgIncluded map[string]bool
-
-	// Global recursion depth (file + package includes).
-	// Incremented before entering a new include, decremented when leaving.
-	depth int
-
-	preHook  PreHook
-	postHook PostHook
+	includeStack   []string
+	pkgStack       []string
+	pkgIncluded    map[string]bool
+	depth          int
+	preHook        PreHook
+	postHook       PostHook
 }
 
-// Preprocess resolves all preprocessor directives and returns flattened source.
 func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 	ctx := &prepContext{
 		dir:           baseDir,
 		included:      map[string]bool{},
-		resolver:      nil, // set later, may be overridden by WithResolver
 		vasPath:       searchPath(),
 		consts:        map[string]string{},
 		macros:        map[string]macroDef{},
 		defines:       map[string]bool{},
 		blockIncluded: map[string]bool{},
 		pkgIncluded:   map[string]bool{},
-		depth:         0,
 	}
 	ctx.resolver = &defaultResolver{pkgDir: pkgCacheDir(), vasPath: ctx.vasPath, parentCtx: ctx}
 
@@ -136,7 +115,6 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 		opt(ctx)
 	}
 
-	// Automatically define platform symbols based on the target environment.
 	ctx.initPlatformDefines()
 
 	if ctx.preHook != nil {
@@ -147,17 +125,14 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 		}
 	}
 
-	// Pass 1: resolve include, collect macros/consts, handle ifdef
 	out, err := ctx.resolve(src, baseDir)
 	if err != nil {
 		return "", err
 	}
-	// Pass 2: expand macro calls
 	out, err = ctx.expandMacros(out)
 	if err != nil {
 		return "", err
 	}
-	// Pass 3: apply const replacement
 	out, err = ctx.applyConsts(out)
 	if err != nil {
 		return "", err
@@ -172,9 +147,6 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 	return out, nil
 }
 
-// initPlatformDefines populates ctx.defines with symbols that reflect the
-// compilation target (GOOS and GOARCH). It prefers the GOOS/GOARCH environment
-// variables for cross-compilation, falling back to runtime.GOOS/GOARCH.
 func (ctx *prepContext) initPlatformDefines() {
 	goos := os.Getenv("GOOS")
 	if goos == "" {
@@ -236,10 +208,9 @@ func (ctx *prepContext) initPlatformDefines() {
 	}
 }
 
-// resolve is the main directive resolution pass.
 func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	if ctx.depth > 100 {
-		return "", fmt.Errorf("preprocessing recursion limit exceeded (check for circular or very deep includes)")
+		return "", fmt.Errorf("preprocessing recursion limit exceeded")
 	}
 	ctx.dir = dir
 	var out strings.Builder
@@ -248,7 +219,6 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// .author metadata directive
 		if strings.HasPrefix(trimmed, ".author") {
 			author, err := parseAuthor(line)
 			if err != nil {
@@ -260,22 +230,23 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			continue
 		}
 
-		// Handle macro definition collection
 		if ctx.inMacro {
 			if strings.HasPrefix(trimmed, ".endm") {
 				ctx.macros[ctx.macroName] = macroDef{
-					params: ctx.macroParams,
-					body:   ctx.macroBuf,
+					params:   ctx.macroParams,
+					defaults: ctx.macroDefaults,
+					body:     ctx.macroBuf,
 				}
 				ctx.inMacro = false
 				ctx.macroBuf = nil
+				ctx.macroParams = nil
+				ctx.macroDefaults = nil
 				continue
 			}
 			ctx.macroBuf = append(ctx.macroBuf, line)
 			continue
 		}
 
-		// Handle rept collection (nested via stack)
 		if len(ctx.reptStack) > 0 {
 			if strings.HasPrefix(trimmed, ".rept") {
 				countStr := strings.TrimSpace(strings.TrimPrefix(trimmed, ".rept"))
@@ -306,12 +277,10 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 				}
 				continue
 			}
-			ctx.reptStack[len(ctx.reptStack)-1].buf = append(
-				ctx.reptStack[len(ctx.reptStack)-1].buf, line)
+			ctx.reptStack[len(ctx.reptStack)-1].buf = append(ctx.reptStack[len(ctx.reptStack)-1].buf, line)
 			continue
 		}
 
-		// Handle skipping for .once blocks
 		if ctx.skipBlockDepth > 0 {
 			if strings.HasPrefix(trimmed, ".once begin") {
 				ctx.skipBlockDepth++
@@ -321,7 +290,6 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			continue
 		}
 
-		// Handle conditional inclusion skipping
 		if len(ctx.ifStack) > 0 {
 			top := ctx.ifStack[len(ctx.ifStack)-1]
 			if top == ifFalse || top == ifSkipping {
@@ -340,7 +308,6 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			}
 		}
 
-		// Directives processing (active branches)
 		if strings.HasPrefix(trimmed, ".include_bytes") {
 			path, isPkg, ok := parseIncludeBytes(line)
 			if !ok {
@@ -385,12 +352,13 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 		}
 
 		if strings.HasPrefix(trimmed, ".macro") {
-			name, params, err := parseMacro(line)
+			name, params, defaults, err := parseMacro(line)
 			if err != nil {
 				return "", err
 			}
 			ctx.macroName = name
 			ctx.macroParams = params
+			ctx.macroDefaults = defaults
 			ctx.macroBuf = []string{}
 			ctx.inMacro = true
 			continue
@@ -488,7 +456,6 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			continue
 		}
 
-		// Normal line
 		out.WriteString(line)
 		out.WriteByte('\n')
 	}
@@ -571,7 +538,7 @@ func parseConst(line string) (string, string, error) {
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
 }
 
-func parseMacro(line string) (string, []string, error) {
+func parseMacro(line string) (string, []string, map[string]string, error) {
 	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ".macro"))
 	var name string
 	var paramStr string
@@ -582,22 +549,36 @@ func parseMacro(line string) (string, []string, error) {
 		name = rest
 	}
 	if name == "" {
-		return "", nil, fmt.Errorf("invalid .macro syntax: missing name")
+		return "", nil, nil, fmt.Errorf("invalid .macro syntax: missing name")
 	}
+
 	var params []string
+	defaults := make(map[string]string)
+
 	if paramStr != "" {
-		params = splitArgs(paramStr)
-	}
-	// Disallow virtual register names as macro parameters
-	for _, p := range params {
-		if isVReg(p) {
-			return "", nil, fmt.Errorf("macro parameter %q is a reserved virtual register", p)
+		rawArgs := splitArgs(paramStr)
+		for _, arg := range rawArgs {
+			paramName, defVal, hasDef := strings.Cut(arg, "=")
+			paramName = strings.TrimSpace(paramName)
+			if paramName == "" {
+				return "", nil, nil, fmt.Errorf("invalid .macro syntax: empty parameter name in %q", arg)
+			}
+			params = append(params, paramName)
+			if hasDef {
+				defVal = strings.TrimSpace(defVal)
+				defaults[paramName] = defVal
+			}
 		}
 	}
-	return name, params, nil
+
+	for _, p := range params {
+		if isVReg(p) {
+			return "", nil, nil, fmt.Errorf("macro parameter %q is a reserved virtual register", p)
+		}
+	}
+	return name, params, defaults, nil
 }
 
-// isVReg reports whether s is a reserved virtual register name (v0‑v12).
 func isVReg(s string) bool {
 	if len(s) < 2 || s[0] != 'v' {
 		return false
@@ -610,7 +591,6 @@ func isVReg(s string) bool {
 	return true
 }
 
-// splitArgs splits a string by commas, respecting quoted substrings.
 func splitArgs(s string) []string {
 	var args []string
 	var current strings.Builder
@@ -739,7 +719,7 @@ func (ctx *prepContext) loadPackageInclude(pkgPath string) (string, error) {
 	resolved, err := ctx.resolver.ResolvePackage(pkgPath)
 	ctx.pkgStack = ctx.pkgStack[:len(ctx.pkgStack)-1]
 	if err != nil {
-		delete(ctx.pkgIncluded, pkgKey) // allow retry
+		delete(ctx.pkgIncluded, pkgKey)
 		parts := strings.SplitN(pkgPath, "/", 2)
 		pkgName := parts[0]
 		var installHint string
@@ -862,9 +842,22 @@ func (ctx *prepContext) expandMacros(src string) (string, error) {
 				argStr := strings.Join(parts[1:], " ")
 				args = splitArgs(argStr)
 			}
-			if len(args) != len(macro.params) {
-				return "", fmt.Errorf("macro argument mismatch for %s: expected %d, got %d", parts[0], len(macro.params), len(args))
+
+			if len(args) > len(macro.params) {
+				return "", fmt.Errorf("macro %s: too many arguments, expected at most %d, got %d", parts[0], len(macro.params), len(args))
 			}
+
+			finalArgs := make([]string, len(macro.params))
+			for i, p := range macro.params {
+				if i < len(args) {
+					finalArgs[i] = args[i]
+				} else if defVal, hasDef := macro.defaults[p]; hasDef {
+					finalArgs[i] = defVal
+				} else {
+					return "", fmt.Errorf("macro %s: missing required argument %q (expected %d arguments, got %d)", parts[0], p, len(macro.params), len(args))
+				}
+			}
+
 			ctx.labelCounter++
 
 			type paramPair struct {
@@ -882,7 +875,7 @@ func (ctx *prepContext) expandMacros(src string) (string, error) {
 			for _, mline := range macro.body {
 				expanded := mline
 				for _, pp := range ordered {
-					expanded = strings.ReplaceAll(expanded, `\`+pp.name, args[pp.idx])
+					expanded = strings.ReplaceAll(expanded, `\`+pp.name, finalArgs[pp.idx])
 				}
 				expanded = strings.ReplaceAll(expanded, `\@`, fmt.Sprintf("_%d", ctx.labelCounter))
 				outLines = append(outLines, expanded)
