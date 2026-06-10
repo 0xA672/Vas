@@ -30,6 +30,9 @@
 //   - RedundantLoadElim: remove LOAD from same address without intervening STORE
 //   - PushPopElim: remove balanced PUSH/POP pairs when register is unmodified
 //   - TailCallOpt: CALL label; RET => JMP label
+//
+// Explain mode: set ExplainEnabled = true to emit [OPT] comments describing
+// each applied optimization.  Vas diff automatically enables this.
 package opt
 
 import (
@@ -38,6 +41,10 @@ import (
 	"strconv"
 	"strings"
 )
+
+// ExplainEnabled controls whether peephole passes insert explanatory
+// comments when an optimization is applied.
+var ExplainEnabled bool
 
 // PeepholeOnly runs only peephole optimizations (safe for NASM output with physical registers).
 func PeepholeOnly(input string) string {
@@ -1095,6 +1102,10 @@ func xorZero(lines []string) []string {
 		if m != nil {
 			reg := m[1]
 			r32 := regTo32(reg)
+			if ExplainEnabled {
+				result = append(result, fmt.Sprintf("; [OPT] xor %s, %s  replaces mov %s, 0 (shorter encoding, sets ZF=1 CF=0 OF=0)",
+					r32, r32, reg))
+			}
 			result = append(result, fmt.Sprintf("\txor\t%s, %s", r32, r32))
 		} else {
 			result = append(result, line)
@@ -1111,6 +1122,10 @@ func testCmp(lines []string) []string {
 		if m != nil {
 			reg := m[1]
 			r32 := regTo32(reg)
+			if ExplainEnabled {
+				result = append(result, fmt.Sprintf("; [OPT] test %s, %s  replaces cmp %s, 0 (shorter encoding)",
+					r32, r32, reg))
+			}
 			result = append(result, fmt.Sprintf("\ttest\t%s, %s", r32, r32))
 		} else {
 			result = append(result, line)
@@ -1129,6 +1144,9 @@ func nopMerge(lines []string) []string {
 				count++
 			}
 			if count > 1 {
+				if ExplainEnabled {
+					result = append(result, fmt.Sprintf("; [OPT] merged %d nops into one", count))
+				}
 				result = append(result, "\tnop\t; merged "+strconv.Itoa(count)+" nops")
 			} else {
 				result = append(result, lines[i])
@@ -1149,6 +1167,12 @@ func leaFuse(lines []string) []string {
 		if i+1 < len(lines) {
 			fused, ok := tryLeaFuse(lines[i], lines[i+1])
 			if ok {
+				if ExplainEnabled {
+					// Build description from the two fused lines
+					line1 := strings.TrimSpace(lines[i])
+					line2 := strings.TrimSpace(lines[i+1])
+					result = append(result, fmt.Sprintf("; [OPT] lea fused from: %s ; %s", line1, line2))
+				}
 				result = append(result, fused)
 				i += 2
 				continue
@@ -1384,7 +1408,6 @@ func licm(lines []string) []string {
 				if minusIdx := strings.Index(memOp, "-"); minusIdx >= 0 {
 					memOp = memOp[:minusIdx]
 				}
-				// Check both source base and destination register for modification
 				dstName := strings.TrimRight(args[0], ",")
 				if !modified[memOp] && !modified[dstName] {
 					isInvariant = true
@@ -1616,9 +1639,27 @@ func noopElim(lines []string) []string {
 	for _, line := range lines {
 		trimmed := strings.TrimRight(line, " \t\r")
 		if m := movRe.FindStringSubmatch(trimmed); m != nil && m[1] == m[2] {
+			if ExplainEnabled {
+				result = append(result, fmt.Sprintf("; [OPT] removed no-op: mov %s, %s", m[1], m[2]))
+			}
 			continue
 		}
-		if addZero.MatchString(trimmed) || subZero.MatchString(trimmed) || imulOne.MatchString(trimmed) {
+		if addZero.MatchString(trimmed) {
+			if ExplainEnabled {
+				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
+			}
+			continue
+		}
+		if subZero.MatchString(trimmed) {
+			if ExplainEnabled {
+				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
+			}
+			continue
+		}
+		if imulOne.MatchString(trimmed) {
+			if ExplainEnabled {
+				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
+			}
 			continue
 		}
 		result = append(result, line)
@@ -1637,6 +1678,10 @@ func pushPopMov(lines []string) []string {
 			m1 := pushRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
 			m2 := popRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 			if m1 != nil && m2 != nil {
+				if ExplainEnabled {
+					result = append(result, fmt.Sprintf("; [OPT] push %s; pop %s  replaced by mov %s, %s",
+						m1[1], m2[1], m2[1], m1[1]))
+				}
 				result = append(result, fmt.Sprintf("\tmov\t%s, %s", m2[1], m1[1]))
 				i += 2
 				continue
@@ -1672,6 +1717,10 @@ func xorMovElim(lines []string) []string {
 				movAfterXor := regexp.MustCompile(fmt.Sprintf(`^\tmov\t%s,\s*([a-z][a-z0-9]+)$`, regexp.QuoteMeta(reg64)))
 				m2 := movAfterXor.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil {
+					if ExplainEnabled {
+						result = append(result, fmt.Sprintf("; [OPT] xor %s,%s; mov %s,%s  replaced by mov %s, %s",
+							m1[1], m1[2], reg64, m2[1], reg64, m2[1]))
+					}
 					result = append(result, fmt.Sprintf("\tmov\t%s, %s", reg64, m2[1]))
 					i += 2
 					continue
@@ -1724,6 +1773,10 @@ func shlAddFuse(lines []string) []string {
 			}
 			scale := 1 << uint(shift)
 
+			if ExplainEnabled {
+				result = append(result, fmt.Sprintf("; [OPT] shl+add fused into lea %s, [%s+%s*%d]",
+					movDst, movSrc, movSrc, scale))
+			}
 			result = append(result, fmt.Sprintf("\tlea\t%s, [%s+%s*%d]", movDst, movSrc, movSrc, scale))
 			i += 3
 			continue
@@ -1752,6 +1805,9 @@ func addNegFuse(lines []string) []string {
 
 			m2 := negRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 			if m2 != nil && m2[1] == reg {
+				if ExplainEnabled {
+					result = append(result, fmt.Sprintf("; [OPT] add %s,1; neg %s  replaced by not %s", reg, reg, reg))
+				}
 				result = append(result, fmt.Sprintf("\tnot\t%s", reg))
 				i += 2
 				continue
@@ -1783,24 +1839,36 @@ func cancelPairElim(lines []string) []string {
 		if i+1 < len(lines) {
 			reg := matchReg(notRe, lines[i])
 			if reg != "" && matchReg(notRe, lines[i+1]) == reg {
+				if ExplainEnabled {
+					result = append(result, fmt.Sprintf("; [OPT] removed redundant not %s; not %s", reg, reg))
+				}
 				i += 2
 				continue
 			}
 
 			reg = matchReg(negRe, lines[i])
 			if reg != "" && matchReg(negRe, lines[i+1]) == reg {
+				if ExplainEnabled {
+					result = append(result, fmt.Sprintf("; [OPT] removed redundant neg %s; neg %s", reg, reg))
+				}
 				i += 2
 				continue
 			}
 
 			reg = matchReg(incRe, lines[i])
 			if reg != "" && matchReg(decRe, lines[i+1]) == reg {
+				if ExplainEnabled {
+					result = append(result, fmt.Sprintf("; [OPT] removed redundant inc %s; dec %s", reg, reg))
+				}
 				i += 2
 				continue
 			}
 
 			reg = matchReg(decRe, lines[i])
 			if reg != "" && matchReg(incRe, lines[i+1]) == reg {
+				if ExplainEnabled {
+					result = append(result, fmt.Sprintf("; [OPT] removed redundant dec %s; inc %s", reg, reg))
+				}
 				i += 2
 				continue
 			}
@@ -1813,7 +1881,6 @@ func cancelPairElim(lines []string) []string {
 
 // pushModPopElim removes push; instr reg, ... ; pop reg triples
 // when the pop restores the old value and the intermediate result dies.
-// Example: push rbx; add rbx, r8; pop rbx  →  (deleted)
 func pushModPopElim(lines []string) []string {
 	pushRe := regexp.MustCompile(`^\tpush\t([a-z][a-z0-9]+)$`)
 	popRe := regexp.MustCompile(`^\tpop\t([a-z][a-z0-9]+)$`)
@@ -1829,7 +1896,10 @@ func pushModPopElim(lines []string) []string {
 				reg := m1[1]
 				m2 := modRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil && m2[2] == reg {
-					// push <reg>; modify <reg>; pop <reg>  →  delete all three
+					if ExplainEnabled {
+						result = append(result, fmt.Sprintf("; [OPT] removed dead push %s; %s %s; pop %s",
+							m1[1], m2[1], m2[2], m3[1]))
+					}
 					i += 3
 					continue
 				}

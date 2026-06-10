@@ -15,6 +15,7 @@ import (
 
 	"vas/vas"
 	"vas/vas/lint"
+	"vas/vas/opt"
 )
 
 // Version is set at build time via -ldflags "-X main.Version=v0.2.0".
@@ -59,6 +60,7 @@ func main() {
 func cmdAssemble(args []string) {
 	var inputFile, outFile, target string
 	optLevel := 0
+	explain := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -72,6 +74,8 @@ func cmdAssemble(args []string) {
 			optLevel = 1
 		case args[i] == "-O2":
 			optLevel = 2
+		case args[i] == "--explain":
+			explain = true
 		case args[i] == "-h" || args[i] == "--help":
 			fmt.Print(helpText)
 			return
@@ -85,6 +89,10 @@ func cmdAssemble(args []string) {
 
 	if target == "" {
 		target = "elf64"
+	}
+
+	if explain {
+		opt.ExplainEnabled = true
 	}
 
 	var input string
@@ -204,6 +212,7 @@ func cmdBuild(args []string) {
 	optLevel := 0
 	keepTemps := false
 	verbose := false
+	explain := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -221,6 +230,8 @@ func cmdBuild(args []string) {
 			keepTemps = true
 		case args[i] == "-v" || args[i] == "--verbose":
 			verbose = true
+		case args[i] == "--explain":
+			explain = true
 		case args[i] == "-h" || args[i] == "--help":
 			fmt.Print(buildHelpText)
 			return
@@ -241,6 +252,10 @@ func cmdBuild(args []string) {
 
 	if target == "" {
 		target = "elf64"
+	}
+
+	if explain {
+		opt.ExplainEnabled = true
 	}
 
 	// Check tools
@@ -449,6 +464,7 @@ Options:
   -target <arch>    Target platform: elf64 (default) or win64
   -O1               Enable -O1 optimisations (const folding, DCE, peephole)
   -O2               Enable -O2 optimisations (CSE, LICM, redundant load elim, …)
+  --explain         Annotate optimized output with [OPT] comments
   --keep-temps      Keep intermediate .asm and .o/.obj files
   -v, --verbose     Print tool commands and progress
   -h, --help        Show this help message
@@ -456,19 +472,42 @@ Options:
 Examples:
   vas build hello.vas           ->  ./hello (ELF64)
   vas build hello.vas -O1       ->  ./hello (optimised)
-  vas build hello.vas -O2       ->  ./hello (more optimised)
+  vas build hello.vas -O2 --explain -> ./hello with optimization comments
   vas build app.vas -target win64 ->  ./app.exe (Windows PE)
 `
 
 // ── diff subcommand ───────────────────────────────────────────────────────
 
 func cmdDiff(args []string) {
-	if len(args) < 1 || args[0] == "" || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: vas diff <input.vas>")
+	var inputFile string
+	optLevel := 0
+
+	// Parse optional -O1/-O2 before the file name
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-O1":
+			optLevel = 1
+		case "-O2":
+			optLevel = 2
+		case "-h", "--help":
+			fmt.Println("usage: vas diff [-O1|-O2] <input.vas>")
+			fmt.Println("       -O1/-O2  Show optimized output with optimization comments")
+			return
+		default:
+			if !strings.HasPrefix(args[i], "-") {
+				inputFile = args[i]
+			} else {
+				fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+				os.Exit(1)
+			}
+		}
+	}
+
+	if inputFile == "" {
+		fmt.Fprintln(os.Stderr, "usage: vas diff [-O1|-O2] <input.vas>")
 		os.Exit(1)
 	}
 
-	inputFile := args[0]
 	data, err := os.ReadFile(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read file: %v\n", err)
@@ -476,7 +515,17 @@ func cmdDiff(args []string) {
 	}
 
 	source := string(data)
-	output, err := vas.Assemble(source)
+
+	// When optimization level > 0, enable explanation and assemble with optimizations
+	if optLevel > 0 {
+		opt.ExplainEnabled = true
+	}
+	var output string
+	if optLevel > 0 {
+		output, err = vas.AssembleStandaloneTargetOpt(source, "elf64", optLevel)
+	} else {
+		output, err = vas.Assemble(source)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
 		os.Exit(1)
@@ -809,6 +858,7 @@ Usage:
   vas [options] <input file>
   cat <input> | vas [options]
   vas diff <input.vas>      Show VAS source vs NASM output side-by-side
+  vas diff -O2 <input.vas>  Show optimized output with [OPT] comments
   vas prep <input.vas>      Resolve .include directives (print flattened source)
   vas stats <input.vas>     Show instruction and register statistics
   vas check <input.vas>     Validate VAS syntax (exit code: 0=ok, 1=error)
@@ -822,6 +872,7 @@ Options:
   -target <arch>  Target platform: elf64 (default) or win64
   -O1             Enable optimizations (constant folding, dead code elim, peephole)
   -O2             Enable -O2 optimizations (CSE, LICM, redundant load elim, …)
+  --explain       Annotate optimized output with [OPT] comments
   -v, --version   Print version and exit
   -h, --help      Show this help message
   -v, --verbose   Print verbose output (for 'prep' and 'build')
@@ -834,6 +885,7 @@ Build options (for "vas build"):
   -target <arch>    Target platform: elf64 (default) or win64
   -O1               Enable -O1 optimisations (const folding, DCE, peephole)
   -O2               Enable -O2 optimisations (CSE, LICM, redundant load elim, …)
+  --explain         Annotate optimized output with [OPT] comments
   --keep-temps      Keep intermediate .asm and .o/.obj files
   -v, --verbose     Print tool commands and progress
 
