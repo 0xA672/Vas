@@ -79,6 +79,8 @@ func cmdAssemble(args []string) {
 		case args[i] == "-h" || args[i] == "--help":
 			fmt.Print(helpText)
 			return
+		case args[i] == "-":
+			// explicitly read from stdin, so inputFile stays empty
 		case !strings.HasPrefix(args[i], "-"):
 			inputFile = args[i]
 		default:
