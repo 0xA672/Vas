@@ -330,6 +330,20 @@ strlen msg, v1  ; Expands with unique labels (.loop_1, .done_1)
 - `\param` - Parameter substitution
 - `\@` - Unique label generation (auto-incrementing counter)
 
+**Default parameter values** (since v0.1.4): parameters can specify a default value using `name=value` syntax. When a macro is invoked, any omitted argument falls back to its default. Arguments provided by the caller always take precedence.
+
+```asm
+.macro log msg="info", level=1
+  db \msg, \level
+.endm
+
+log                  ; Expands to: db "info", 1
+log "error", 3       ; Expands to: db "error", 3
+log "warning"        ; Expands to: db "warning", 1
+```
+
+Parameters without a default are required. If a required argument is missing, VAS reports an error.
+
 ### Repetition (`.rept` / `.endr`)
 
 ```asm
