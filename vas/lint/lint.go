@@ -27,6 +27,7 @@ func Rules() []Rule {
 		&callerSaveCheck{},
 		&storeByteCheck{},
 		&cmpMemSizeCheck{},
+		&infiniteLoopCheck{},
 	}
 }
 
@@ -509,4 +510,69 @@ func regIndex(s string) int {
 		}
 	}
 	return -1
+}
+
+// ── infinite loop detection ─────────────────────────────────────────────
+
+type infiniteLoopCheck struct{}
+
+func (l *infiniteLoopCheck) Check(lines []string) []Violation {
+	var violations []Violation
+
+	// Build label -> line index map (0-based)
+	labels := map[string]int{}
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasSuffix(trimmed, ":") && !isInstruction(trimmed) {
+			name := strings.TrimSuffix(trimmed, ":")
+			labels[name] = i
+		}
+	}
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) != 2 || strings.ToUpper(fields[0]) != "JMP" {
+			continue
+		}
+		target := fields[1]
+		targetIdx, ok := labels[target]
+		if !ok || targetIdx >= i {
+			continue // forward jump or unknown label
+		}
+
+		// Check lines between target and this JMP (exclusive) for any exit
+		hasExit := false
+		for j := targetIdx; j < i; j++ {
+			l := strings.TrimSpace(lines[j])
+			if l == "" || strings.HasPrefix(l, ";") || strings.HasPrefix(l, "#") {
+				continue
+			}
+			f := strings.Fields(l)
+			if len(f) == 0 {
+				continue
+			}
+			op := strings.ToUpper(f[0])
+			switch op {
+			case "RET", "SYSCALL", "CALL", "HLT",
+				"JE", "JNE", "JG", "JL", "JGE", "JLE":
+				hasExit = true
+			}
+			if hasExit {
+				break
+			}
+		}
+		if !hasExit {
+			violations = append(violations, Violation{
+				Line:     i + 1,
+				Message:  fmt.Sprintf("infinite loop detected: unconditional jump to %q at line %d with no exit", target, targetIdx+1),
+				Severity: "warning",
+				Fix:      "add a condition to leave the loop (e.g., CMP + JE) or a SYSCALL/RET inside the loop body",
+			})
+		}
+	}
+	return violations
 }

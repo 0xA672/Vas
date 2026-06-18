@@ -75,3 +75,29 @@ func TestCmpMemSize(t *testing.T) {
 		t.Error("expected cmp memory size error")
 	}
 }
+
+func TestInfiniteLoop(t *testing.T) {
+	src := "loop:\nJMP loop"
+	violations := Run(src)
+	if len(violations) == 0 {
+		t.Error("expected infinite loop warning")
+	}
+}
+
+func TestInfiniteLoopWithSyscall(t *testing.T) {
+	src := "loop:\nSYSCALL\nJMP loop"
+	violations := Run(src)
+	if len(violations) != 0 {
+		t.Errorf("expected no warning for loop with syscall, got %v", violations)
+	}
+}
+
+func TestNestedInfiniteLoop(t *testing.T) {
+	src := "outer:\ninner:\nJMP inner\nSYSCALL\nJMP outer"
+	violations := Run(src)
+	if len(violations) == 0 {
+		t.Error("expected infinite loop warning for inner loop")
+	}
+	// outer loop has a SYSCALL, so it should not be flagged
+	// but inner is flagged
+}
