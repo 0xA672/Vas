@@ -29,9 +29,49 @@ func TestDivWithXorV3(t *testing.T) {
 }
 
 func TestDivWithInterruptingInstruction(t *testing.T) {
-	src := "ADD V3, V3, V3\nIDIV V1" // v3 modified, not prepared
+	src := "ADD V3, V3, V3\nIDIV V1"
 	violations := Run(src)
 	if len(violations) == 0 {
 		t.Error("expected violation because v3 was modified")
+	}
+}
+
+func TestStackBalance(t *testing.T) {
+	src := "PUSH v0\nPUSH v1\nPOP v0\nRET"
+	violations := Run(src)
+	if len(violations) == 0 {
+		t.Error("expected stack imbalance warning")
+	}
+}
+
+func TestUninitReg(t *testing.T) {
+	src := "ADD v2, v1, v1\nMOVI v0, 60\nSYSCALL"
+	violations := Run(src)
+	if len(violations) == 0 {
+		t.Error("expected uninitialized v1 warning")
+	}
+}
+
+func TestCallerSave(t *testing.T) {
+	src := "CALL func\nADD v2, v2, v2\nRET"
+	violations := Run(src)
+	if len(violations) == 0 {
+		t.Error("expected caller-save v2 warning")
+	}
+}
+
+func TestStoreByte(t *testing.T) {
+	src := "STORE '0', [num_buf]"
+	violations := Run(src)
+	if len(violations) == 0 {
+		t.Error("expected store byte warning")
+	}
+}
+
+func TestCmpMemSize(t *testing.T) {
+	src := "CMP byte [v0], 0"
+	violations := Run(src)
+	if len(violations) == 0 {
+		t.Error("expected cmp memory size error")
 	}
 }
