@@ -40,7 +40,139 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+// ---------------------------------------------------------------------------
+// Package-level precompiled regexps and lookup tables.
+// Recompiling these on every call was the single largest source of allocations.
+// ---------------------------------------------------------------------------
+
+var (
+	// Peephole pass regexes
+	xorZeroRe   = regexp.MustCompile(`^\txor\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+	movZeroRe   = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*0$`)
+	testCmpZero = regexp.MustCompile(`^\tcmp\t([a-z][a-z0-9]+),\s*0$`)
+
+	// LEA fusion regexes
+	peepMovRe     = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+	peepAddRe     = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+	peepSubImmRe  = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*(-?\d+)$`)
+	peepImulOneRe = regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*(\d+)$`)
+	peepShlRe     = regexp.MustCompile(`^\tshl\t([a-z][a-z0-9]+),\s*(\d+)$`)
+
+	// No-op elimination regexes
+	noopAddZeroRe  = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*0$`)
+	noopSubZeroRe  = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*0$`)
+	noopImulOneRe2 = regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*1$`)
+
+	// Push/pop fusion
+	pushRe = regexp.MustCompile(`^\tpush\t([a-z][a-z0-9]+)$`)
+	popRe  = regexp.MustCompile(`^\tpop\t([a-z][a-z0-9]+)$`)
+
+	// XOR zero detection
+	xorSelfRe = regexp.MustCompile(`^\txor\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+
+	// Pair cancellation
+	notRe = regexp.MustCompile(`^\tnot\t([a-z][a-z0-9]+)$`)
+	negRe = regexp.MustCompile(`^\tneg\t([a-z][a-z0-9]+)$`)
+	incRe = regexp.MustCompile(`^\tinc\t([a-z][a-z0-9]+)$`)
+	decRe = regexp.MustCompile(`^\tdec\t([a-z][a-z0-9]+)$`)
+
+	// Push-mod-pop elimination
+	addNegFuseRe = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*1$`)
+	pushModRe    = regexp.MustCompile(`^\t(add|sub|imul|mov|lea)\t([a-z][a-z0-9]+),.*$`)
+
+	// Precomputed register conversion tables
+	regTo32Map = map[string]string{
+		"rax": "eax", "rbx": "ebx", "rcx": "ecx", "rdx": "edx",
+		"rsi": "esi", "rdi": "edi", "rbp": "ebp", "rsp": "esp",
+		"r8": "r8d", "r9": "r9d", "r10": "r10d", "r11": "r11d",
+		"r12": "r12d", "r13": "r13d", "r14": "r14d", "r15": "r15d",
+	}
+	regTo64Map = map[string]string{
+		"eax": "rax", "ebx": "rbx", "ecx": "rcx", "edx": "rdx",
+		"esi": "rsi", "edi": "rdi", "ebp": "rbp", "esp": "rsp",
+		"r8d": "r8", "r9d": "r9", "r10d": "r10", "r11d": "r11",
+		"r12d": "r12", "r13d": "r13", "r14d": "r14", "r15d": "r15",
+	}
+)
+
+func regTo32(reg string) string {
+	if r, ok := regTo32Map[reg]; ok {
+		return r
+	}
+	return reg
+}
+
+func regTo64(reg string) string {
+	if r, ok := regTo64Map[reg]; ok {
+		return r
+	}
+	return reg
+}
+
+// Fast virtual register detector: checks for v0..v12 using simple
+// byte-oriented scanning instead of strings.Split + 13 separate Contains calls.
+func hasVirtualReg(s string) bool {
+	// Scan for "v" followed by a digit
+	for i := 0; i < len(s); i++ {
+		if s[i] == 'v' && i+1 < len(s) {
+			c := s[i+1]
+			if c >= '0' && c <= '9' {
+				// It's vN or vNN — confirm v0..v12
+				if c == '0' || c == '1' {
+					if i+2 >= len(s) {
+						// v0 or v1 at end
+						return true
+					}
+					next := s[i+2]
+					if next < '0' || next > '9' {
+						return true
+					}
+					// Two digit: v10, v11, v12
+					if c == '1' && (next == '0' || next == '1' || next == '2') {
+						if i+3 >= len(s) || s[i+3] < '0' || s[i+3] > '9' {
+							return true
+						}
+					}
+					// Not v0..v12 (e.g. v13+), keep scanning
+					i++
+					continue
+				}
+				// v2..v9 single digit
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Pre-split helper: avoids redundant strings.Split calls in the pipeline.
+// A small pool of line slices keeps GC pressure low on repeated invocations.
+var linePool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]string, 0, 32)
+		return &buf
+	},
+}
+
+func borrowLines(n int) []string {
+	p := linePool.Get().(*[]string)
+	s := *p
+	if cap(s) < n {
+		s = make([]string, 0, n)
+	}
+	return s[:0]
+}
+
+func releaseLines(s []string) {
+	// Don't keep huge slices in the pool
+	if cap(s) <= 4096 {
+		s = s[:0]
+		linePool.Put(&s)
+	}
+}
 
 // ExplainEnabled controls whether peephole passes insert explanatory
 // comments when an optimization is applied.
@@ -62,24 +194,9 @@ func Optimize(input string, level int) string {
 		return input
 	}
 
-	// Check if input contains virtual registers; if not, skip optimization
-	// to avoid incorrect analysis of physical register code
-	hasVirtualRegs := false
-	for _, line := range strings.Split(input, "\n") {
-		if strings.Contains(line, "v0") || strings.Contains(line, "v1") ||
-			strings.Contains(line, "v2") || strings.Contains(line, "v3") ||
-			strings.Contains(line, "v4") || strings.Contains(line, "v5") ||
-			strings.Contains(line, "v6") || strings.Contains(line, "v7") ||
-			strings.Contains(line, "v8") || strings.Contains(line, "v9") ||
-			strings.Contains(line, "v10") || strings.Contains(line, "v11") ||
-			strings.Contains(line, "v12") {
-			hasVirtualRegs = true
-			break
-		}
-	}
-
-	if !hasVirtualRegs {
-		// No virtual registers found - this is likely NASM output, skip optimization
+	// Fast-path: check if input contains any virtual register at all.
+	// Avoids the cost of running all passes on physical-register output.
+	if !hasVirtualReg(input) {
 		return input
 	}
 
@@ -1095,10 +1212,9 @@ func peephole(lines []string) []string {
 }
 
 func xorZero(lines []string) []string {
-	re := regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*0$`)
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
-		m := re.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
+		m := movZeroRe.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
 		if m != nil {
 			reg := m[1]
 			r32 := regTo32(reg)
@@ -1115,10 +1231,9 @@ func xorZero(lines []string) []string {
 }
 
 func testCmp(lines []string) []string {
-	re := regexp.MustCompile(`^\tcmp\t([a-z][a-z0-9]+),\s*0$`)
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
-		m := re.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
+		m := testCmpZero.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
 		if m != nil {
 			reg := m[1]
 			r32 := regTo32(reg)
@@ -1184,33 +1299,28 @@ func leaFuse(lines []string) []string {
 	return result
 }
 
-var movRe = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-var addRe = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-var subImmRe = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*(-?\d+)$`)
-var imulImmRe = regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*(\d+)$`)
-
 func tryLeaFuse(line1, line2 string) (string, bool) {
-	m1 := movRe.FindStringSubmatch(strings.TrimRight(line1, " \t\r"))
+	m1 := peepMovRe.FindStringSubmatch(strings.TrimRight(line1, " \t\r"))
 	if m1 == nil {
 		return "", false
 	}
 	dst, src1 := m1[1], m1[2]
 
-	if m2 := addRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
+	if m2 := peepAddRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
 		addDst, src2 := m2[1], m2[2]
 		if addDst == dst {
 			return fmt.Sprintf("\tlea\t%s, [%s+%s]", dst, src1, src2), true
 		}
 	}
 
-	if m2 := subImmRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
+	if m2 := peepSubImmRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
 		subDst, imm := m2[1], m2[2]
 		if subDst == dst {
 			return fmt.Sprintf("\tlea\t%s, [%s-%s]", dst, src1, imm), true
 		}
 	}
 
-	if m2 := imulImmRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
+	if m2 := peepImulOneRe.FindStringSubmatch(strings.TrimRight(line2, " \t\r")); m2 != nil {
 		imulDst, kStr := m2[1], m2[2]
 		if imulDst == dst {
 			k, err := strconv.Atoi(kStr)
@@ -1630,33 +1740,28 @@ func tailCallOpt(lines []string) []string {
 }
 
 func noopElim(lines []string) []string {
-	movRe := regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-	addZero := regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*0$`)
-	subZero := regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*0$`)
-	imulOne := regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*1$`)
-
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
 		trimmed := strings.TrimRight(line, " \t\r")
-		if m := movRe.FindStringSubmatch(trimmed); m != nil && m[1] == m[2] {
+		if m := peepMovRe.FindStringSubmatch(trimmed); m != nil && m[1] == m[2] {
 			if ExplainEnabled {
 				result = append(result, fmt.Sprintf("; [OPT] removed no-op: mov %s, %s", m[1], m[2]))
 			}
 			continue
 		}
-		if addZero.MatchString(trimmed) {
+		if noopAddZeroRe.MatchString(trimmed) {
 			if ExplainEnabled {
 				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
 			}
 			continue
 		}
-		if subZero.MatchString(trimmed) {
+		if noopSubZeroRe.MatchString(trimmed) {
 			if ExplainEnabled {
 				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
 			}
 			continue
 		}
-		if imulOne.MatchString(trimmed) {
+		if noopImulOneRe2.MatchString(trimmed) {
 			if ExplainEnabled {
 				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
 			}
@@ -1668,9 +1773,6 @@ func noopElim(lines []string) []string {
 }
 
 func pushPopMov(lines []string) []string {
-	pushRe := regexp.MustCompile(`^\tpush\t([a-z][a-z0-9]+)$`)
-	popRe := regexp.MustCompile(`^\tpop\t([a-z][a-z0-9]+)$`)
-
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
@@ -1694,36 +1796,45 @@ func pushPopMov(lines []string) []string {
 }
 
 func xorMovElim(lines []string) []string {
-	xorRe := regexp.MustCompile(`^\txor\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-
-	to64 := map[string]string{
-		"eax": "rax", "ebx": "rbx", "ecx": "rcx", "edx": "rdx",
-		"esi": "rsi", "edi": "rdi", "ebp": "rbp", "esp": "rsp",
-		"r8d": "r8", "r9d": "r9", "r10d": "r10", "r11d": "r11",
-		"r12d": "r12", "r13d": "r13", "r14d": "r14", "r15d": "r15",
-	}
-
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
 		if i+1 < len(lines) {
-			m1 := xorRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			m1 := xorSelfRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
 			if m1 != nil && m1[1] == m1[2] {
 				reg32 := m1[1]
-				reg64 := reg32
-				if r, ok := to64[reg32]; ok {
-					reg64 = r
-				}
-				movAfterXor := regexp.MustCompile(fmt.Sprintf(`^\tmov\t%s,\s*([a-z][a-z0-9]+)$`, regexp.QuoteMeta(reg64)))
-				m2 := movAfterXor.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
-				if m2 != nil {
-					if ExplainEnabled {
-						result = append(result, fmt.Sprintf("; [OPT] xor %s,%s; mov %s,%s  replaced by mov %s, %s",
-							m1[1], m1[2], reg64, m2[1], reg64, m2[1]))
+				reg64 := regTo64(reg32)
+				// Build a regex that matches: mov <reg64>, <src-reg>
+				// We construct this manually by checking the string prefix instead of a regex
+				// to avoid per-call regex compilation.
+				prefix := fmt.Sprintf("\tmov\t%s,", reg64)
+				next := strings.TrimRight(lines[i+1], " \t\r")
+				if strings.HasPrefix(next, prefix) {
+					// Extract src register
+					rest := strings.TrimSpace(next[len(prefix):])
+					if rest != "" {
+						srcField := strings.Fields(rest)
+						if len(srcField) > 0 && len(srcField[0]) > 0 && srcField[0] != "" {
+							srcReg := srcField[0]
+							// Validate it looks like a register
+							valid := true
+							for _, c := range srcReg {
+								if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+									valid = false
+									break
+								}
+							}
+							if valid {
+								if ExplainEnabled {
+									result = append(result, fmt.Sprintf("; [OPT] xor %s,%s; mov %s,%s  replaced by mov %s, %s",
+										m1[1], m1[2], reg64, srcReg, reg64, srcReg))
+								}
+								result = append(result, fmt.Sprintf("\tmov\t%s, %s", reg64, srcReg))
+								i += 2
+								continue
+							}
+						}
 					}
-					result = append(result, fmt.Sprintf("\tmov\t%s, %s", reg64, m2[1]))
-					i += 2
-					continue
 				}
 			}
 		}
@@ -1734,15 +1845,11 @@ func xorMovElim(lines []string) []string {
 }
 
 func shlAddFuse(lines []string) []string {
-	movRe := regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-	shlRe := regexp.MustCompile(`^\tshl\t([a-z][a-z0-9]+),\s*(\d+)$`)
-	addRe := regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
 		if i+2 < len(lines) {
-			m1 := movRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			m1 := peepMovRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
 			if m1 == nil {
 				result = append(result, lines[i])
 				i++
@@ -1750,7 +1857,7 @@ func shlAddFuse(lines []string) []string {
 			}
 			movDst, movSrc := m1[1], m1[2]
 
-			m2 := shlRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+			m2 := peepShlRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 			if m2 == nil || m2[1] != movDst {
 				result = append(result, lines[i])
 				i++
@@ -1758,7 +1865,7 @@ func shlAddFuse(lines []string) []string {
 			}
 			shiftStr := m2[2]
 
-			m3 := addRe.FindStringSubmatch(strings.TrimRight(lines[i+2], " \t\r"))
+			m3 := peepAddRe.FindStringSubmatch(strings.TrimRight(lines[i+2], " \t\r"))
 			if m3 == nil || m3[1] != movDst || m3[2] != movSrc {
 				result = append(result, lines[i])
 				i++
@@ -1788,14 +1895,11 @@ func shlAddFuse(lines []string) []string {
 }
 
 func addNegFuse(lines []string) []string {
-	add1Re := regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*1$`)
-	negRe := regexp.MustCompile(`^\tneg\t([a-z][a-z0-9]+)$`)
-
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
 		if i+1 < len(lines) {
-			m1 := add1Re.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			m1 := addNegFuseRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
 			if m1 == nil {
 				result = append(result, lines[i])
 				i++
@@ -1820,57 +1924,60 @@ func addNegFuse(lines []string) []string {
 }
 
 func cancelPairElim(lines []string) []string {
-	notRe := regexp.MustCompile(`^\tnot\t([a-z][a-z0-9]+)$`)
-	negRe := regexp.MustCompile(`^\tneg\t([a-z][a-z0-9]+)$`)
-	incRe := regexp.MustCompile(`^\tinc\t([a-z][a-z0-9]+)$`)
-	decRe := regexp.MustCompile(`^\tdec\t([a-z][a-z0-9]+)$`)
-
-	matchReg := func(re *regexp.Regexp, line string) string {
-		m := re.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
-		if m != nil {
-			return m[1]
-		}
-		return ""
-	}
-
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
 		if i+1 < len(lines) {
-			reg := matchReg(notRe, lines[i])
-			if reg != "" && matchReg(notRe, lines[i+1]) == reg {
-				if ExplainEnabled {
-					result = append(result, fmt.Sprintf("; [OPT] removed redundant not %s; not %s", reg, reg))
+			m1 := notRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			if m1 != nil {
+				reg := m1[1]
+				m2 := notRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+				if m2 != nil && m2[1] == reg {
+					if ExplainEnabled {
+						result = append(result, fmt.Sprintf("; [OPT] removed redundant not %s; not %s", reg, reg))
+					}
+					i += 2
+					continue
 				}
-				i += 2
-				continue
 			}
 
-			reg = matchReg(negRe, lines[i])
-			if reg != "" && matchReg(negRe, lines[i+1]) == reg {
-				if ExplainEnabled {
-					result = append(result, fmt.Sprintf("; [OPT] removed redundant neg %s; neg %s", reg, reg))
+			m1 = negRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			if m1 != nil {
+				reg := m1[1]
+				m2 := negRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+				if m2 != nil && m2[1] == reg {
+					if ExplainEnabled {
+						result = append(result, fmt.Sprintf("; [OPT] removed redundant neg %s; neg %s", reg, reg))
+					}
+					i += 2
+					continue
 				}
-				i += 2
-				continue
 			}
 
-			reg = matchReg(incRe, lines[i])
-			if reg != "" && matchReg(decRe, lines[i+1]) == reg {
-				if ExplainEnabled {
-					result = append(result, fmt.Sprintf("; [OPT] removed redundant inc %s; dec %s", reg, reg))
+			m1 = incRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			if m1 != nil {
+				reg := m1[1]
+				m2 := decRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+				if m2 != nil && m2[1] == reg {
+					if ExplainEnabled {
+						result = append(result, fmt.Sprintf("; [OPT] removed redundant inc %s; dec %s", reg, reg))
+					}
+					i += 2
+					continue
 				}
-				i += 2
-				continue
 			}
 
-			reg = matchReg(decRe, lines[i])
-			if reg != "" && matchReg(incRe, lines[i+1]) == reg {
-				if ExplainEnabled {
-					result = append(result, fmt.Sprintf("; [OPT] removed redundant dec %s; inc %s", reg, reg))
+			m1 = decRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
+			if m1 != nil {
+				reg := m1[1]
+				m2 := incRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+				if m2 != nil && m2[1] == reg {
+					if ExplainEnabled {
+						result = append(result, fmt.Sprintf("; [OPT] removed redundant dec %s; inc %s", reg, reg))
+					}
+					i += 2
+					continue
 				}
-				i += 2
-				continue
 			}
 		}
 		result = append(result, lines[i])
@@ -1882,10 +1989,6 @@ func cancelPairElim(lines []string) []string {
 // pushModPopElim removes push; instr reg, ... ; pop reg triples
 // when the pop restores the old value and the intermediate result dies.
 func pushModPopElim(lines []string) []string {
-	pushRe := regexp.MustCompile(`^\tpush\t([a-z][a-z0-9]+)$`)
-	popRe := regexp.MustCompile(`^\tpop\t([a-z][a-z0-9]+)$`)
-	modRe := regexp.MustCompile(`^\t(add|sub|imul|mov|lea)\t([a-z][a-z0-9]+),.*$`)
-
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
@@ -1894,7 +1997,7 @@ func pushModPopElim(lines []string) []string {
 			m3 := popRe.FindStringSubmatch(strings.TrimRight(lines[i+2], " \t\r"))
 			if m1 != nil && m3 != nil && m1[1] == m3[1] {
 				reg := m1[1]
-				m2 := modRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
+				m2 := pushModRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil && m2[2] == reg {
 					if ExplainEnabled {
 						result = append(result, fmt.Sprintf("; [OPT] removed dead push %s; %s %s; pop %s",
@@ -1909,17 +2012,4 @@ func pushModPopElim(lines []string) []string {
 		i++
 	}
 	return result
-}
-
-func regTo32(reg string) string {
-	m := map[string]string{
-		"rax": "eax", "rbx": "ebx", "rcx": "ecx", "rdx": "edx",
-		"rsi": "esi", "rdi": "edi", "rbp": "ebp", "rsp": "esp",
-		"r8": "r8d", "r9": "r9d", "r10": "r10d", "r11": "r11d",
-		"r12": "r12d", "r13": "r13d", "r14": "r14d", "r15": "r15d",
-	}
-	if r, ok := m[reg]; ok {
-		return r
-	}
-	return reg
 }

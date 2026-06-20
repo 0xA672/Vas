@@ -2,7 +2,9 @@ package lint
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 )
 
 // Violation represents a detected dangerous instruction pattern.
@@ -32,12 +34,39 @@ func Rules() []Rule {
 }
 
 // Run applies all rules to the source and returns all violations.
+// Rules run concurrently across goroutines; results are merged and sorted
+// by line number for stable output.
 func Run(source string) []Violation {
 	lines := strings.Split(source, "\n")
-	var all []Violation
-	for _, rule := range Rules() {
-		all = append(all, rule.Check(lines)...)
+	rules := Rules()
+
+	// For very small inputs (a few lines), the overhead of goroutines
+	// is not worth it — fall back to sequential.
+	if len(lines) < 64 {
+		var all []Violation
+		for _, rule := range rules {
+			all = append(all, rule.Check(lines)...)
+		}
+		sort.Slice(all, func(i, j int) bool { return all[i].Line < all[j].Line })
+		return all
 	}
+
+	var wg sync.WaitGroup
+	results := make([][]Violation, len(rules))
+	for i, rule := range rules {
+		wg.Add(1)
+		go func(i int, rule Rule) {
+			defer wg.Done()
+			results[i] = rule.Check(lines)
+		}(i, rule)
+	}
+	wg.Wait()
+
+	var all []Violation
+	for _, r := range results {
+		all = append(all, r...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Line < all[j].Line })
 	return all
 }
 
