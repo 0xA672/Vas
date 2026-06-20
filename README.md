@@ -610,11 +610,15 @@ vas/
 +-- go.mod                   # Go module
 +-- vas/
 |   +-- core.go              # Core translation: scan -> expand -> wrap (includes regMap)
+|   +-- core_test.go         # Tests for core translation
 |   +-- prep.go              # Preprocessor: includes, macros, constants, conditionals
+|   +-- prep_test.go         # Tests for preprocessor
 |   +-- lint/
 |   |   +-- lint.go          # Linting and static analysis
+|   |   +-- lint_test.go     # Tests for linting
 |   +-- opt/
 |   |   +-- opt.go           # -O1 / -O2 optimizer passes
+|   |   +-- opt_test.go      # Tests for optimization passes
 |   +-- arch/
 |       +-- arch.go          # Architecture-specific target definitions (elf64, win64)
 +-- test/
