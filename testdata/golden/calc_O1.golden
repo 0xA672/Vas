@@ -7,8 +7,6 @@
 ;   ld calc.o -o calc
 ;   ./calc; echo $?    -> should output 55
 
-	default rel
-
 	section .text
 	global _start
 

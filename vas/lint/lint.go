@@ -2,9 +2,7 @@ package lint
 
 import (
 	"fmt"
-	"sort"
 	"strings"
-	"sync"
 )
 
 // Violation represents a detected dangerous instruction pattern.
@@ -34,39 +32,12 @@ func Rules() []Rule {
 }
 
 // Run applies all rules to the source and returns all violations.
-// Rules run concurrently across goroutines; results are merged and sorted
-// by line number for stable output.
 func Run(source string) []Violation {
 	lines := strings.Split(source, "\n")
-	rules := Rules()
-
-	// For very small inputs (a few lines), the overhead of goroutines
-	// is not worth it — fall back to sequential.
-	if len(lines) < 64 {
-		var all []Violation
-		for _, rule := range rules {
-			all = append(all, rule.Check(lines)...)
-		}
-		sort.Slice(all, func(i, j int) bool { return all[i].Line < all[j].Line })
-		return all
-	}
-
-	var wg sync.WaitGroup
-	results := make([][]Violation, len(rules))
-	for i, rule := range rules {
-		wg.Add(1)
-		go func(i int, rule Rule) {
-			defer wg.Done()
-			results[i] = rule.Check(lines)
-		}(i, rule)
-	}
-	wg.Wait()
-
 	var all []Violation
-	for _, r := range results {
-		all = append(all, r...)
+	for _, rule := range Rules() {
+		all = append(all, rule.Check(lines)...)
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].Line < all[j].Line })
 	return all
 }
 
@@ -255,7 +226,7 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 	funcs := splitFuncs(lines)
 	for _, fn := range funcs {
 		saved := map[string]bool{}
-		clobbered := map[string]bool{}
+		lastWrite := map[string]int{}
 		hasCall := false
 		for _, idx := range fn {
 			line := strings.TrimSpace(lines[idx])
@@ -268,7 +239,7 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 			}
 			op := strings.ToUpper(fields[0])
 			if op == "PUSH" {
-				reg := strings.TrimRight(fields[1], ",")
+				reg := fields[1]
 				if callerSaveRegs[reg] {
 					saved[reg] = true
 				}
@@ -276,33 +247,34 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 				hasCall = true
 				for reg := range callerSaveRegs {
 					if !saved[reg] {
-						clobbered[reg] = true
+						lastWrite[reg] = 0
 					}
 				}
 				saved = map[string]bool{}
 			} else if op == "POP" {
-				reg := strings.TrimRight(fields[1], ",")
+				reg := fields[1]
 				if callerSaveRegs[reg] {
-					delete(clobbered, reg)
+					delete(lastWrite, reg)
 				}
 			} else {
 				if hasCall {
 					for _, reg := range readRegs(op, fields[1:]) {
 						regName := fmt.Sprintf("v%d", reg)
-						if callerSaveRegs[regName] && clobbered[regName] {
-							violations = append(violations, Violation{
-								Line:     idx + 1,
-								Message:  fmt.Sprintf("register %s (caller-saved) may be used after call without being preserved", regName),
-								Severity: "warning",
-								Fix:      fmt.Sprintf("push %s before call and pop after, or reload after call", regName),
-							})
+						if callerSaveRegs[regName] {
+							if _, exists := lastWrite[regName]; !exists {
+								violations = append(violations, Violation{
+									Line:     idx + 1,
+									Message:  fmt.Sprintf("register %s (caller-saved) may be used after call without being preserved", regName),
+									Severity: "warning",
+									Fix:      fmt.Sprintf("push %s before call and pop after, or reload after call", regName),
+								})
+							}
 						}
 					}
 				}
 				dst := dstReg(op, fields[1:])
 				if dst >= 0 {
-					dstName := strings.TrimRight(fields[1], ",")
-					delete(clobbered, dstName)
+					lastWrite[fields[1]] = idx
 				}
 			}
 		}

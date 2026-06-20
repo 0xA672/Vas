@@ -1,13 +1,9 @@
 ; fib.vas -- iterative Fibonacci: F(0)=0, F(1)=1, F(n)=F(n-1)+F(n-2)
-; Computes F(20) = 6765 and returns it as exit code
+; Computes F(20) and returns it as exit code
 ; Tests: MOVI, ADD, CMP, JGE, JMP, multiple virtual registers, loops
 
-	default rel
-
-	section .text
 	global _start
 
-_start:
 	xor	eax, eax
 	mov	rbx, 1
 	mov	rcx, 20
@@ -16,17 +12,14 @@ _start:
 loop:
 	cmp	rdx, rcx
 	jge	done
-    
 	mov	rsi, rbx
 	add	rbx, rax
 	mov	rax, rsi
-    
 	mov	rsi, 1
 	add	rdx, rsi
 	jmp	loop
 
 done:
     ; v1 holds F(20) = 6765
-	mov	rdi, rbx
-	mov	rax, 60
-	syscall
+	mov	rax, rbx
+	ret
