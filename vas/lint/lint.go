@@ -226,7 +226,7 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 	funcs := splitFuncs(lines)
 	for _, fn := range funcs {
 		saved := map[string]bool{}
-		lastWrite := map[string]int{}
+		clobbered := map[string]bool{}
 		hasCall := false
 		for _, idx := range fn {
 			line := strings.TrimSpace(lines[idx])
@@ -239,7 +239,7 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 			}
 			op := strings.ToUpper(fields[0])
 			if op == "PUSH" {
-				reg := fields[1]
+				reg := strings.TrimRight(fields[1], ",")
 				if callerSaveRegs[reg] {
 					saved[reg] = true
 				}
@@ -247,34 +247,33 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 				hasCall = true
 				for reg := range callerSaveRegs {
 					if !saved[reg] {
-						lastWrite[reg] = 0
+						clobbered[reg] = true
 					}
 				}
 				saved = map[string]bool{}
 			} else if op == "POP" {
-				reg := fields[1]
+				reg := strings.TrimRight(fields[1], ",")
 				if callerSaveRegs[reg] {
-					delete(lastWrite, reg)
+					delete(clobbered, reg)
 				}
 			} else {
 				if hasCall {
 					for _, reg := range readRegs(op, fields[1:]) {
 						regName := fmt.Sprintf("v%d", reg)
-						if callerSaveRegs[regName] {
-							if _, exists := lastWrite[regName]; !exists {
-								violations = append(violations, Violation{
-									Line:     idx + 1,
-									Message:  fmt.Sprintf("register %s (caller-saved) may be used after call without being preserved", regName),
-									Severity: "warning",
-									Fix:      fmt.Sprintf("push %s before call and pop after, or reload after call", regName),
-								})
-							}
+						if callerSaveRegs[regName] && clobbered[regName] {
+							violations = append(violations, Violation{
+								Line:     idx + 1,
+								Message:  fmt.Sprintf("register %s (caller-saved) may be used after call without being preserved", regName),
+								Severity: "warning",
+								Fix:      fmt.Sprintf("push %s before call and pop after, or reload after call", regName),
+							})
 						}
 					}
 				}
 				dst := dstReg(op, fields[1:])
 				if dst >= 0 {
-					lastWrite[fields[1]] = idx
+					dstName := strings.TrimRight(fields[1], ",")
+					delete(clobbered, dstName)
 				}
 			}
 		}
