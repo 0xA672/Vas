@@ -1,8 +1,16 @@
 ; sort.vas -- bubble sort an array of 8 qwords
 ; Tests: LOAD/STORE with computed address, nested loops, CMP/conditional jumps
 
+	default rel
+
+	section .data
+data:
+	dq 5, 3, 8, 1, 9, 2, 7, 4
+
+	section .text
 	global _start
 
+_start:
 	mov	rax, 8
 	push	rax
 	xor	ebx, ebx
@@ -41,6 +49,7 @@ inner:
 	jle	no_swap
 
 ; swap: STORE a[j+1] (v6) to a[j], a[j] (v7) to a[j+1]
+swap:
 	mov	rdi, rdx
 	shl	rdi, 3
 	lea	rax, [data]
@@ -72,8 +81,8 @@ done:
 	pop	rax
 	lea	rax, [data]
 	mov	rax, [rax]
-	ret
-
-	section .data
-data:
-	dq 5, 3, 8, 1, 9, 2, 7, 4
+    
+    ; exit with result
+	mov	rdi, rax
+	mov	rax, 60
+	syscall
