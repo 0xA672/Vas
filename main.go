@@ -50,6 +50,8 @@ func main() {
 		fmt.Println("vas " + Version)
 	case "-h", "--help":
 		fmt.Print(helpText)
+	case "test":
+		cmdTest(args[1:])
 	default:
 		cmdAssemble(args)
 	}
@@ -761,6 +763,107 @@ func analyzeVAS(input string) *vasStats {
 	return s
 }
 
+// ── test subcommand ───────────────────────────────────────────────────────
+
+func cmdTest(args []string) {
+	var inputFile string
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			inputFile = a
+			break
+		}
+	}
+	if inputFile == "" {
+		fmt.Fprintln(os.Stderr, "usage: vas test <input.vas>")
+		os.Exit(1)
+	}
+
+	data, err := os.ReadFile(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	source := string(data)
+	preprocessed, cases, err := vas.PreprocessTestable(source, filepath.Dir(inputFile))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "preprocess error: %v\n", err)
+		os.Exit(1)
+	}
+	_ = preprocessed
+
+	if len(cases) == 0 {
+		fmt.Println("no test cases found.")
+		return
+	}
+
+	failed := 0
+	for _, tc := range cases {
+		fmt.Printf("test: %s... ", tc.Name)
+		prog := fmt.Sprintf("section .text\nglobal _start\n_start:\n%s\n", tc.Code)
+		asm, err := vas.AssembleStandalone(prog)
+		if err != nil {
+			fmt.Printf("FAIL (assemble: %v)\n", err)
+			failed++
+			continue
+		}
+
+		dir, _ := os.MkdirTemp("", "vas_test")
+		asmFile := filepath.Join(dir, "test.asm")
+		binFile := filepath.Join(dir, "test")
+		os.WriteFile(asmFile, []byte(asm), 0644)
+
+		if out, err := exec.Command("nasm", "-f", "elf64", "-o", binFile+".o", asmFile).CombinedOutput(); err != nil {
+			fmt.Printf("FAIL (nasm: %v: %s)\n", err, out)
+			failed++
+			continue
+		}
+		if out, err := exec.Command("ld", "-o", binFile, binFile+".o").CombinedOutput(); err != nil {
+			fmt.Printf("FAIL (ld: %v: %s)\n", err, out)
+			failed++
+			continue
+		}
+
+		cmd := exec.Command(binFile)
+		var stdout strings.Builder
+		cmd.Stdout = &stdout
+		err = cmd.Run()
+		exitCode := 0
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else if err != nil {
+			fmt.Printf("FAIL (run: %v)\n", err)
+			failed++
+			continue
+		}
+		output := strings.TrimSpace(stdout.String())
+
+		match := true
+		if tc.ExpectExit != -1 && exitCode != tc.ExpectExit {
+			fmt.Printf("FAIL (exit code: %d expected %d)\n", exitCode, tc.ExpectExit)
+			match = false
+		}
+		if tc.ExpectStdout != "" && output != tc.ExpectStdout {
+			fmt.Printf("FAIL (stdout: %q expected %q)\n", output, tc.ExpectStdout)
+			match = false
+		}
+		if match {
+			fmt.Println("ok")
+		} else {
+			failed++
+		}
+
+		os.RemoveAll(dir)
+	}
+
+	if failed > 0 {
+		fmt.Printf("\n%d test(s) failed.\n", failed)
+		os.Exit(1)
+	} else {
+		fmt.Println("\nall tests passed.")
+	}
+}
+
 // ── list ──────────────────────────────────────────────────────────────────
 
 func cmdList() {
@@ -849,6 +952,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "       vas stats <input.vas>")
 	fmt.Fprintln(os.Stderr, "       vas check [--strict] <input.vas>")
 	fmt.Fprintln(os.Stderr, "       vas build <input.vas> [build-options]")
+	fmt.Fprintln(os.Stderr, "       vas test <input.vas>")
 	fmt.Fprintln(os.Stderr, "       vas list")
 	fmt.Fprintln(os.Stderr, "       vas version")
 	os.Exit(1)
@@ -866,6 +970,7 @@ Usage:
   vas check <input.vas>     Validate VAS syntax (exit code: 0=ok, 1=error)
   vas check --strict <input.vas>  Also fail on dangerous instruction patterns
   vas build <input.vas>     Build a .vas file into an executable
+  vas test <input.vas>    Run embedded .test blocks
   vas list                  List all supported instructions and syntax
   vas version               Print version and exit
 
