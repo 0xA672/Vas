@@ -40,7 +40,7 @@ func testPrep(t *testing.T, src string) (string, error) {
 func TestPreprocessBasic(t *testing.T) {
 	dir := t.TempDir()
 	lib := filepath.Join(dir, "lib.vas")
-	os.WriteFile(lib, []byte("; lib\n.once\nADD v0, v0, v1\nRET\n"), 0644)
+	os.WriteFile(lib, []byte("; lib\n.once\nlib_func:\nADD v0, v0, v1\nRET\n"), 0644)
 	src := `.include "lib.vas"
 MAIN:
   CALL lib_func

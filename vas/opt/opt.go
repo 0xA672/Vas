@@ -48,135 +48,158 @@ import (
 // Recompiling these on every call was the single largest source of allocations.
 // ---------------------------------------------------------------------------
 
-var (
-	// Peephole pass regexes
-	xorZeroRe   = regexp.MustCompile(`^\txor\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-	movZeroRe   = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*0$`)
-	testCmpZero = regexp.MustCompile(`^\tcmp\t([a-z][a-z0-9]+),\s*0$`)
-
-	// LEA fusion regexes
-	peepMovRe    = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-	peepAddRe    = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-	peepSubImmRe = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*(-?\d+)$`)
-	peepImulOneRe = regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*(\d+)$`)
-	peepShlRe    = regexp.MustCompile(`^\tshl\t([a-z][a-z0-9]+),\s*(\d+)$`)
-
-	// No-op elimination regexes
-	noopAddZeroRe  = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*0$`)
-	noopSubZeroRe  = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*0$`)
-	noopImulOneRe2 = regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*1$`)
-
-	// Push/pop fusion
-	pushRe = regexp.MustCompile(`^\tpush\t([a-z][a-z0-9]+)$`)
-	popRe  = regexp.MustCompile(`^\tpop\t([a-z][a-z0-9]+)$`)
-
-	// XOR zero detection
-	xorSelfRe = regexp.MustCompile(`^\txor\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-
-	// Pair cancellation
-	notRe = regexp.MustCompile(`^\tnot\t([a-z][a-z0-9]+)$`)
-	negRe = regexp.MustCompile(`^\tneg\t([a-z][a-z0-9]+)$`)
-	incRe = regexp.MustCompile(`^\tinc\t([a-z][a-z0-9]+)$`)
-	decRe = regexp.MustCompile(`^\tdec\t([a-z][a-z0-9]+)$`)
-
-	// Push-mod-pop elimination
-	addNegFuseRe = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*1$`)
-	pushModRe    = regexp.MustCompile(`^\t(add|sub|imul|mov|lea)\t([a-z][a-z0-9]+),.*$`)
-
-	// Precomputed register conversion tables
-	regTo32Map = map[string]string{
-		"rax": "eax", "rbx": "ebx", "rcx": "ecx", "rdx": "edx",
-		"rsi": "esi", "rdi": "edi", "rbp": "ebp", "rsp": "esp",
-		"r8": "r8d", "r9": "r9d", "r10": "r10d", "r11": "r11d",
-		"r12": "r12d", "r13": "r13d", "r14": "r14d", "r15": "r15d",
-	}
-	regTo64Map = map[string]string{
-		"eax": "rax", "ebx": "rbx", "ecx": "rcx", "edx": "rdx",
-		"esi": "rsi", "edi": "rdi", "ebp": "rbp", "esp": "rsp",
-		"r8d": "r8", "r9d": "r9", "r10d": "r10", "r11d": "r11",
-		"r12d": "r12", "r13d": "r13", "r14d": "r14", "r15d": "r15",
-	}
-)
-
+// regTo32 returns the 32-bit name for a 64-bit register.
 func regTo32(reg string) string {
-	if r, ok := regTo32Map[reg]; ok {
-		return r
+	switch reg {
+	case "rax":
+		return "eax"
+	case "rbx":
+		return "ebx"
+	case "rcx":
+		return "ecx"
+	case "rdx":
+		return "edx"
+	case "rsi":
+		return "esi"
+	case "rdi":
+		return "edi"
+	case "rbp":
+		return "ebp"
+	case "rsp":
+		return "esp"
+	case "r8":
+		return "r8d"
+	case "r9":
+		return "r9d"
+	case "r10":
+		return "r10d"
+	case "r11":
+		return "r11d"
+	case "r12":
+		return "r12d"
+	case "r13":
+		return "r13d"
+	case "r14":
+		return "r14d"
+	case "r15":
+		return "r15d"
 	}
 	return reg
 }
 
+// regTo64 returns the 64-bit name for a 32-bit register.
 func regTo64(reg string) string {
-	if r, ok := regTo64Map[reg]; ok {
-		return r
+	switch reg {
+	case "eax":
+		return "rax"
+	case "ebx":
+		return "rbx"
+	case "ecx":
+		return "rcx"
+	case "edx":
+		return "rdx"
+	case "esi":
+		return "rsi"
+	case "edi":
+		return "rdi"
+	case "ebp":
+		return "rbp"
+	case "esp":
+		return "rsp"
+	case "r8d":
+		return "r8"
+	case "r9d":
+		return "r9"
+	case "r10d":
+		return "r10"
+	case "r11d":
+		return "r11"
+	case "r12d":
+		return "r12"
+	case "r13d":
+		return "r13"
+	case "r14d":
+		return "r14"
+	case "r15d":
+		return "r15"
 	}
 	return reg
 }
 
-// Fast virtual register detector: checks for v0..v12 using simple
-// byte-oriented scanning instead of strings.Split + 13 separate Contains calls.
+// ExplainEnabled controls whether peephole passes insert explanatory
+// comments when an optimization is applied. Use SetExplain to update it
+// safely from concurrent goroutines.
+var explainEnabled bool
+var explainMu sync.RWMutex
+
+// SetExplain atomically updates the explain mode flag.
+func SetExplain(v bool) {
+	explainMu.Lock()
+	explainEnabled = v
+	explainMu.Unlock()
+}
+
+// isExplain returns the current explain mode.
+func isExplain() bool {
+	explainMu.RLock()
+	defer explainMu.RUnlock()
+	return explainEnabled
+}
+
+// hasVirtualReg reports whether s contains any virtual register token (v0..v12).
+// It correctly rejects v13+ and other invalid register names.
 func hasVirtualReg(s string) bool {
-	// Scan for "v" followed by a digit
 	for i := 0; i < len(s); i++ {
 		if s[i] == 'v' && i+1 < len(s) {
 			c := s[i+1]
 			if c >= '0' && c <= '9' {
-				// It's vN or vNN — confirm v0..v12
-				if c == '0' || c == '1' {
-					if i+2 >= len(s) {
-						// v0 or v1 at end
-						return true
-					}
-					next := s[i+2]
-					if next < '0' || next > '9' {
-						return true
-					}
-					// Two digit: v10, v11, v12
-					if c == '1' && (next == '0' || next == '1' || next == '2') {
-						if i+3 >= len(s) || s[i+3] < '0' || s[i+3] > '9' {
+				if i+2 >= len(s) {
+					return true // v0..v9 at end of string
+				}
+				if i+2 < len(s) && s[i+2] >= '0' && s[i+2] <= '9' {
+					// Two digits: check v10..v12
+					if i+3 >= len(s) || (s[i+3] < '0' || s[i+3] > '9') {
+						n := int(c-'0')*10 + int(s[i+2]-'0')
+						if n <= 12 {
 							return true
 						}
+						// v13+, skip both digits and continue
+						i++
+						continue
 					}
-					// Not v0..v12 (e.g. v13+), keep scanning
+					// 3+ digits: skip
 					i++
 					continue
 				}
-				// v2..v9 single digit
-				return true
+				return true // v0..v9
 			}
 		}
 	}
 	return false
 }
 
-// Pre-split helper: avoids redundant strings.Split calls in the pipeline.
-// A small pool of line slices keeps GC pressure low on repeated invocations.
-var linePool = sync.Pool{
-	New: func() interface{} {
-		buf := make([]string, 0, 32)
-		return &buf
-	},
-}
-
-func borrowLines(n int) []string {
-	p := linePool.Get().(*[]string)
-	s := *p
-	if cap(s) < n {
-		s = make([]string, 0, n)
-	}
-	return s[:0]
-}
-
-func releaseLines(s []string) {
-	// Don't keep huge slices in the pool
-	if cap(s) <= 4096 {
-		s = s[:0]
-		linePool.Put(&s)
-	}
-}
-
-// ExplainEnabled controls whether peephole passes insert explanatory
-// comments when an optimization is applied.
-var ExplainEnabled bool
+// Package-level precompiled regexps. Compiled once at init, reused across all passes.
+var (
+	movZeroRe     = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*0$`)
+	testCmpZeroRe = regexp.MustCompile(`^\tcmp\t([a-z][a-z0-9]+),\s*0$`)
+	peepMovRe     = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+	peepAddRe     = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+	peepSubImmRe  = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*(-?\d+)$`)
+	peepImulOneRe = regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*(\d+)$`)
+	peepShlRe     = regexp.MustCompile(`^\tshl\t([a-z][a-z0-9]+),\s*(\d+)$`)
+	noopAddZeroRe = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*0$`)
+	noopSubZeroRe = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*0$`)
+	noopImulOneRe = regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*1$`)
+	pushRe        = regexp.MustCompile(`^\tpush\t([a-z][a-z0-9]+)$`)
+	popRe         = regexp.MustCompile(`^\tpop\t([a-z][a-z0-9]+)$`)
+	xorSelfRe     = regexp.MustCompile(`^\txor\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+	notRe         = regexp.MustCompile(`^\tnot\t([a-z][a-z0-9]+)$`)
+	negRe         = regexp.MustCompile(`^\tneg\t([a-z][a-z0-9]+)$`)
+	incRe         = regexp.MustCompile(`^\tinc\t([a-z][a-z0-9]+)$`)
+	decRe         = regexp.MustCompile(`^\tdec\t([a-z][a-z0-9]+)$`)
+	addNegFuseRe  = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*1$`)
+	pushModRe     = regexp.MustCompile(`^\t(add|sub|imul|mov|lea)\t([a-z][a-z0-9]+),.*$`)
+)
 
 // PeepholeOnly runs only peephole optimizations (safe for NASM output with physical registers).
 func PeepholeOnly(input string) string {
@@ -1218,7 +1241,7 @@ func xorZero(lines []string) []string {
 		if m != nil {
 			reg := m[1]
 			r32 := regTo32(reg)
-			if ExplainEnabled {
+			if isExplain() {
 				result = append(result, fmt.Sprintf("; [OPT] xor %s, %s  replaces mov %s, 0 (shorter encoding, sets ZF=1 CF=0 OF=0)",
 					r32, r32, reg))
 			}
@@ -1233,11 +1256,11 @@ func xorZero(lines []string) []string {
 func testCmp(lines []string) []string {
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
-		m := testCmpZero.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
+		m := testCmpZeroRe.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
 		if m != nil {
 			reg := m[1]
 			r32 := regTo32(reg)
-			if ExplainEnabled {
+			if isExplain() {
 				result = append(result, fmt.Sprintf("; [OPT] test %s, %s  replaces cmp %s, 0 (shorter encoding)",
 					r32, r32, reg))
 			}
@@ -1259,7 +1282,7 @@ func nopMerge(lines []string) []string {
 				count++
 			}
 			if count > 1 {
-				if ExplainEnabled {
+				if isExplain() {
 					result = append(result, fmt.Sprintf("; [OPT] merged %d nops into one", count))
 				}
 				result = append(result, "\tnop\t; merged "+strconv.Itoa(count)+" nops")
@@ -1282,7 +1305,7 @@ func leaFuse(lines []string) []string {
 		if i+1 < len(lines) {
 			fused, ok := tryLeaFuse(lines[i], lines[i+1])
 			if ok {
-				if ExplainEnabled {
+				if isExplain() {
 					// Build description from the two fused lines
 					line1 := strings.TrimSpace(lines[i])
 					line2 := strings.TrimSpace(lines[i+1])
@@ -1744,25 +1767,25 @@ func noopElim(lines []string) []string {
 	for _, line := range lines {
 		trimmed := strings.TrimRight(line, " \t\r")
 		if m := peepMovRe.FindStringSubmatch(trimmed); m != nil && m[1] == m[2] {
-			if ExplainEnabled {
+			if isExplain() {
 				result = append(result, fmt.Sprintf("; [OPT] removed no-op: mov %s, %s", m[1], m[2]))
 			}
 			continue
 		}
 		if noopAddZeroRe.MatchString(trimmed) {
-			if ExplainEnabled {
+			if isExplain() {
 				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
 			}
 			continue
 		}
 		if noopSubZeroRe.MatchString(trimmed) {
-			if ExplainEnabled {
+			if isExplain() {
 				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
 			}
 			continue
 		}
-		if noopImulOneRe2.MatchString(trimmed) {
-			if ExplainEnabled {
+		if noopImulOneRe.MatchString(trimmed) {
+			if isExplain() {
 				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
 			}
 			continue
@@ -1780,7 +1803,7 @@ func pushPopMov(lines []string) []string {
 			m1 := pushRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
 			m2 := popRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 			if m1 != nil && m2 != nil {
-				if ExplainEnabled {
+				if isExplain() {
 					result = append(result, fmt.Sprintf("; [OPT] push %s; pop %s  replaced by mov %s, %s",
 						m1[1], m2[1], m2[1], m1[1]))
 				}
@@ -1825,7 +1848,7 @@ func xorMovElim(lines []string) []string {
 								}
 							}
 							if valid {
-								if ExplainEnabled {
+								if isExplain() {
 									result = append(result, fmt.Sprintf("; [OPT] xor %s,%s; mov %s,%s  replaced by mov %s, %s",
 										m1[1], m1[2], reg64, srcReg, reg64, srcReg))
 								}
@@ -1880,7 +1903,7 @@ func shlAddFuse(lines []string) []string {
 			}
 			scale := 1 << uint(shift)
 
-			if ExplainEnabled {
+			if isExplain() {
 				result = append(result, fmt.Sprintf("; [OPT] shl+add fused into lea %s, [%s+%s*%d]",
 					movDst, movSrc, movSrc, scale))
 			}
@@ -1909,7 +1932,7 @@ func addNegFuse(lines []string) []string {
 
 			m2 := negRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 			if m2 != nil && m2[1] == reg {
-				if ExplainEnabled {
+				if isExplain() {
 					result = append(result, fmt.Sprintf("; [OPT] add %s,1; neg %s  replaced by not %s", reg, reg, reg))
 				}
 				result = append(result, fmt.Sprintf("\tnot\t%s", reg))
@@ -1933,7 +1956,7 @@ func cancelPairElim(lines []string) []string {
 				reg := m1[1]
 				m2 := notRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil && m2[1] == reg {
-					if ExplainEnabled {
+					if isExplain() {
 						result = append(result, fmt.Sprintf("; [OPT] removed redundant not %s; not %s", reg, reg))
 					}
 					i += 2
@@ -1946,7 +1969,7 @@ func cancelPairElim(lines []string) []string {
 				reg := m1[1]
 				m2 := negRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil && m2[1] == reg {
-					if ExplainEnabled {
+					if isExplain() {
 						result = append(result, fmt.Sprintf("; [OPT] removed redundant neg %s; neg %s", reg, reg))
 					}
 					i += 2
@@ -1959,7 +1982,7 @@ func cancelPairElim(lines []string) []string {
 				reg := m1[1]
 				m2 := decRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil && m2[1] == reg {
-					if ExplainEnabled {
+					if isExplain() {
 						result = append(result, fmt.Sprintf("; [OPT] removed redundant inc %s; dec %s", reg, reg))
 					}
 					i += 2
@@ -1972,7 +1995,7 @@ func cancelPairElim(lines []string) []string {
 				reg := m1[1]
 				m2 := incRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil && m2[1] == reg {
-					if ExplainEnabled {
+					if isExplain() {
 						result = append(result, fmt.Sprintf("; [OPT] removed redundant dec %s; inc %s", reg, reg))
 					}
 					i += 2
@@ -1999,7 +2022,7 @@ func pushModPopElim(lines []string) []string {
 				reg := m1[1]
 				m2 := pushModRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil && m2[2] == reg {
-					if ExplainEnabled {
+					if isExplain() {
 						result = append(result, fmt.Sprintf("; [OPT] removed dead push %s; %s %s; pop %s",
 							m1[1], m2[1], m2[2], m3[1]))
 					}
@@ -2013,4 +2036,3 @@ func pushModPopElim(lines []string) []string {
 	}
 	return result
 }
-

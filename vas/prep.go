@@ -156,6 +156,12 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 			return "", fmt.Errorf("post-hook: %w", err)
 		}
 	}
+
+	// Check for undefined labels
+	if undefined := checkUndefinedLabels(out); len(undefined) > 0 {
+		return "", fmt.Errorf("undefined label(s): %s", strings.Join(undefined, ", "))
+	}
+
 	return out, nil
 }
 
@@ -206,6 +212,12 @@ func PreprocessTestable(src, baseDir string, opts ...PreprocessOption) (string, 
 			return "", nil, fmt.Errorf("post-hook: %w", err)
 		}
 	}
+
+	// Check for undefined labels
+	if undefined := checkUndefinedLabels(out); len(undefined) > 0 {
+		return "", nil, fmt.Errorf("undefined label(s): %s", strings.Join(undefined, ", "))
+	}
+
 	return out, ctx.testCases, nil
 }
 
@@ -1205,4 +1217,86 @@ func searchPath() []string {
 		sep = ";"
 	}
 	return strings.Split(env, sep)
+}
+
+// checkUndefinedLabels scans src for label definitions and references,
+// returning the names of labels that are referenced but never defined.
+func checkUndefinedLabels(src string) []string {
+	defined := make(map[string]bool)
+	referenced := make(map[string]bool)
+
+	lines := strings.Split(src, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		// Strip comments
+		code := trimmed
+		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
+			code = strings.TrimSpace(code[:idx])
+		}
+		if code == "" {
+			continue
+		}
+
+		// Check for label definition (e.g., "loop:")
+		// A label is an identifier ending with ':' that is NOT:
+		// - A section directive ("section .text:")
+		// - A global/extern directive ("global _start:")
+		// - A nasm directive or instruction
+		if strings.HasSuffix(code, ":") {
+			label := strings.TrimSuffix(code, ":")
+			label = strings.TrimSpace(label)
+			// Skip if it looks like a directive or instruction
+			upper := strings.ToUpper(label)
+			if upper == "SECTION" || upper == "GLOBAL" || upper == "EXTERN" ||
+				upper == "COMMON" || upper == "CPU" || upper == "FLOAT" ||
+				isInstructionOrDirective(label) {
+				continue
+			}
+			// Skip local labels (starting with .)
+			if strings.HasPrefix(label, ".") {
+				continue
+			}
+			defined[label] = true
+			continue
+		}
+
+		// Check for label references in jump/call instructions
+		fields := strings.Fields(code)
+		if len(fields) == 0 {
+			continue
+		}
+		opcode := strings.ToUpper(fields[0])
+
+		// Jump and call instructions that reference labels
+		if opcode == "JMP" || opcode == "JE" || opcode == "JNE" ||
+			opcode == "JG" || opcode == "JL" || opcode == "JGE" ||
+			opcode == "JLE" || opcode == "JA" || opcode == "JB" ||
+			opcode == "JAE" || opcode == "JBE" || opcode == "JO" ||
+			opcode == "JNO" || opcode == "JS" || opcode == "JNS" ||
+			opcode == "CALL" || opcode == "LOOP" || opcode == "LOOPE" ||
+			opcode == "LOOPNE" || opcode == "LOOPZ" || opcode == "LOOPNZ" {
+			// The operand is the label
+			if len(fields) >= 2 {
+				label := strings.Trim(fields[1], ",")
+				// Skip local labels
+				if !strings.HasPrefix(label, ".") {
+					referenced[label] = true
+				}
+			}
+		}
+	}
+
+	// Find undefined references
+	var undefined []string
+	for label := range referenced {
+		if !defined[label] {
+			undefined = append(undefined, label)
+		}
+	}
+	sort.Strings(undefined)
+	return undefined
 }

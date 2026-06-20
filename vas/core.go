@@ -10,95 +10,143 @@ import (
 	"vas/vas/opt"
 )
 
-var regMap = map[string]string{
-	"v0":  "rax",
-	"v1":  "rbx",
-	"v2":  "rcx",
-	"v3":  "rdx",
-	"v4":  "rsi",
-	"v5":  "rdi",
-	"v6":  "r8",
-	"v7":  "r9",
-	"v8":  "r11",
-	"v9":  "r12",
-	"v10": "r13",
-	"v11": "r14",
-	"v12": "r15",
+// OptConfig controls optimization and lint behaviour.
+// All fields are optional; zero values produce safe defaults.
+type OptConfig struct {
+	Level      int  // 0=no opt, 1=-O1, 2=-O2
+	Explain    bool // annotate output with [OPT] comments
+	FailOnLint bool // treat lint errors as fatal (default true)
 }
 
-func mapReg(s string) (string, error) {
-	var out strings.Builder
-	inQuote := false
-	quoteChar := byte(0)
+// AssembleWithOpt assembles VAS source with the given optimization level.
+// Assembles VAS source with the given optimization configuration.
+// Lint errors are fatal by default; set cfg.FailOnLint=false to downgrade
+// them to warnings and continue assembly.
+func AssembleWithOpt(input string, cfg OptConfig) (string, error) {
+	return AssembleWithOptWithHook(input, cfg, nil, nil)
+}
 
-	for i := 0; i < len(s); {
-		if inQuote {
-			out.WriteByte(s[i])
-			if s[i] == quoteChar {
-				inQuote = false
-			}
-			i++
+// AssembleWithOptWithHook is the same as AssembleWithOpt but allows pre/post hooks.
+func AssembleWithOptWithHook(input string, cfg OptConfig, preHook func(string) (string, error), postHook func(string) (string, error)) (string, error) {
+	// Preprocessing: if the source contains any preprocessor directive,
+	// run the full preprocessor before anything else.
+	if hasPreprocessorDirectives(input) {
+		preprocessed, err := Preprocess(input, "")
+		if err != nil {
+			return "", fmt.Errorf("preprocessing: %w", err)
+		}
+		input = preprocessed
+	}
+
+	if preHook != nil {
+		var err error
+		input, err = preHook(input)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	// ── Semantic lint for dangerous instructions ─────────────────────────
+	// Runs after preprocessing so we can see the expanded source.
+	violations := lint.Run(input)
+	hasError := false
+	for _, v := range violations {
+		if v.Severity == "error" {
+			hasError = true
+			fmt.Fprintf(os.Stderr, "lint error at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
+		} else {
+			fmt.Fprintf(os.Stderr, "lint warning at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
+		}
+	}
+	if hasError && cfg.FailOnLint {
+		return "", fmt.Errorf("lint errors found (use --warn-only or set FailOnLint=false to suppress)")
+	}
+
+	// Set explain mode before optimization
+	if cfg.Explain {
+		opt.SetExplain(true)
+		defer opt.SetExplain(false)
+	}
+
+	lines := strings.Split(input, "\n")
+	// Pre-expansion optimization: constant folding
+	if cfg.Level >= 1 {
+		lines = opt.FoldConstants(lines)
+		input = strings.Join(lines, "\n")
+	}
+
+	// Pre-expansion optimization: dead code elimination and other passes
+	if cfg.Level >= 1 {
+		input = opt.Optimize(input, cfg.Level)
+	}
+
+	lines = strings.Split(input, "\n")
+	var outLines []string
+
+	for lineNum, line := range lines {
+		original := line
+		stripped := strings.TrimSpace(stripComment(original))
+		if stripped == "" {
+			outLines = append(outLines, original)
 			continue
 		}
 
-		if s[i] == '"' || s[i] == '\'' {
-			inQuote = true
-			quoteChar = s[i]
-			out.WriteByte(s[i])
-			i++
+		if strings.HasSuffix(stripped, ":") && !isInstruction(stripped) {
+			checkNasmKeyword(stripped)
+			mapped, err := mapReg(stripped)
+			if err != nil {
+				return "", fmt.Errorf("line %d: %q: %w", lineNum+1, strings.TrimRight(original, "\r"), err)
+			}
+			// Preserve original indentation/prefix before the label
+			prefix := original[:len(original)-len(strings.TrimLeft(original, " \t"))]
+			outLines = append(outLines, prefix+mapped)
 			continue
 		}
 
-		if s[i] == 'v' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
-			j := i + 1
-			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
-				j++
-			}
-			name := s[i:j]
-
-			// If followed by colon, it's a label — but still validate the name.
-			if j < len(s) && s[j] == ':' {
-				if _, ok := regMap[name]; !ok {
-					return "", fmt.Errorf("virtual register %s out of range (valid: v0-v12)", name)
-				}
-				out.WriteString(name)
-				i = j
-				continue
-			}
-
-			if phys, ok := regMap[name]; ok {
-				out.WriteString(phys)
-				i = j
-				continue
-			}
-			return "", fmt.Errorf("virtual register %s out of range (valid: v0-v12)", name)
+		result, err := processInstruction(stripped)
+		if err != nil {
+			return "", fmt.Errorf("line %d: %q: %w", lineNum+1, strings.TrimRight(original, "\r"), err)
 		}
-
-		out.WriteByte(s[i])
-		i++
+		outLines = append(outLines, result...)
 	}
-	return out.String(), nil
-}
 
-func stripComment(line string) string {
-	inQuote := false
-	for i, ch := range line {
-		if ch == '"' || ch == '\'' {
-			inQuote = !inQuote
-		}
-		if !inQuote && (ch == '#' || ch == ';') {
-			return strings.TrimSpace(line[:i])
+	output := strings.Join(outLines, "\n")
+
+	// PeepholeOnly is called inside Optimize already (twice).
+	// No need to run it again here.
+
+	if postHook != nil {
+		var err error
+		output, err = postHook(output)
+		if err != nil {
+			return "", err
 		}
 	}
-	return line
+
+	return output, nil
 }
 
+func isInstruction(s string) bool {
+	upper := strings.ToUpper(strings.Fields(s)[0])
+	upper = strings.TrimLeft(upper, ".")
+	switch upper {
+	case "ADD", "SUB", "MUL", "LOAD", "STORE", "LEA", "MOV", "MOVI",
+		"CMP", "JMP", "JE", "JNE", "JG", "JL", "JGE", "JLE",
+		"CALL", "RET", "NOP", "PUSH", "POP", "INT", "SYSCALL",
+		"SECTION", "GLOBAL", "EXTERN", "DATA", "TEXT", "BSS",
+		"ALIGN", "BYTE", "WORD", "DWORD", "QWORD", "DD", "DQ", "DB",
+		"TYPE", "SIZE", "LENGTH", "START":
+		return true
+	}
+	return false
+}
+
+// Assemble is a convenience wrapper that assembles with no optimization.
 func Assemble(input string) (string, error) {
-	return AssembleWithOpt(input, 0)
+	return AssembleWithOpt(input, OptConfig{})
 }
 
-// hasPreprocessorDirectives checks whether the source text contains any
-// line that begins with a preprocessor directive (after optional whitespace).
+// hasPreprocessorDirectives checks whether src contains any preprocessor directive.
 func hasPreprocessorDirectives(src string) bool {
 	for _, line := range strings.Split(src, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -120,103 +168,18 @@ func hasPreprocessorDirectives(src string) bool {
 	return false
 }
 
-// AssembleWithOpt assembles VAS source with the given optimization level.
-// level 0 = no optimization, level >=1 = -O1 (constant folding + DCE + peephole).
-func AssembleWithOpt(input string, optLevel int) (string, error) {
-	// Preprocessing: if the source contains any preprocessor directive,
-	// run the full preprocessor before anything else.
-	if hasPreprocessorDirectives(input) {
-		preprocessed, err := Preprocess(input, "")
-		if err != nil {
-			return "", fmt.Errorf("preprocessing: %w", err)
+// stripComment removes trailing comments from line, respecting string literals.
+func stripComment(line string) string {
+	inQuote := false
+	for i, ch := range line {
+		if ch == '"' || ch == '\'' {
+			inQuote = !inQuote
 		}
-		input = preprocessed
-	}
-
-	// ── Semantic lint for dangerous instructions ─────────────────────────
-	// Runs after preprocessing so we can see the expanded source.
-	violations := lint.Run(input)
-	for _, v := range violations {
-		if v.Severity == "error" {
-			// Lint errors are emitted to stderr but do not stop translation
-			// (they become fatal only under `vas check --strict`).
-			fmt.Fprintf(os.Stderr, "lint error at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
-		} else {
-			fmt.Fprintf(os.Stderr, "lint warning at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
+		if !inQuote && (ch == '#' || ch == ';') {
+			return strings.TrimSpace(line[:i])
 		}
 	}
-
-	// Pre-expansion optimization: constant folding
-	lines := strings.Split(input, "\n")
-	if optLevel >= 1 {
-		lines = opt.FoldConstants(lines)
-		input = strings.Join(lines, "\n")
-	}
-
-	// Pre-expansion optimization: dead code elimination and other passes
-	if optLevel >= 1 {
-		input = opt.Optimize(input, optLevel)
-	}
-
-	lines = strings.Split(input, "\n")
-	var outLines []string
-
-	for lineNum, line := range lines {
-		original := line
-		line = stripComment(line)
-		line = strings.TrimSpace(line)
-
-		if line == "" {
-			outLines = append(outLines, original)
-			continue
-		}
-
-		stripped := strings.TrimSpace(stripComment(original))
-		if stripped == "" {
-			outLines = append(outLines, original)
-			continue
-		}
-
-		if strings.HasSuffix(line, ":") && !isInstruction(line) {
-			checkNasmKeyword(line)
-			mapped, err := mapReg(line)
-			if err != nil {
-				return "", fmt.Errorf("line %d: %q: %w", lineNum+1, strings.TrimRight(original, "\r"), err)
-			}
-			outLines = append(outLines, mapped)
-			continue
-		}
-
-		result, err := processInstruction(line)
-		if err != nil {
-			return "", fmt.Errorf("line %d: %q: %w", lineNum+1, strings.TrimRight(original, "\r"), err)
-		}
-		outLines = append(outLines, result...)
-	}
-
-	output := strings.Join(outLines, "\n")
-
-	// Post-expansion peephole optimization
-	if optLevel >= 1 {
-		output = opt.PeepholeOnly(output)
-	}
-
-	return output, nil
-}
-
-func isInstruction(s string) bool {
-	upper := strings.ToUpper(strings.Fields(s)[0])
-	upper = strings.TrimLeft(upper, ".")
-	switch upper {
-	case "ADD", "SUB", "MUL", "LOAD", "STORE", "LEA", "MOV", "MOVI",
-		"CMP", "JMP", "JE", "JNE", "JG", "JL", "JGE", "JLE",
-		"CALL", "RET", "NOP", "PUSH", "POP", "INT", "SYSCALL",
-		"SECTION", "GLOBAL", "EXTERN", "DATA", "TEXT", "BSS",
-		"ALIGN", "BYTE", "WORD", "DWORD", "QWORD", "DD", "DQ", "DB",
-		"TYPE", "SIZE", "LENGTH", "START":
-		return true
-	}
-	return false
+	return line
 }
 
 var nasmKeywords = map[string]bool{
@@ -584,7 +547,7 @@ func AssembleStandaloneTarget(input, target string) (string, error) {
 // AssembleStandaloneTargetOpt assembles VAS with optimization level and wraps
 // with a platform-appropriate skeleton.
 func AssembleStandaloneTargetOpt(input, target string, optLevel int) (string, error) {
-	asm, err := AssembleWithOpt(input, optLevel)
+	asm, err := AssembleWithOpt(input, OptConfig{Level: optLevel})
 	if err != nil {
 		return "", err
 	}
@@ -830,20 +793,4 @@ func collectMemRefs(input string) []string {
 	return refs
 }
 
-func isRegister(s string) bool {
-	if strings.HasPrefix(s, "v") {
-		_, err := strconv.Atoi(s[1:])
-		return err == nil
-	}
-	phys := []string{"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
-		"r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
-		"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
-		"ax", "bx", "cx", "dx", "si", "di", "bp", "sp",
-		"al", "bl", "cl", "dl", "ah", "bh", "ch", "dh"}
-	for _, r := range phys {
-		if s == r {
-			return true
-		}
-	}
-	return false
-}
+func isRegister(s string) bool { return isPhysReg(s) || IsValidVirtualReg(s) }

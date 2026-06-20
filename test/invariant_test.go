@@ -26,9 +26,9 @@ func TestInvariantO0EqualsAssemble(t *testing.T) {
 			t.Errorf("Assemble(%q) error: %v", input, err)
 			continue
 		}
-		gotOpt, err := vas.AssembleWithOpt(input, 0)
+		gotOpt, err := vas.AssembleWithOpt(input, vas.OptConfig{Level: 0})
 		if err != nil {
-			t.Errorf("AssembleWithOpt(%q, 0) error: %v", input, err)
+			t.Errorf("AssembleWithOpt(%q, Level=0) error: %v", input, err)
 			continue
 		}
 		if got != gotOpt {
@@ -47,8 +47,8 @@ func TestInvariantOptMonotonic(t *testing.T) {
 		"LOAD v0, [x]\nLOAD v1, [x]\nSTORE v0, [y]",
 	}
 	for _, input := range inputs {
-		out0, _ := vas.AssembleWithOpt(input, 0)
-		out1, _ := vas.AssembleWithOpt(input, 1)
+		out0, _ := vas.AssembleWithOpt(input, vas.OptConfig{Level: 0})
+		out1, _ := vas.AssembleWithOpt(input, vas.OptConfig{Level: 1})
 		lines0 := strings.Count(out0, "\n")
 		lines1 := strings.Count(out1, "\n")
 		if lines1 > lines0 {
@@ -95,6 +95,7 @@ func TestGoldenExamples(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping golden tests in short mode")
 	}
+	update := os.Getenv("VAS_UPDATE_GOLDEN") == "1"
 	examples := []string{
 		"../examples/hello.vas",
 		"../examples/fib.vas",
@@ -113,7 +114,7 @@ func TestGoldenExamples(t *testing.T) {
 		base := strings.TrimSuffix(ex[strings.LastIndex(ex, "/")+1:], ".vas")
 
 		for _, opt := range []int{0, 1, 2} {
-			got, err := vas.AssembleWithOpt(input, opt)
+			got, err := vas.AssembleWithOpt(input, vas.OptConfig{Level: opt})
 			if err != nil {
 				// Skip error-producing inputs — they may use features not support by AssembleWithOpt
 				continue
@@ -123,14 +124,24 @@ func TestGoldenExamples(t *testing.T) {
 			got = strings.TrimRight(got, "\n")
 
 			goldenFile := goldenDir + base + "_O" + r(opt) + ".golden"
-			if _, err := os.Stat(goldenFile); os.IsNotExist(err) {
-				// Write golden file on first run
+			if update {
+				// Update mode: always rewrite golden file
 				os.MkdirAll(goldenDir, 0755)
 				// Write with LF for consistency
 				if err := os.WriteFile(goldenFile, []byte(got+"\n"), 0644); err != nil {
 					t.Fatalf("write golden %s: %v", goldenFile, err)
 				}
-				t.Logf("created golden file: %s", goldenFile)
+				t.Logf("%s: updated golden file: %s", base, goldenFile)
+				continue
+			}
+			if _, err := os.Stat(goldenFile); os.IsNotExist(err) {
+				// First run: create golden file
+				os.MkdirAll(goldenDir, 0755)
+				// Write with LF for consistency
+				if err := os.WriteFile(goldenFile, []byte(got+"\n"), 0644); err != nil {
+					t.Fatalf("write golden %s: %v", goldenFile, err)
+				}
+				t.Logf("%s: created golden file: %s", base, goldenFile)
 				continue
 			}
 			want, err := os.ReadFile(goldenFile)
@@ -142,7 +153,7 @@ func TestGoldenExamples(t *testing.T) {
 			wantStr = strings.TrimRight(wantStr, "\n")
 
 			if got != wantStr {
-				t.Errorf("%s -O%d output differs from golden\n  update: cp ... %s", base, opt, goldenFile)
+				t.Errorf("%s -O%d output differs from golden\n  update: VAS_UPDATE_GOLDEN=1 cp ... %s", base, opt, goldenFile)
 			}
 		}
 	}
@@ -164,7 +175,7 @@ func BenchmarkAssembleWithOpt_O1(b *testing.B) {
 	input := "MOVI v0, 1\nMOVI v1, 0\nloop:\nADD v1, v1, v0\nADD v0, 1\nCMP v0, 100\nJLE loop\nMOV v5, v1\nMOVI v0, 60\nSYSCALL"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vas.AssembleWithOpt(input, 1)
+		vas.AssembleWithOpt(input, vas.OptConfig{Level: 1})
 	}
 }
 
@@ -172,7 +183,7 @@ func BenchmarkAssembleWithOpt_O2(b *testing.B) {
 	input := "MOVI v0, 1\nMOVI v1, 0\nloop:\nADD v1, v1, v0\nADD v0, 1\nCMP v0, 100\nJLE loop\nMOV v5, v1\nMOVI v0, 60\nSYSCALL"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vas.AssembleWithOpt(input, 2)
+		vas.AssembleWithOpt(input, vas.OptConfig{Level: 2})
 	}
 }
 
@@ -185,7 +196,7 @@ func BenchmarkAssembleLarge(b *testing.B) {
 	input := strings.Join(lines, "\n")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vas.AssembleWithOpt(input, 1)
+		vas.AssembleWithOpt(input, vas.OptConfig{Level: 1})
 	}
 }
 
@@ -213,6 +224,6 @@ func BenchmarkPeephole(b *testing.B) {
 	`
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vas.AssembleWithOpt(input, 1)
+		vas.AssembleWithOpt(input, vas.OptConfig{Level: 1})
 	}
 }

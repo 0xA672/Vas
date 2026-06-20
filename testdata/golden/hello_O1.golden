@@ -29,6 +29,6 @@ _start:
 	syscall
 
     ; sys_exit(0)
-	xor	edi, edi
+	mov	rdi, 0
 	mov	rax, 60
 	syscall

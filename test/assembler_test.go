@@ -652,7 +652,7 @@ func TestLabelAndInstruction(t *testing.T) {
 func TestAssembleWithOptLevel1(t *testing.T) {
 	// Dead MOVI should be eliminated at -O1
 	input := "MOVI v0, 1\nMOVI v0, 60\nSYSCALL"
-	got, err := vas.AssembleWithOpt(input, 1)
+	got, err := vas.AssembleWithOpt(input, vas.OptConfig{Level: 1})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -926,7 +926,7 @@ func TestLargeInputWithOpt(t *testing.T) {
 	lines = append(lines, "SYSCALL")
 	input := strings.Join(lines, "\n")
 
-	_, err := vas.AssembleWithOpt(input, 1)
+	_, err := vas.AssembleWithOpt(input, vas.OptConfig{Level: 1})
 	if err != nil {
 		t.Fatalf("large input with opt failed: %v", err)
 	}
@@ -978,8 +978,8 @@ func FuzzAssembleWithOpt(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, input string) {
-		_, _ = vas.AssembleWithOpt(input, 1)
-		_, _ = vas.AssembleWithOpt(input, 2)
+		_, _ = vas.AssembleWithOpt(input, vas.OptConfig{Level: 1})
+		_, _ = vas.AssembleWithOpt(input, vas.OptConfig{Level: 2})
 	})
 }
 

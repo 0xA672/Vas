@@ -13,7 +13,7 @@
 	global _start
 
 _start:
-	xor	ebx, ebx
+	mov	rbx, 0
 	mov	rcx, 1
 	mov	rdx, 10
 

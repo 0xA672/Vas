@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -96,7 +97,7 @@ func cmdAssemble(args []string) {
 	}
 
 	if explain {
-		opt.ExplainEnabled = true
+		opt.SetExplain(true)
 	}
 
 	var input string
@@ -212,54 +213,49 @@ func findLinker(target string) (string, error) {
 // ── build subcommand ──────────────────────────────────────────────────────
 
 func cmdBuild(args []string) {
-	var inputFile, outFile, target string
-	optLevel := 0
-	keepTemps := false
-	verbose := false
-	explain := false
+	fs := flag.NewFlagSet("vas build", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Print(buildHelpText) }
 
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-o" && i+1 < len(args):
-			outFile = args[i+1]
-			i++
-		case args[i] == "-target" && i+1 < len(args):
-			target = args[i+1]
-			i++
-		case args[i] == "-O1":
-			optLevel = 1
-		case args[i] == "-O2":
-			optLevel = 2
-		case args[i] == "--keep-temps":
-			keepTemps = true
-		case args[i] == "-v" || args[i] == "--verbose":
-			verbose = true
-		case args[i] == "--explain":
-			explain = true
-		case args[i] == "-h" || args[i] == "--help":
-			fmt.Print(buildHelpText)
+	outFile := fs.String("o", "", "output filename")
+	target := fs.String("target", "elf64", "target platform (elf64 or win64)")
+	keepTemps := fs.Bool("keep-temps", false, "keep intermediate .asm and .o/.obj files")
+	verbose := fs.Bool("v", false, "print tool commands and progress")
+	explain := fs.Bool("explain", false, "annotate optimized output with [OPT] comments")
+	linkerArg := fs.String("linker-arg", "", "extra argument(s) passed to the linker")
+	_ = fs.Bool("warn-only", false, "treat dangerous instruction warnings as non-fatal")
+
+	// Parse flags (stop on first non-flag argument)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
 			return
-		case !strings.HasPrefix(args[i], "-"):
-			inputFile = args[i]
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			fmt.Fprint(os.Stderr, buildHelpText)
-			os.Exit(1)
 		}
-	}
-
-	if inputFile == "" {
-		fmt.Fprintln(os.Stderr, "error: no input file")
-		fmt.Fprint(os.Stderr, buildHelpText)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if target == "" {
-		target = "elf64"
+	inputFile := ""
+	if fs.NArg() > 0 {
+		inputFile = fs.Arg(0)
+	}
+	if inputFile == "" {
+		fmt.Fprintln(os.Stderr, "error: no input file")
+		fmt.Print(buildHelpText)
+		os.Exit(1)
 	}
 
-	if explain {
-		opt.ExplainEnabled = true
+	// Determine optimization level from -O flag (passed as -O0, -O1, -O2)
+	optLvl := 0
+	for _, arg := range args {
+		if arg == "-O1" {
+			optLvl = 1
+		} else if arg == "-O2" {
+			optLvl = 2
+		}
+	}
+
+	if *explain {
+		opt.SetExplain(true)
 	}
 
 	// Check tools
@@ -267,7 +263,7 @@ func cmdBuild(args []string) {
 		fmt.Fprintln(os.Stderr, "error: nasm not found — install it from https://nasm.us")
 		os.Exit(1)
 	}
-	linker, err := findLinker(target)
+	linker, err := findLinker(*target)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -290,7 +286,7 @@ func cmdBuild(args []string) {
 	}
 
 	// Assemble
-	asm, err := vas.AssembleStandaloneTargetOpt(prepped, target, optLevel)
+	asm, err := vas.AssembleStandaloneTargetOpt(prepped, *target, optLvl)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
 		os.Exit(1)
@@ -298,10 +294,10 @@ func cmdBuild(args []string) {
 
 	// Default output name
 	inputBase := strings.TrimSuffix(filepath.Base(inputFile), filepath.Ext(inputFile))
-	if outFile == "" {
-		outFile = inputBase
-		if target == "win64" {
-			outFile += ".exe"
+	if *outFile == "" {
+		*outFile = inputBase
+		if *target == "win64" {
+			*outFile += ".exe"
 		}
 	}
 
@@ -309,10 +305,10 @@ func cmdBuild(args []string) {
 	workDir := filepath.Dir(inputFile)
 	asmFile := filepath.Join(workDir, inputBase+".asm")
 	objFile := filepath.Join(workDir, inputBase+".o")
-	if target == "win64" {
+	if *target == "win64" {
 		objFile = filepath.Join(workDir, inputBase+".obj")
 	}
-	binFile := outFile
+	binFile := *outFile
 	if !filepath.IsAbs(binFile) {
 		binFile = filepath.Join(workDir, binFile)
 	}
@@ -325,12 +321,12 @@ func cmdBuild(args []string) {
 
 	// nasm
 	var nasmArgs []string
-	if target == "win64" {
+	if *target == "win64" {
 		nasmArgs = []string{"-f", "win64", "-o", objFile, asmFile}
 	} else {
 		nasmArgs = []string{"-f", "elf64", "-o", objFile, asmFile}
 	}
-	if verbose {
+	if *verbose {
 		fmt.Fprintf(os.Stderr, "+ nasm %s\n", strings.Join(nasmArgs, " "))
 	}
 	if out, err := exec.Command("nasm", nasmArgs...).CombinedOutput(); err != nil {
@@ -340,7 +336,7 @@ func cmdBuild(args []string) {
 
 	// ld
 	var ldArgs []string
-	if target == "win64" {
+	if *target == "win64" {
 		if strings.Contains(linker, "gcc") {
 			ldArgs = []string{"-o", binFile, objFile, "-nostdlib"}
 		} else {
@@ -349,7 +345,11 @@ func cmdBuild(args []string) {
 	} else {
 		ldArgs = []string{"-o", binFile, objFile}
 	}
-	if verbose {
+	// Append extra linker args if provided
+	if *linkerArg != "" {
+		ldArgs = append(ldArgs, *linkerArg)
+	}
+	if *verbose {
 		fmt.Fprintf(os.Stderr, "+ %s %s\n", filepath.Base(linker), strings.Join(ldArgs, " "))
 	}
 	if out, err := exec.Command(linker, ldArgs...).CombinedOutput(); err != nil {
@@ -358,12 +358,12 @@ func cmdBuild(args []string) {
 	}
 
 	// Cleanup temp files
-	if !keepTemps {
+	if !*keepTemps {
 		os.Remove(asmFile)
 		os.Remove(objFile)
 	}
 
-	if verbose {
+	if *verbose {
 		fmt.Fprintf(os.Stderr, "→ %s\n", binFile)
 	}
 }
@@ -470,6 +470,8 @@ Options:
   -O2               Enable -O2 optimisations (CSE, LICM, redundant load elim, …)
   --explain         Annotate optimized output with [OPT] comments
   --keep-temps      Keep intermediate .asm and .o/.obj files
+  --linker-arg <arg> Pass extra argument(s) to the linker
+  --warn-only       Treat dangerous instruction warnings as non-fatal
   -v, --verbose     Print tool commands and progress
   -h, --help        Show this help message
 
@@ -478,6 +480,7 @@ Examples:
   vas build hello.vas -O1       ->  ./hello (optimised)
   vas build hello.vas -O2 --explain -> ./hello with optimization comments
   vas build app.vas -target win64 ->  ./app.exe (Windows PE)
+  vas build app.vas -O2 --linker-arg "-static" -> static linking
 `
 
 // ── diff subcommand ───────────────────────────────────────────────────────
@@ -522,7 +525,7 @@ func cmdDiff(args []string) {
 
 	// When optimization level > 0, enable explanation and assemble with optimizations
 	if optLevel > 0 {
-		opt.ExplainEnabled = true
+		opt.SetExplain(true)
 	}
 	var output string
 	if optLevel > 0 {
@@ -809,6 +812,7 @@ func cmdTest(args []string) {
 		}
 
 		dir, _ := os.MkdirTemp("", "vas_test")
+		defer os.RemoveAll(dir)
 		asmFile := filepath.Join(dir, "test.asm")
 		binFile := filepath.Join(dir, "test")
 		os.WriteFile(asmFile, []byte(asm), 0644)
@@ -852,8 +856,6 @@ func cmdTest(args []string) {
 		} else {
 			failed++
 		}
-
-		os.RemoveAll(dir)
 	}
 
 	if failed > 0 {

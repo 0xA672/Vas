@@ -82,15 +82,23 @@ func (d *divCheck) Check(lines []string) []Violation {
 			continue
 		}
 		upper := strings.ToUpper(trimmed)
-		if strings.HasPrefix(upper, "IDIV") || strings.HasPrefix(upper, "DIV") {
-			if !isRDXPrepared(lines, i) {
-				msg := fmt.Sprintf("%s used at line %d but RDX (v3) is not prepared", trimmed, i+1)
-				fix := "insert cqo before idiv (signed) or xor v3, v3 before div (unsigned)"
+		if strings.HasPrefix(upper, "IDIV") {
+			if !isRDXPreparedSigned(lines, i) {
 				violations = append(violations, Violation{
 					Line:     i + 1,
-					Message:  msg,
+					Message:  fmt.Sprintf("%s used at line %d but RDX (v3) is not sign-extended", trimmed, i+1),
 					Severity: "error",
-					Fix:      fix,
+					Fix:      "insert cqo or cdq before idiv",
+				})
+			}
+		}
+		if strings.HasPrefix(upper, "DIV") {
+			if !isRDXPreparedUnsigned(lines, i) {
+				violations = append(violations, Violation{
+					Line:     i + 1,
+					Message:  fmt.Sprintf("%s used at line %d but RDX (v3) is not zeroed", trimmed, i+1),
+					Severity: "error",
+					Fix:      "insert xor v3, v3 or movi v3, 0 before div",
 				})
 			}
 		}
@@ -98,23 +106,44 @@ func (d *divCheck) Check(lines []string) []Violation {
 	return violations
 }
 
-func isRDXPrepared(lines []string, idx int) bool {
+// isRDXPreparedSigned checks whether RDX (v3) is sign-extended for IDIV.
+// CQO and CDQ are the only valid preparations.
+func isRDXPreparedSigned(lines []string, idx int) bool {
 	for j := idx - 1; j >= 0; j-- {
 		prev := strings.TrimSpace(lines[j])
 		if prev == "" || strings.HasPrefix(prev, ";") || strings.HasPrefix(prev, "#") {
 			continue
 		}
 		upper := strings.ToUpper(prev)
-		accepted := []string{"CQO", "CDQ", "XOR V3, V3", "MOVI V3, 0", "XOR EDX, EDX"}
-		for _, a := range accepted {
-			if strings.HasPrefix(upper, a) {
-				return true
-			}
+		// Only CQO and CDQ correctly sign-extend RDX for IDIV.
+		// MOVI V3, 0 sets RDX to 0 without sign-extending — wrong for negative values.
+		if strings.HasPrefix(upper, "CQO") || strings.HasPrefix(upper, "CDQ") {
+			return true
+		}
+		// Any write to v3 that isn't CQO/CDQ invalidates the preparation.
+		if strings.Contains(upper, "V3,") || strings.Contains(upper, " V3") || strings.HasSuffix(upper, " V3") {
+			return false
+		}
+	}
+	return false
+}
+
+// isRDXPreparedUnsigned checks whether RDX (v3) is zeroed for DIV.
+func isRDXPreparedUnsigned(lines []string, idx int) bool {
+	for j := idx - 1; j >= 0; j-- {
+		prev := strings.TrimSpace(lines[j])
+		if prev == "" || strings.HasPrefix(prev, ";") || strings.HasPrefix(prev, "#") {
+			continue
+		}
+		upper := strings.ToUpper(prev)
+		if strings.HasPrefix(upper, "CQO") || strings.HasPrefix(upper, "CDQ") ||
+			strings.HasPrefix(upper, "XOR V3, V3") || strings.HasPrefix(upper, "MOVI V3, 0") ||
+			strings.HasPrefix(upper, "XOR EDX, EDX") {
+			return true
 		}
 		if strings.Contains(upper, "V3,") || strings.Contains(upper, " V3") || strings.HasSuffix(upper, " V3") {
 			return false
 		}
-		return false
 	}
 	return false
 }
