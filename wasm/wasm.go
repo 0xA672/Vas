@@ -45,7 +45,7 @@ func main() {
 		if len(args) >= 2 && args[1].Type() == js.TypeNumber {
 			optLevel = args[1].Int()
 		}
-		return jsReturn(vas.AssembleWithOpt(input, optLevel))
+		return jsReturn(vas.AssembleWithOpt(input, vas.OptConfig{Level: optLevel}))
 	}))
 
 	// vasAssembleStandalone assembles VAS source with a target platform and
