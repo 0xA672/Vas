@@ -41,7 +41,7 @@ func Run(source string) []Violation {
 	return all
 }
 
-// ── div/idiv check (existing) ───────────────────────────────────────────
+// ── div/idiv check ──────────────────────────────────────────────────────
 
 type divCheck struct{}
 
@@ -96,12 +96,10 @@ type stackBalanceCheck struct{}
 
 func (s *stackBalanceCheck) Check(lines []string) []Violation {
 	var violations []Violation
-	// split into functions by labels (naive: detect _start or any label:)
-	var funcs [][]int // each slice holds line indices of a function
+	var funcs [][]int
 	var current []int
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		// simple function detection: a label that looks like a function (ends with ":")
 		if strings.HasSuffix(trimmed, ":") && !isInstruction(trimmed) {
 			if len(current) > 0 {
 				funcs = append(funcs, current)
@@ -136,11 +134,10 @@ func (s *stackBalanceCheck) Check(lines []string) []Violation {
 						Severity: "warning",
 						Fix:      "ensure every push has a corresponding pop before return",
 					})
-					balance = 0 // reset after reporting
+					balance = 0
 				}
 			}
 		}
-		// If function ends without RET/SYSCALL, still report imbalance
 		if balance != 0 {
 			lastIdx := fn[len(fn)-1]
 			violations = append(violations, Violation{
@@ -155,7 +152,6 @@ func (s *stackBalanceCheck) Check(lines []string) []Violation {
 }
 
 func isInstruction(s string) bool {
-	// same logic as in vas package, copied to avoid import cycle
 	upper := strings.ToUpper(strings.Fields(s)[0])
 	switch upper {
 	case "ADD", "SUB", "MUL", "LOAD", "STORE", "LEA", "MOV", "MOVI",
@@ -175,11 +171,9 @@ type uninitRegCheck struct{}
 
 func (u *uninitRegCheck) Check(lines []string) []Violation {
 	var violations []Violation
-	// simple intra-block analysis; ignore cross-block for now
 	blocks := splitBlocks(lines)
 	for _, block := range blocks {
 		written := map[string]bool{}
-		// first pass: collect writes
 		for _, idx := range block {
 			line := strings.TrimSpace(lines[idx])
 			if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
@@ -195,7 +189,6 @@ func (u *uninitRegCheck) Check(lines []string) []Violation {
 				written[fields[1]] = true
 			}
 		}
-		// second pass: check reads before writes
 		seen := map[string]bool{}
 		for _, idx := range block {
 			line := strings.TrimSpace(lines[idx])
@@ -216,10 +209,9 @@ func (u *uninitRegCheck) Check(lines []string) []Violation {
 						Severity: "warning",
 						Fix:      fmt.Sprintf("initialize %s before use", regName),
 					})
-					seen[regName] = true // only report once per block
+					seen[regName] = true
 				}
 			}
-			// mark destination as written (in this block, after this line)
 			dst := dstReg(op, fields[1:])
 			if dst >= 0 {
 				written[fields[1]] = true
@@ -259,22 +251,18 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 					saved[reg] = true
 				}
 			} else if op == "CALL" {
-				// after call, all caller-saved regs are considered "modified" unless saved
 				for reg := range callerSaveRegs {
 					if !saved[reg] {
-						lastWrite[reg] = 0 // mark as potentially clobbered
+						lastWrite[reg] = 0
 					}
 				}
-				// clear saved after call (they are now restored by corresponding pop)
 				saved = map[string]bool{}
 			} else if op == "POP" {
-				// pop after call restores the register
 				reg := fields[1]
 				if callerSaveRegs[reg] {
 					delete(lastWrite, reg)
 				}
 			} else {
-				// check if we read a caller-saved reg that hasn't been written after the last call
 				for _, reg := range readRegs(op, fields[1:]) {
 					regName := fmt.Sprintf("v%d", reg)
 					if callerSaveRegs[regName] {
@@ -288,7 +276,6 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 						}
 					}
 				}
-				// update writes
 				dst := dstReg(op, fields[1:])
 				if dst >= 0 {
 					lastWrite[fields[1]] = idx
@@ -314,7 +301,6 @@ func (s *storeByteCheck) Check(lines []string) []Violation {
 		if len(fields) < 2 || strings.ToUpper(fields[0]) != "STORE" {
 			continue
 		}
-		// Re-join the rest of the line after "STORE" to properly split by comma
 		rest := strings.TrimSpace(trimmed[len("STORE"):])
 		parts := strings.SplitN(rest, ",", 2)
 		if len(parts) < 2 {
@@ -334,11 +320,9 @@ func (s *storeByteCheck) Check(lines []string) []Violation {
 }
 
 func isByteValue(s string) bool {
-	// single character in quotes, e.g., 'a'
 	if len(s) == 3 && (s[0] == '\'' || s[0] == '"') && (s[2] == '\'' || s[2] == '"') {
 		return true
 	}
-	// small immediate (0-255)
 	val := 0
 	if _, err := fmt.Sscanf(s, "%d", &val); err == nil {
 		return val >= 0 && val <= 255
@@ -362,7 +346,6 @@ func (c *cmpMemSizeCheck) Check(lines []string) []Violation {
 			continue
 		}
 		for _, arg := range fields[1:] {
-			// check for size prefixes
 			if strings.Contains(arg, "byte") || strings.Contains(arg, "word") || strings.Contains(arg, "dword") {
 				violations = append(violations, Violation{
 					Line:     i + 1,
@@ -376,6 +359,68 @@ func (c *cmpMemSizeCheck) Check(lines []string) []Violation {
 	return violations
 }
 
+// ── infinite loop detection ──────────────────────────────────────────────
+
+type infiniteLoopCheck struct{}
+
+func (l *infiniteLoopCheck) Check(lines []string) []Violation {
+	var violations []Violation
+	labels := map[string]int{}
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasSuffix(trimmed, ":") && !isInstruction(trimmed) {
+			name := strings.TrimSuffix(trimmed, ":")
+			labels[name] = i
+		}
+	}
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) != 2 || strings.ToUpper(fields[0]) != "JMP" {
+			continue
+		}
+		target := fields[1]
+		targetIdx, ok := labels[target]
+		if !ok || targetIdx >= i {
+			continue
+		}
+
+		hasExit := false
+		for j := targetIdx; j < i; j++ {
+			l := strings.TrimSpace(lines[j])
+			if l == "" || strings.HasPrefix(l, ";") || strings.HasPrefix(l, "#") {
+				continue
+			}
+			f := strings.Fields(l)
+			if len(f) == 0 {
+				continue
+			}
+			op := strings.ToUpper(f[0])
+			switch op {
+			case "RET", "SYSCALL", "CALL", "HLT",
+				"JE", "JNE", "JG", "JL", "JGE", "JLE":
+				hasExit = true
+			}
+			if hasExit {
+				break
+			}
+		}
+		if !hasExit {
+			violations = append(violations, Violation{
+				Line:     i + 1,
+				Message:  fmt.Sprintf("infinite loop detected: unconditional jump to %q at line %d with no exit", target, targetIdx+1),
+				Severity: "warning",
+				Fix:      "add a condition to leave the loop (e.g., CMP + JE) or a SYSCALL/RET inside the loop body",
+			})
+		}
+	}
+	return violations
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────
 
 func splitBlocks(lines []string) [][]int {
@@ -384,7 +429,6 @@ func splitBlocks(lines []string) [][]int {
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
-			// empty lines don't break blocks but we can skip
 			current = append(current, i)
 			continue
 		}
@@ -510,69 +554,4 @@ func regIndex(s string) int {
 		}
 	}
 	return -1
-}
-
-// ── infinite loop detection ─────────────────────────────────────────────
-
-type infiniteLoopCheck struct{}
-
-func (l *infiniteLoopCheck) Check(lines []string) []Violation {
-	var violations []Violation
-
-	// Build label -> line index map (0-based)
-	labels := map[string]int{}
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasSuffix(trimmed, ":") && !isInstruction(trimmed) {
-			name := strings.TrimSuffix(trimmed, ":")
-			labels[name] = i
-		}
-	}
-
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		fields := strings.Fields(trimmed)
-		if len(fields) != 2 || strings.ToUpper(fields[0]) != "JMP" {
-			continue
-		}
-		target := fields[1]
-		targetIdx, ok := labels[target]
-		if !ok || targetIdx >= i {
-			continue // forward jump or unknown label
-		}
-
-		// Check lines between target and this JMP (exclusive) for any exit
-		hasExit := false
-		for j := targetIdx; j < i; j++ {
-			l := strings.TrimSpace(lines[j])
-			if l == "" || strings.HasPrefix(l, ";") || strings.HasPrefix(l, "#") {
-				continue
-			}
-			f := strings.Fields(l)
-			if len(f) == 0 {
-				continue
-			}
-			op := strings.ToUpper(f[0])
-			switch op {
-			case "RET", "SYSCALL", "CALL", "HLT",
-				"JE", "JNE", "JG", "JL", "JGE", "JLE":
-				hasExit = true
-			}
-			if hasExit {
-				break
-			}
-		}
-		if !hasExit {
-			violations = append(violations, Violation{
-				Line:     i + 1,
-				Message:  fmt.Sprintf("infinite loop detected: unconditional jump to %q at line %d with no exit", target, targetIdx+1),
-				Severity: "warning",
-				Fix:      "add a condition to leave the loop (e.g., CMP + JE) or a SYSCALL/RET inside the loop body",
-			})
-		}
-	}
-	return violations
 }

@@ -33,6 +33,14 @@ type reptState struct {
 	buf   []string
 }
 
+// TestCase holds a single .test block
+type TestCase struct {
+	Name         string
+	Code         string // the collected lines inside the block
+	ExpectExit   int    // -1 means no expectation
+	ExpectStdout string // empty means no expectation
+}
+
 // PackageResolver resolves a package path (e.g. "io" or "term/color")
 // into preprocessed source text.
 type PackageResolver interface {
@@ -96,6 +104,10 @@ type prepContext struct {
 	depth          int
 	preHook        PreHook
 	postHook       PostHook
+	testCases      []TestCase
+	inTest         bool
+	testName       string
+	testBuf        []string
 }
 
 func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
@@ -145,6 +157,56 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 		}
 	}
 	return out, nil
+}
+
+// PreprocessTestable works like Preprocess but also returns parsed test cases.
+func PreprocessTestable(src, baseDir string, opts ...PreprocessOption) (string, []TestCase, error) {
+	ctx := &prepContext{
+		dir:           baseDir,
+		included:      map[string]bool{},
+		vasPath:       searchPath(),
+		consts:        map[string]string{},
+		macros:        map[string]macroDef{},
+		defines:       map[string]bool{},
+		blockIncluded: map[string]bool{},
+		pkgIncluded:   map[string]bool{},
+	}
+	ctx.resolver = &defaultResolver{pkgDir: pkgCacheDir(), vasPath: ctx.vasPath, parentCtx: ctx}
+
+	for _, opt := range opts {
+		opt(ctx)
+	}
+
+	ctx.initPlatformDefines()
+
+	if ctx.preHook != nil {
+		var err error
+		src, err = ctx.preHook(src)
+		if err != nil {
+			return "", nil, fmt.Errorf("pre-hook: %w", err)
+		}
+	}
+
+	out, err := ctx.resolve(src, baseDir)
+	if err != nil {
+		return "", nil, err
+	}
+	out, err = ctx.expandMacros(out)
+	if err != nil {
+		return "", nil, err
+	}
+	out, err = ctx.applyConsts(out)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if ctx.postHook != nil {
+		out, err = ctx.postHook(out)
+		if err != nil {
+			return "", nil, fmt.Errorf("post-hook: %w", err)
+		}
+	}
+	return out, ctx.testCases, nil
 }
 
 func (ctx *prepContext) initPlatformDefines() {
@@ -228,6 +290,18 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			out.WriteString(author)
 			out.WriteString("\n")
 			continue
+		}
+
+		// .error directive triggers a compile-time error
+		if strings.HasPrefix(trimmed, ".error") {
+			msg := strings.TrimSpace(strings.TrimPrefix(trimmed, ".error"))
+			if len(msg) >= 2 && msg[0] == '"' {
+				end := strings.IndexByte(msg[1:], '"')
+				if end >= 0 {
+					msg = msg[1 : end+1]
+				}
+			}
+			return "", fmt.Errorf("%s", msg)
 		}
 
 		if ctx.inMacro {
@@ -456,6 +530,58 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			continue
 		}
 
+		// .test block collection (preprocessed but not output)
+		if strings.HasPrefix(trimmed, ".test") {
+			name := strings.TrimSpace(strings.TrimPrefix(trimmed, ".test"))
+			if len(name) >= 2 && name[0] == '"' {
+				end := strings.IndexByte(name[1:], '"')
+				if end >= 0 {
+					name = name[1 : end+1]
+				}
+			}
+			ctx.inTest = true
+			ctx.testName = name
+			ctx.testBuf = []string{}
+			continue
+		}
+		if ctx.inTest {
+			if strings.HasPrefix(trimmed, ".endtest") {
+				exitCode := -1
+				var stdout string
+				filtered := make([]string, 0, len(ctx.testBuf))
+				for _, l := range ctx.testBuf {
+					t := strings.TrimSpace(l)
+					if strings.HasPrefix(t, ".expect_exit") {
+						v := strings.TrimSpace(strings.TrimPrefix(t, ".expect_exit"))
+						if n, err := strconv.Atoi(v); err == nil {
+							exitCode = n
+						}
+					} else if strings.HasPrefix(t, ".expect_stdout") {
+						v := strings.TrimSpace(strings.TrimPrefix(t, ".expect_stdout"))
+						if len(v) >= 2 && v[0] == '"' {
+							end := strings.IndexByte(v[1:], '"')
+							if end >= 0 {
+								stdout = v[1 : end+1]
+							}
+						}
+					} else {
+						filtered = append(filtered, l)
+					}
+				}
+				ctx.testCases = append(ctx.testCases, TestCase{
+					Name:         ctx.testName,
+					Code:         strings.Join(filtered, "\n"),
+					ExpectExit:   exitCode,
+					ExpectStdout: stdout,
+				})
+				ctx.inTest = false
+				ctx.testBuf = nil
+				continue
+			}
+			ctx.testBuf = append(ctx.testBuf, line)
+			continue
+		}
+
 		out.WriteString(line)
 		out.WriteByte('\n')
 	}
@@ -471,6 +597,9 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	}
 	if len(ctx.reptStack) > 0 {
 		return "", fmt.Errorf(".rept block is missing a closing .endr")
+	}
+	if ctx.inTest {
+		return "", fmt.Errorf("test %q is missing a closing .endtest", ctx.testName)
 	}
 
 	return out.String(), nil

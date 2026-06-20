@@ -1348,3 +1348,48 @@ func TestParseMacroDefaultSyntax(t *testing.T) {
 		t.Errorf("defaults[c]: got %q, want \"x,y\"", defaults["c"])
 	}
 }
+
+// —— Test —────────────────────────────────────────────────────────────────────────
+
+func TestTestBlock(t *testing.T) {
+	src := `.test "hello"
+    MOVI v0, 60
+    SYSCALL
+.endtest`
+	_, cases, err := PreprocessTestable(src, "/tmp")
+	if err != nil {
+		t.Fatalf("PreprocessTestable: %v", err)
+	}
+	if len(cases) != 1 {
+		t.Fatalf("expected 1 test case, got %d", len(cases))
+	}
+	if cases[0].Name != "hello" {
+		t.Errorf("expected test name 'hello', got %q", cases[0].Name)
+	}
+}
+
+func TestTestBlockWithExpect(t *testing.T) {
+	src := `.test "exit 42"
+    .expect_exit 42
+    MOVI v0, 60
+    SYSCALL
+.endtest`
+	_, cases, err := PreprocessTestable(src, "/tmp")
+	if err != nil {
+		t.Fatalf("PreprocessTestable: %v", err)
+	}
+	if cases[0].ExpectExit != 42 {
+		t.Errorf("expected exit 42, got %d", cases[0].ExpectExit)
+	}
+}
+
+func TestErrorDirective(t *testing.T) {
+	src := `.error "test error"`
+	_, err := testPrep(t, src)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "test error") {
+		t.Errorf("expected 'test error', got %v", err)
+	}
+}

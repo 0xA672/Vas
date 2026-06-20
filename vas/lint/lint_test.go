@@ -98,6 +98,4 @@ func TestNestedInfiniteLoop(t *testing.T) {
 	if len(violations) == 0 {
 		t.Error("expected infinite loop warning for inner loop")
 	}
-	// outer loop has a SYSCALL, so it should not be flagged
-	// but inner is flagged
 }
