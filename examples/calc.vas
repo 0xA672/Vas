@@ -7,22 +7,24 @@
 ;   ld calc.o -o calc
 ;   ./calc; echo $?    -> should output 55
 
+default rel
+
 section .text
     global _start
 
 _start:
-    MOVI    v1, 0           ; sum = 0
-    MOVI    v2, 1           ; i = 1
-    MOVI    v3, 10          ; n = 10
+    MOVI    v1, 0                   ; sum = 0
+    MOVI    v2, 1                   ; i = 1
+    MOVI    v3, 10                  ; n = 10
 
 loop:
-    ADD     v1, v1, v2      ; sum += i
-    ADD     v2, 1           ; i++ (immediate operand)
+    ADD     v1, v1, v2              ; sum += i
+    ADD     v2, 1                   ; i++ (immediate operand)
 
-    CMP     v2, v3          ; compare i and n
-    JLE     loop            ; i <= n -> continue
+    CMP     v2, v3                  ; compare i and n
+    JLE     loop                    ; i <= n -> continue
 
     ; exit code = sum
-    MOV     v5, v1          ; rdi = sum
-    MOVI    v0, 60          ; rax = 60 (sys_exit)
+    MOV     v5, v1                  ; rdi = sum
+    MOVI    v0, 60                  ; rax = 60 (sys_exit)
     SYSCALL

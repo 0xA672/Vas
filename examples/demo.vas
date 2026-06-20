@@ -1,36 +1,36 @@
-; demo.vas - simple addition program (pseudo-instructions)
+; demo.vas - simple addition program with conditional branch
+; Demonstrates: MOVI, ADD, CMP, conditional jumps (JG), JMP, STORE, SYSCALL
 
-.section .data
-msg:    dq 0
+default rel                         ; use RIP-relative addressing
 
-.section .text
-.global _start
+section .data
+    result: dq 0                   ; stores addition result
+    flag:   dq 0                   ; stores comparison flag (1 if v0 > 100, 0 otherwise)
+
+section .text
+    global _start
 
 _start:
     ; v0 = 10, v1 = 20, v0 = v0 + v1
-    MOVI v0, 10
-    MOVI v1, 20
-    ADD  v0, v0, v1
-    STORE v0, [result]
+    MOVI    v0, 10                 ; v0 = 10
+    MOVI    v1, 20                 ; v1 = 20
+    ADD     v0, v0, v1             ; v0 = v0 + v1 = 30
+    STORE   v0, [result]           ; store result
 
-    ; conditional branch
-    MOVI v2, 100
-    CMP  v0, v2
-    JG   greater
-    MOVI v3, 0
-    JMP  done
+    ; conditional branch: check if v0 > 100
+    MOVI    v2, 100                ; v2 = 100
+    CMP     v0, v2                 ; compare v0 and v2
+    JG      greater                ; jump if v0 > v2
+    MOVI    v3, 0                  ; flag = 0 (not greater)
+    JMP     done                   ; skip to end
 
 greater:
-    MOVI v3, 1
+    MOVI    v3, 1                  ; flag = 1 (greater)
 
 done:
-    STORE v3, [flag]
+    STORE   v3, [flag]             ; store flag value
 
     ; syscall exit
-    MOVI v0, 60
-    MOVI v1, 0
+    MOVI    v0, 60                 ; rax = 60 (sys_exit)
+    MOVI    v1, 0                  ; rdi = 0 (exit code)
     SYSCALL
-
-.section .data
-result: dq 0
-flag:   dq 0

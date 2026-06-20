@@ -1,24 +1,35 @@
 ; win-edge.vas -- edge cases test
+; Demonstrates: PUSH/POP, LOAD/STORE with variables, conditional jumps
 
+default rel
+
+section .data
+result: dq 0                        ; storage for test value
+
+section .text
+    global _start
+
+_start:
     MOVI    v0, 42
     PUSH    v0
-    POP     v1              ; v1 = 42 via stack
+    POP     v1                      ; v1 = 42 via stack
 
     ; LOAD/STORE with variable
     STORE   v1, [result]
-    LOAD    v2, [result]    ; v2 = 42
+    LOAD    v2, [result]            ; v2 = 42
 
     ; Conditional jump
     MOVI    v3, 42
     CMP     v2, v3
     JE      match
 
-    MOVI    v0, 0           ; not matched
-    RET
+    ; not matched
+    MOVI    v5, 0                   ; rdi = 0
+    MOVI    v0, 60                  ; rax = 60 (sys_exit)
+    SYSCALL
 
 match:
-    MOVI    v0, 99          ; matched! return 99
-    RET
-
-    section .data
-result: dq 0
+    ; matched! return 99
+    MOVI    v5, 99                  ; rdi = 99
+    MOVI    v0, 60                  ; rax = 60 (sys_exit)
+    SYSCALL

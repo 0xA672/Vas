@@ -1,81 +1,90 @@
 ; sort.vas -- bubble sort an array of 8 qwords
 ; Tests: LOAD/STORE with computed address, nested loops, CMP/conditional jumps
 
-.globl _start
+default rel
 
-    MOVI v0, 8        ; n = 8
-    PUSH v0           ; save n on stack
-    MOVI v1, 0        ; i = 0
+section .data
+data:
+    dq 5, 3, 8, 1, 9, 2, 7, 4     ; unsorted array
+
+section .text
+    global _start
+
+_start:
+    MOVI    v0, 8                  ; n = 8
+    PUSH    v0                     ; save n on stack
+    MOVI    v1, 0                  ; i = 0
 
 outer:
-    POP v0            ; restore n
-    MOV v4, v0        ; v4 = inner limit init = n
-    PUSH v0           ; save n again for next iteration
-    MOVI v0, 1
-    SUB v4, v4, v0    ; n - 1
-    SUB v4, v4, v1    ; n - 1 - i
-    MOVI v2, 0        ; swapped = false
-    MOVI v3, 0        ; j = 0
+    POP     v0                     ; restore n
+    MOV     v4, v0                 ; v4 = inner limit init = n
+    PUSH    v0                     ; save n again for next iteration
+    MOVI    v0, 1
+    SUB     v4, v4, v0             ; inner limit = n - 1
+    SUB     v4, v4, v1             ; inner limit = n - 1 - i
+    MOVI    v2, 0                  ; swapped = false
+    MOVI    v3, 0                  ; j = 0
 
 inner:
-    CMP v3, v4
-    JGE check_swap
+    CMP     v3, v4
+    JGE     check_swap
 
     ; addr of a[j] = data + j*8
-    MOV v5, v3        ; v5 = j
-    MUL v5, v5, 8     ; v5 = j*8
-    LEA v0, data
-    ADD v5, v0, v5    ; v5 = &a[j]
-    LOAD v7, [v5]     ; v7 = a[j]
+    MOV     v5, v3                 ; v5 = j
+    MUL     v5, v5, 8              ; v5 = j*8
+    LEA     v0, [data]
+    ADD     v5, v0, v5             ; v5 = &a[j]
+    LOAD    v7, [v5]               ; v7 = a[j]
 
     ; addr of a[j+1] = data + (j+1)*8
-    MOV v5, v3        ; v5 = j
-    MOVI v6, 1
-    ADD v5, v5, v6    ; v5 = j+1
-    MUL v5, v5, 8     ; v5 = (j+1)*8
-    LEA v0, data
-    ADD v5, v0, v5    ; v5 = &a[j+1]
-    LOAD v6, [v5]     ; v6 = a[j+1]
+    MOV     v5, v3                 ; v5 = j
+    MOVI    v6, 1
+    ADD     v5, v5, v6             ; v5 = j+1
+    MUL     v5, v5, 8              ; v5 = (j+1)*8
+    LEA     v0, [data]
+    ADD     v5, v0, v5             ; v5 = &a[j+1]
+    LOAD    v6, [v5]               ; v6 = a[j+1]
 
     ; if a[j] > a[j+1], swap
-    CMP v7, v6
-    JLE no_swap
+    CMP     v7, v6
+    JLE     no_swap
 
 ; swap: STORE a[j+1] (v6) to a[j], a[j] (v7) to a[j+1]
-    MOV v5, v3
-    MUL v5, v5, 8
-    LEA v0, data
-    ADD v5, v0, v5
-    STORE v6, [v5]     ; a[j] = a[j+1]
+swap:
+    MOV     v5, v3
+    MUL     v5, v5, 8
+    LEA     v0, [data]
+    ADD     v5, v0, v5
+    STORE   v6, [v5]               ; a[j] = a[j+1]
 
-    MOV v5, v3
-    MOVI v0, 1
-    ADD v5, v5, v0
-    MUL v5, v5, 8
-    LEA v0, data
-    ADD v5, v0, v5
-    STORE v7, [v5]     ; a[j+1] = a[j]
+    MOV     v5, v3
+    MOVI    v0, 1
+    ADD     v5, v5, v0
+    MUL     v5, v5, 8
+    LEA     v0, [data]
+    ADD     v5, v0, v5
+    STORE   v7, [v5]               ; a[j+1] = a[j]
 
-    MOVI v2, 1         ; swapped = true
+    MOVI    v2, 1                  ; swapped = true
 
 no_swap:
-    MOVI v0, 1
-    ADD v3, v3, v0     ; j++
-    JMP inner
+    MOVI    v0, 1
+    ADD     v3, v3, v0             ; j++
+    JMP     inner
 
 check_swap:
-    CMP v2, 0
-    JE done
-    MOVI v0, 1
-    ADD v1, v1, v0     ; i++
-    JMP outer
+    CMP     v2, 0
+    JE      done
+    MOVI    v0, 1
+    ADD     v1, v1, v0             ; i++
+    JMP     outer
 
 done:
-    POP v0             ; clean up stack
-    LEA v0, data
-    LOAD v0, [v0]
-    RET
-
-.data
-data:
-    dq 5, 3, 8, 1, 9, 2, 7, 4
+    POP     v0                     ; clean up stack
+    LEA     v0, [data]
+    LOAD    v0, [v0]               ; load first element as result
+    
+    ; exit with result
+    MOV     v5, v0                 ; rdi = result
+    MOVI    v0, 60                 ; rax = 60 (sys_exit)
+    SYSCALL

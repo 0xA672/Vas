@@ -2,36 +2,44 @@
 ; Compare: vas -O1 examples/opt_showcase.vas vs vas -O2 examples/opt_showcase.vas
 ; -O2 should produce shorter output (LICM + PUSH/POP elimination)
 
-    MOVI v3, 10          ; n = 10 (loop 0..9)
-    MOVI v1, 0           ; sum = 0
-    MOVI v2, 0           ; i = 0
+default rel
 
-loop:
-    ; LICM test: LEA v0, [data] is loop-invariant
-    ; -O2 hoists it before the loop
-    LEA v0, [data]
-
-    ; Compute address: v5 = &data + i*8, then load and store
-    MOV v5, v2
-    MUL v5, v5, 8
-    ADD v5, v0, v5
-    LOAD v6, [v5]
-    STORE v6, [v5]
-
-    ; PUSH/POP elimination test
-    ; (PUSH v1 / POP v1 around ADD is a no-op; -O2 removes both)
-    PUSH v1
-    ADD v1, v1, v6       ; sum += data[i]
-    POP v1
-
-    ADD v2, 1            ; i++
-    CMP v2, v3
-    JL loop              ; i < n (not ≤, to stay in bounds)
-
-    MOV v5, v1
-    MOVI v0, 60
-    SYSCALL
-
-.data
+section .data
 data:
     dq 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+
+section .text
+    global _start
+
+_start:
+    MOVI    v3, 10                  ; n = 10 (loop 0..9)
+    MOVI    v1, 0                   ; sum = 0
+    MOVI    v2, 0                   ; i = 0
+
+    ; LICM test: LEA v0, [data] is loop-invariant
+    ; -O2 hoists it before the loop
+    LEA     v0, [data]
+
+loop:
+    ; Compute address: v5 = &data + i*8, then load and store
+    MOV     v5, v2
+    MUL     v5, v5, 8
+    ADD     v5, v0, v5
+    LOAD    v6, [v5]
+    STORE   v6, [v5]
+
+    ; PUSH/POP elimination test
+    ; (PUSH v4 / POP v4 around ADD is a no-op for v4; -O2 removes both)
+    ; v4 is unused here, demonstrating that push/pop of dead register is eliminated
+    PUSH    v4
+    ADD     v1, v1, v6              ; sum += data[i] (v1 is separate from push/pop register)
+    POP     v4
+
+    ADD     v2, 1                   ; i++
+    CMP     v2, v3
+    JL      loop                    ; i < n (not ≤, to stay in bounds)
+
+    ; exit with sum as exit code
+    MOV     v5, v1                  ; rdi = sum
+    MOVI    v0, 60                  ; rax = 60 (sys_exit)
+    SYSCALL

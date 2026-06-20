@@ -5,6 +5,8 @@
 ; of specific code blocks, preventing One Definition Rule (ODR) issues
 ; at a finer granularity than file-level deduplication.
 
+default rel
+
 ; ── Block 1: System Call Constants ───────────────────────────────────────
 .once begin syscalls
   .const SYS_write = 1
