@@ -2,15 +2,25 @@
 ; Compare: vas -O1 examples/opt_showcase.vas vs vas -O2 examples/opt_showcase.vas
 ; -O2 should produce shorter output (LICM + PUSH/POP elimination)
 
+	default rel
+
+	section .data
+data:
+	dq 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+
+	section .text
+	global _start
+
+_start:
 	mov	rdx, 10
 	xor	ebx, ebx
 	xor	ecx, ecx
 
-	lea	rax, [data]
-loop:
     ; LICM test: LEA v0, [data] is loop-invariant
     ; -O2 hoists it before the loop
+	lea	rax, [data]
 
+loop:
     ; Compute address: v5 = &data + i*8, then load and store
 	mov	rdi, rcx
 	shl	rdi, 3
@@ -19,16 +29,15 @@ loop:
 	mov	[rdi], r8
 
     ; PUSH/POP elimination test
-    ; (PUSH v1 / POP v1 around ADD is a no-op; -O2 removes both)
+    ; (PUSH v4 / POP v4 around ADD is a no-op for v4; -O2 removes both)
+    ; v4 is unused here, demonstrating that push/pop of dead register is eliminated
+	add	rbx, r8
 
 	add	rcx, 1
 	cmp	rcx, rdx
 	jl	loop
 
+    ; exit with sum as exit code
 	mov	rdi, rbx
 	mov	rax, 60
 	syscall
-
-	section .data
-data:
-	dq 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
