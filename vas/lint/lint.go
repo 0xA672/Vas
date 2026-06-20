@@ -96,26 +96,15 @@ type stackBalanceCheck struct{}
 
 func (s *stackBalanceCheck) Check(lines []string) []Violation {
 	var violations []Violation
-	var funcs [][]int
-	var current []int
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasSuffix(trimmed, ":") && !isInstruction(trimmed) {
-			if len(current) > 0 {
-				funcs = append(funcs, current)
-			}
-			current = []int{i}
-			continue
-		}
-		current = append(current, i)
-	}
-	if len(current) > 0 {
-		funcs = append(funcs, current)
-	}
+	funcs := splitFuncs(lines)
 
 	for _, fn := range funcs {
 		balance := 0
+		inFunction := true
 		for _, idx := range fn {
+			if !inFunction {
+				break
+			}
 			line := strings.TrimSpace(lines[idx])
 			if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
 				continue
@@ -126,7 +115,7 @@ func (s *stackBalanceCheck) Check(lines []string) []Violation {
 				balance++
 			case "POP":
 				balance--
-			case "RET", "RETURN", "SYSCALL":
+			case "RET", "RETURN":
 				if balance != 0 {
 					violations = append(violations, Violation{
 						Line:     idx + 1,
@@ -134,18 +123,19 @@ func (s *stackBalanceCheck) Check(lines []string) []Violation {
 						Severity: "warning",
 						Fix:      "ensure every push has a corresponding pop before return",
 					})
+				}
+				inFunction = false // Stop tracking after return
+			case "SYSCALL":
+				if balance != 0 {
+					violations = append(violations, Violation{
+						Line:     idx + 1,
+						Message:  fmt.Sprintf("stack imbalance at syscall: push/pop mismatch of %d", balance),
+						Severity: "warning",
+						Fix:      "ensure every push has a corresponding pop before syscall",
+					})
 					balance = 0
 				}
 			}
-		}
-		if balance != 0 {
-			lastIdx := fn[len(fn)-1]
-			violations = append(violations, Violation{
-				Line:     lastIdx + 1,
-				Message:  fmt.Sprintf("stack imbalance at end of function: push/pop mismatch of %d", balance),
-				Severity: "warning",
-				Fix:      "ensure every push has a corresponding pop",
-			})
 		}
 	}
 	return violations
@@ -171,10 +161,10 @@ type uninitRegCheck struct{}
 
 func (u *uninitRegCheck) Check(lines []string) []Violation {
 	var violations []Violation
-	blocks := splitBlocks(lines)
-	for _, block := range blocks {
+	funcs := splitFuncs(lines)
+	for _, fn := range funcs {
 		written := map[string]bool{}
-		for _, idx := range block {
+		for _, idx := range fn {
 			line := strings.TrimSpace(lines[idx])
 			if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
 				continue
@@ -186,11 +176,12 @@ func (u *uninitRegCheck) Check(lines []string) []Violation {
 			op := strings.ToUpper(fields[0])
 			dst := dstReg(op, fields[1:])
 			if dst >= 0 {
-				written[fields[1]] = true
+				regName := strings.TrimRight(fields[1], ",")
+				written[regName] = true
 			}
 		}
 		seen := map[string]bool{}
-		for _, idx := range block {
+		for _, idx := range fn {
 			line := strings.TrimSpace(lines[idx])
 			if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
 				continue
@@ -214,7 +205,8 @@ func (u *uninitRegCheck) Check(lines []string) []Violation {
 			}
 			dst := dstReg(op, fields[1:])
 			if dst >= 0 {
-				written[fields[1]] = true
+				regName := strings.TrimRight(fields[1], ",")
+				written[regName] = true
 			}
 		}
 	}
@@ -231,11 +223,12 @@ var callerSaveRegs = map[string]bool{
 
 func (c *callerSaveCheck) Check(lines []string) []Violation {
 	var violations []Violation
-	blocks := splitBlocks(lines)
-	for _, block := range blocks {
+	funcs := splitFuncs(lines)
+	for _, fn := range funcs {
 		saved := map[string]bool{}
 		lastWrite := map[string]int{}
-		for _, idx := range block {
+		hasCall := false
+		for _, idx := range fn {
 			line := strings.TrimSpace(lines[idx])
 			if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
 				continue
@@ -251,6 +244,7 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 					saved[reg] = true
 				}
 			} else if op == "CALL" {
+				hasCall = true
 				for reg := range callerSaveRegs {
 					if !saved[reg] {
 						lastWrite[reg] = 0
@@ -263,16 +257,18 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 					delete(lastWrite, reg)
 				}
 			} else {
-				for _, reg := range readRegs(op, fields[1:]) {
-					regName := fmt.Sprintf("v%d", reg)
-					if callerSaveRegs[regName] {
-						if _, exists := lastWrite[regName]; !exists {
-							violations = append(violations, Violation{
-								Line:     idx + 1,
-								Message:  fmt.Sprintf("register %s (caller-saved) may be used after call without being preserved", regName),
-								Severity: "warning",
-								Fix:      fmt.Sprintf("push %s before call and pop after, or reload after call", regName),
-							})
+				if hasCall {
+					for _, reg := range readRegs(op, fields[1:]) {
+						regName := fmt.Sprintf("v%d", reg)
+						if callerSaveRegs[regName] {
+							if _, exists := lastWrite[regName]; !exists {
+								violations = append(violations, Violation{
+									Line:     idx + 1,
+									Message:  fmt.Sprintf("register %s (caller-saved) may be used after call without being preserved", regName),
+									Severity: "warning",
+									Fix:      fmt.Sprintf("push %s before call and pop after, or reload after call", regName),
+								})
+							}
 						}
 					}
 				}
@@ -422,6 +418,32 @@ func (l *infiniteLoopCheck) Check(lines []string) []Violation {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────
+
+// splitFuncs splits lines into functions based on function entry labels
+// Only labels starting with '_' are treated as function entry points
+func splitFuncs(lines []string) [][]int {
+	var funcs [][]int
+	var current []int
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasSuffix(trimmed, ":") && !isInstruction(trimmed) {
+			name := strings.TrimSuffix(trimmed, ":")
+			// Only treat labels starting with '_' as function boundaries
+			if len(name) > 0 && name[0] == '_' {
+				if len(current) > 0 {
+					funcs = append(funcs, current)
+				}
+				current = []int{i}
+				continue
+			}
+		}
+		current = append(current, i)
+	}
+	if len(current) > 0 {
+		funcs = append(funcs, current)
+	}
+	return funcs
+}
 
 func splitBlocks(lines []string) [][]int {
 	var blocks [][]int
