@@ -55,11 +55,11 @@ var (
 	testCmpZero = regexp.MustCompile(`^\tcmp\t([a-z][a-z0-9]+),\s*0$`)
 
 	// LEA fusion regexes
-	peepMovRe    = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-	peepAddRe    = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
-	peepSubImmRe = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*(-?\d+)$`)
+	peepMovRe     = regexp.MustCompile(`^\tmov\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+	peepAddRe     = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*([a-z][a-z0-9]+)$`)
+	peepSubImmRe  = regexp.MustCompile(`^\tsub\t([a-z][a-z0-9]+),\s*(-?\d+)$`)
 	peepImulOneRe = regexp.MustCompile(`^\timul\t([a-z][a-z0-9]+),\s*(\d+)$`)
-	peepShlRe    = regexp.MustCompile(`^\tshl\t([a-z][a-z0-9]+),\s*(\d+)$`)
+	peepShlRe     = regexp.MustCompile(`^\tshl\t([a-z][a-z0-9]+),\s*(\d+)$`)
 
 	// No-op elimination regexes
 	noopAddZeroRe  = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*0$`)
@@ -2013,4 +2013,3 @@ func pushModPopElim(lines []string) []string {
 	}
 	return result
 }
-
