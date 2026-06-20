@@ -8,8 +8,8 @@
 	default rel
 
 	section .data
-	msg db 'Hello, World from VAS!', 10
-	msglen equ $ - msg
+	msg     db  'Hello, World from VAS!', 10
+	msglen  equ $ - msg
 
 	section .text
 	global _start
