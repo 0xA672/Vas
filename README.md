@@ -564,7 +564,9 @@ If the assembled output already defines a `.text` section, output is passed thro
 | `greet.vas` | CLI tool with args | POP, CMP, STORE, LOAD, SYSCALL | ★★☆ |
 | `win-ops.vas` | Win64 arithmetic chain | ADD, MUL, SUB, RET | ★☆☆ |
 | `win-edge.vas` | Win64 edge cases | PUSH, POP, STORE, LOAD, CMP, JE, RET | ★★☆ |
-| `multitool.vas` | Multi-function demo | strlen, Fibonacci, prime, factorial | ★★★ |
+| `demo.vas` | Multi-section demo | MOVI, LEA, CALL, SYSCALL | ★★☆ |
+| `once_block_demo.vas` | `.once begin/end` demo | MOVI, SYSCALL | ★☆☆ |
+| `opt_showcase.vas` | Optimization showcase | ADD, MUL, MOV, RET | ★★☆ |
 
 Build and run Linux examples:
 ```bash
@@ -618,11 +620,13 @@ vas/
 +-- test/
 |   +-- assembler_test.go    # Unit tests for assembler
 |   +-- invariant_test.go    # Property-based invariant tests
+|   +-- standalone_test.go   # Standalone mode tests
 +-- testdata/
 |   +-- golden/              # Golden test outputs
 +-- examples/                # Example .vas files
 +-- wasm/                    # WebAssembly playground support
-+-- bin/                     # Build artifacts (gitignored)
++-- syntaxes/                # Editor syntax highlighting (VS Code)
++-- .github/workflows/       # CI configuration
 +-- README.md
 +-- LICENSE
 ```
