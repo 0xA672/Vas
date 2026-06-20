@@ -384,6 +384,39 @@ This produces `; Author: Jane Hacker <jane@example.com>` in the output.
 Useful for identifying the origin of a file, especially when sharing
 libraries via `.include`.
 
+### Compile-Time Error (`.error`)
+
+Force a compile-time error with a custom message.  Useful together with
+conditional compilation to assert that a required constant is defined:
+
+```asm
+.ifndef BUFFER_SIZE
+.error "BUFFER_SIZE is required – define it before including this file"
+.endif
+```
+
+The message can be a quoted string or plain text.
+
+### Embedded Tests (`.test` / `.endtest`)
+
+Define self-contained test cases that `vas test` can compile, run, and check:
+
+```asm
+.test "factorial of 5"
+    .expect_exit 0
+    .expect_stdout "120"
+    MOVI v0, 5
+    CALL factorial
+    CMP v0, 120
+    JNE .fail
+    ; ...
+.endtest
+```
+
+- `.expect_exit <n>` – expected exit code (optional).
+- `.expect_stdout "string"` – expected standard output (optional).
+- The test block is removed from the main source during preprocessing.
+
 ### Symbol Visibility in Package Includes
 
 When including a package with angle brackets (`.include <pkg>`), VAS processes the package in a **separate context**. This means:
@@ -440,6 +473,7 @@ vas diff input.vas            # Show VAS source vs NASM output
 vas stats input.vas           # Show instruction and register statistics
 vas check input.vas           # Validate syntax (exit: 0=ok, 1=error)
 vas check --strict input.vas  # Also fail on dangerous instruction patterns
+vas test input.vas            # Run embedded .test blocks
 vas list                      # List all instructions and syntax
 vas version                   # Print version
 ```
@@ -452,6 +486,12 @@ Options:
 - `-v`, `--version`   - Print version and exit
 - `-h`, `--help`      - Show help
 - `--strict`          - In check mode, treat lint errors as failures
+
+### Test – Run Embedded Tests
+
+`vas test` extracts all `.test` blocks from a VAS source file, compiles each one
+into a temporary executable, runs it, and verifies the exit code and stdout
+against the expectations declared with `.expect_exit` and `.expect_stdout`.
 
 ### Prep – View Preprocessed Output
 
@@ -524,7 +564,9 @@ If the assembled output already defines a `.text` section, output is passed thro
 | `greet.vas` | CLI tool with args | POP, CMP, STORE, LOAD, SYSCALL | ★★☆ |
 | `win-ops.vas` | Win64 arithmetic chain | ADD, MUL, SUB, RET | ★☆☆ |
 | `win-edge.vas` | Win64 edge cases | PUSH, POP, STORE, LOAD, CMP, JE, RET | ★★☆ |
-| `multitool.vas` | Multi-function demo | strlen, Fibonacci, prime, factorial | ★★★ |
+| `demo.vas` | Multi-section demo | MOVI, LEA, CALL, SYSCALL | ★★☆ |
+| `once_block_demo.vas` | `.once begin/end` demo | MOVI, SYSCALL | ★☆☆ |
+| `opt_showcase.vas` | Optimization showcase | ADD, MUL, MOV, RET | ★★☆ |
 
 Build and run Linux examples:
 ```bash
@@ -568,21 +610,27 @@ vas/
 +-- go.mod                   # Go module
 +-- vas/
 |   +-- core.go              # Core translation: scan -> expand -> wrap (includes regMap)
+|   +-- core_test.go         # Tests for core translation
 |   +-- prep.go              # Preprocessor: includes, macros, constants, conditionals
+|   +-- prep_test.go         # Tests for preprocessor
 |   +-- lint/
 |   |   +-- lint.go          # Linting and static analysis
+|   |   +-- lint_test.go     # Tests for linting
 |   +-- opt/
 |   |   +-- opt.go           # -O1 / -O2 optimizer passes
+|   |   +-- opt_test.go      # Tests for optimization passes
 |   +-- arch/
 |       +-- arch.go          # Architecture-specific target definitions (elf64, win64)
 +-- test/
 |   +-- assembler_test.go    # Unit tests for assembler
 |   +-- invariant_test.go    # Property-based invariant tests
+|   +-- standalone_test.go   # Standalone mode tests
 +-- testdata/
 |   +-- golden/              # Golden test outputs
 +-- examples/                # Example .vas files
 +-- wasm/                    # WebAssembly playground support
-+-- bin/                     # Build artifacts (gitignored)
++-- syntaxes/                # Editor syntax highlighting (VS Code)
++-- .github/workflows/       # CI configuration
 +-- README.md
 +-- LICENSE
 ```
