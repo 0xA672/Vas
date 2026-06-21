@@ -1,6 +1,7 @@
 package opt
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -1181,5 +1182,94 @@ func TestShlAddFuseNoMatchDifferentDst(t *testing.T) {
 	result := shlAddFuse(lines)
 	if len(result) != 3 {
 		t.Errorf("expected 3 lines unchanged (different add dst), got %d", len(result))
+	}
+}
+
+// ── Benchmarks ─────────────────────────────────────────────────────────
+// These benchmarks exercise the optimized peephole pipeline directly so
+// we can measure the effect of single-scan merging and sync.Pool reuse.
+
+var benchOut string
+
+// makeVASInput builds a moderate-sized VAS input with enough virtual-
+// register traffic to trigger all pre-expansion passes plus the
+// peephole pass at the end.
+func makeVASInput(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "MOVI v%d, %d\n", i%13, i+1)
+		fmt.Fprintf(&b, "ADD v%d, v%d, %d\n", (i+1)%13, i%13, i%5+1)
+		fmt.Fprintf(&b, "CMP v%d, %d\n", i%13, i%10+1)
+	}
+	return b.String()
+}
+
+// makeASMInput builds a moderate-sized nasm-style assembly output
+// exercising every 1-line and 2-line peephole rule (mov reg, 0,
+// cmp reg, 0, mov reg, reg, push/pop pairs, mov+add patterns,
+// nop runs, not/not and inc/dec cancel pairs, etc.).
+func makeASMInput(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString("\tmov\trax, 0\n")
+		b.WriteString("\tcmp\trbx, 0\n")
+		b.WriteString("\tmov\trcx, rcx\n")
+		b.WriteString("\tmov\trdx, rbx\n")
+		b.WriteString("\tadd\trdx, rcx\n")
+		b.WriteString("\tpush\trax\n")
+		b.WriteString("\tpop\trbx\n")
+		b.WriteString("\tnop\n")
+		b.WriteString("\tnop\n")
+		b.WriteString("\tnot\trcx\n")
+		b.WriteString("\tnot\trcx\n")
+	}
+	return b.String()
+}
+
+func BenchmarkOptimizeO2Small(b *testing.B) {
+	input := makeVASInput(20)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchOut = Optimize(input, 2)
+	}
+}
+
+func BenchmarkOptimizeO2Large(b *testing.B) {
+	input := makeVASInput(500)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchOut = Optimize(input, 2)
+	}
+}
+
+func BenchmarkPeepholeOnlySmall(b *testing.B) {
+	input := makeASMInput(50)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchOut = PeepholeOnly(input)
+	}
+}
+
+func BenchmarkPeepholeOnlyLarge(b *testing.B) {
+	input := makeASMInput(1000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchOut = PeepholeOnly(input)
+	}
+}
+
+// BenchmarkPeepholeNoMatch isolates the mightOptimize fast-path:
+// a pure-directive input that contains nothing any peephole rule
+// could transform.
+func BenchmarkPeepholeNoMatch(b *testing.B) {
+	var sb strings.Builder
+	for i := 0; i < 500; i++ {
+		sb.WriteString("\t; comment\n")
+		sb.WriteString("\tdq\t0\n")
+	}
+	input := sb.String()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchOut = PeepholeOnly(input)
 	}
 }
