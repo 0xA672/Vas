@@ -13,8 +13,8 @@ data:
 
 _start:
 	mov	rdx, 10
-	mov	rbx, 0
-	mov	rcx, 0
+	xor	ebx, ebx
+	xor	ecx, ecx
 
     ; LICM test: LEA v0, [data] is loop-invariant
     ; -O2 hoists it before the loop

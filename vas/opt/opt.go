@@ -1680,6 +1680,15 @@ func pushPopBlock(lines []string) []string {
 		}
 		reg := fields[1]
 
+		// Fast 3-instruction pattern: PUSH reg; OP reg, src; POP reg
+		// The middle instruction modifies reg; POP restores it — net result: no-op on reg.
+		if removed, mid, pop := scanPushModPop(i, reg, lines, remove); removed {
+			remove[i] = true
+			remove[mid] = true
+			remove[pop] = true
+			continue
+		}
+
 		for j := i + 1; j < len(lines); j++ {
 			if remove[j] {
 				continue
@@ -1722,6 +1731,81 @@ func pushPopBlock(lines []string) []string {
 		}
 	}
 	return result
+}
+
+// scanPushModPop checks whether lines[i:i+N] is a PUSH reg; instr-writes-reg; POP reg
+// pattern. If yes, returns (true, midIdx, popIdx). Otherwise (false, 0, 0).
+func scanPushModPop(i int, reg string, lines []string, remove []bool) (bool, int, int) {
+	// Find next non-empty, non-comment, non-removed line after PUSH
+	midIdx := -1
+	for j := i + 1; j < len(lines); j++ {
+		if remove[j] {
+			continue
+		}
+		if stripComment(lines[j]) == "" {
+			continue
+		}
+		midIdx = j
+		break
+	}
+	if midIdx < 0 {
+		return false, 0, 0
+	}
+	// Check that the middle line writes to reg, and that the opcode
+	// is one that does not set FLAGS. This is conservative: peephole
+	// passes on the final nasm output will catch flag-setting variants.
+	midFields := strings.Fields(stripComment(lines[midIdx]))
+	if len(midFields) < 2 {
+		return false, 0, 0
+	}
+	midOp := strings.ToUpper(midFields[0])
+	midReg := strings.TrimRight(midFields[1], ",")
+	if midReg != reg {
+		return false, 0, 0
+	}
+	if dstReg(midOp, midFields[1:]) < 0 {
+		return false, 0, 0
+	}
+	switch midOp {
+	case "MOV", "MOVI", "LOAD", "LEA", "STORE":
+		// These do not set FLAGS — safe to drop.
+	default:
+		return false, 0, 0
+	}
+	// Then find next non-empty/non-comment line after midIdx — must be POP reg
+	popIdx := -1
+	for j := midIdx + 1; j < len(lines); j++ {
+		if remove[j] {
+			continue
+		}
+		if stripComment(lines[j]) == "" {
+			continue
+		}
+		popIdx = j
+		break
+	}
+	if popIdx < 0 {
+		return false, 0, 0
+	}
+	popFields := strings.Fields(stripComment(lines[popIdx]))
+	if len(popFields) < 2 {
+		return false, 0, 0
+	}
+	popOp := strings.ToUpper(popFields[0])
+	popReg := strings.TrimRight(popFields[1], ",")
+	if popOp != "POP" || popReg != reg {
+		return false, 0, 0
+	}
+	return true, midIdx, popIdx
+}
+
+// stripComment trims leading/trailing whitespace; returns "" for lines that are empty or pure comments only.
+func stripComment(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:idx])
+	}
+	return trimmed
 }
 
 func tailCallOpt(lines []string) []string {
