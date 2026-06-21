@@ -35,17 +35,16 @@ const MaxVirtualReg = 12
 
 // IsValidVirtualReg reports whether s is a valid virtual register name (v0..v12).
 func IsValidVirtualReg(s string) bool {
-	if len(s) < 2 || s[0] != 'v' {
-		return false
-	}
-	n := len(s)
-	if n == 2 {
-		return s[1] >= '0' && s[1] <= '9' && s[1] <= '9'-('9'-'9') // just '9'
-	}
-	if n == 3 && s[1] == '1' {
-		return s[2] >= '0' && s[2] <= '2' // v10..v12
-	}
-	return false
+        if len(s) < 2 || s[0] != 'v' {
+                return false
+        }
+        if len(s) == 2 {
+                return s[1] >= '0' && s[1] <= '9' // v0..v9
+        }
+        if len(s) == 3 && s[1] == '1' {
+                return s[2] >= '0' && s[2] <= '2' // v10..v12
+        }
+        return false
 }
 
 // VirtualRegNum returns the register number from "v0".."v12", or -1.
