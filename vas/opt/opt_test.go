@@ -973,11 +973,22 @@ func TestPushPopElimWithCode(t *testing.T) {
 }
 
 func TestPushPopElimModifiedReg(t *testing.T) {
-	// PUSH v0; MOVI v0, 1; POP v0 → reg modified between, no elimination
+	// PUSH v0; MOVI v0, 1; POP v0 → MOVI writes a value that POP overwrites.
+	// The entire triple is a dead write and should be eliminated.
 	lines := []string{"\tPUSH\tv0", "\tMOVI\tv0, 1", "\tPOP\tv0"}
 	result := pushPopElim(lines)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 lines (dead write eliminated), got %d: %v", len(result), result)
+	}
+}
+
+func TestPushPopElimFlagSettingMiddle(t *testing.T) {
+	// PUSH v0; ADD v0, v0, v1; POP v0 → middle instr sets FLAGS.
+	// Conservative: keep, let the nasm-level peephole pass deal with it.
+	lines := []string{"\tPUSH\tv0", "\tADD\tv0, v0, v1", "\tPOP\tv0"}
+	result := pushPopElim(lines)
 	if len(result) != 3 {
-		t.Fatalf("expected 3 lines (reg modified), got %d: %v", len(result), result)
+		t.Fatalf("expected 3 lines (flag-setting middle kept), got %d: %v", len(result), result)
 	}
 }
 

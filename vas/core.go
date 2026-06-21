@@ -112,8 +112,17 @@ func AssembleWithOptWithHook(input string, cfg OptConfig, preHook func(string) (
 
 	output := strings.Join(outLines, "\n")
 
-	// PeepholeOnly is called inside Optimize already (twice).
-	// No need to run it again here.
+	// The peephole passes inside Optimize run on VAS source lines and
+	// use regexes that require tab-prefixed lowercase opcodes — they are
+	// effectively no-ops on VAS source. Run PeepholeOnly here on the fully
+	// expanded nasm output so passes like pushModPopElim can eliminate
+	// patterns such as  "push rbx; add rbx, r8; pop rbx".
+	// These aggressive peephole optimizations are gated at O2 and above
+	// to match the opt_showcase behavior where O2 output is strictly
+	// shorter than O1.
+	if cfg.Level >= 2 {
+		output = opt.PeepholeOnly(output)
+	}
 
 	if postHook != nil {
 		var err error
