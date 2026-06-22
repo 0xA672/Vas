@@ -59,7 +59,7 @@ func AssembleWithOptWithHook(input string, cfg OptConfig, preHook func(string) (
 		}
 	}
 	if hasError && cfg.FailOnLint {
-		return "", fmt.Errorf("lint errors found (use --warn-only or set FailOnLint=false to suppress)")
+		return "", fmt.Errorf("%w (use --warn-only or set FailOnLint=false to suppress)", ErrLintError)
 	}
 
 	// Set explain mode before optimization
@@ -69,18 +69,12 @@ func AssembleWithOptWithHook(input string, cfg OptConfig, preHook func(string) (
 	}
 
 	lines := strings.Split(input, "\n")
-	// Pre-expansion optimization: constant folding
+	// Pre-expansion optimization: constant folding + full pipeline on []string
 	if cfg.Level >= 1 {
 		lines = opt.FoldConstants(lines)
-		input = strings.Join(lines, "\n")
+		lines = opt.OptimizeLines(lines, cfg.Level)
 	}
 
-	// Pre-expansion optimization: dead code elimination and other passes
-	if cfg.Level >= 1 {
-		input = opt.Optimize(input, cfg.Level)
-	}
-
-	lines = strings.Split(input, "\n")
 	var outLines []string
 
 	for lineNum, line := range lines {
@@ -110,8 +104,6 @@ func AssembleWithOptWithHook(input string, cfg OptConfig, preHook func(string) (
 		outLines = append(outLines, result...)
 	}
 
-	output := strings.Join(outLines, "\n")
-
 	// The peephole passes inside Optimize run on VAS source lines and
 	// use regexes that require tab-prefixed lowercase opcodes — they are
 	// effectively no-ops on VAS source. Run PeepholeOnly here on the fully
@@ -121,8 +113,9 @@ func AssembleWithOptWithHook(input string, cfg OptConfig, preHook func(string) (
 	// to match the opt_showcase behavior where O2 output is strictly
 	// shorter than O1.
 	if cfg.Level >= 2 {
-		output = opt.PeepholeOnly(output)
+		outLines = opt.PeepholeOnlyLines(outLines)
 	}
+	output := strings.Join(outLines, "\n")
 
 	if postHook != nil {
 		var err error
@@ -332,7 +325,7 @@ func splitTokens(line string) []string {
 
 func expand2op(mnemonic string, args []string) ([]string, error) {
 	if len(args) < 2 || len(args) > 3 {
-		return nil, fmt.Errorf("%s expects 2 or 3 operands, got %d", mnemonic, len(args))
+		return nil, fmt.Errorf("%w: %s expects 2 or 3 operands, got %d", ErrOperandCount, mnemonic, len(args))
 	}
 	dst, err := mapReg(args[0])
 	if err != nil {
@@ -375,7 +368,7 @@ func expand2op(mnemonic string, args []string) ([]string, error) {
 
 func expandMul(args []string) ([]string, error) {
 	if len(args) < 2 || len(args) > 3 {
-		return nil, fmt.Errorf("MUL expects 2 or 3 operands, got %d", len(args))
+		return nil, fmt.Errorf("%w: MUL expects 2 or 3 operands, got %d", ErrOperandCount, len(args))
 	}
 	dst, err := mapReg(args[0])
 	if err != nil {
@@ -410,7 +403,7 @@ func expandMul(args []string) ([]string, error) {
 
 func expandLoad(args []string) ([]string, error) {
 	if len(args) != 2 {
-		return nil, fmt.Errorf("LOAD expects 2 operands, got %d", len(args))
+		return nil, fmt.Errorf("%w: LOAD expects 2 operands, got %d", ErrOperandCount, len(args))
 	}
 	dst, err := mapReg(args[0])
 	if err != nil {
@@ -425,7 +418,7 @@ func expandLoad(args []string) ([]string, error) {
 
 func expandStore(args []string) ([]string, error) {
 	if len(args) != 2 {
-		return nil, fmt.Errorf("STORE expects 2 operands, got %d", len(args))
+		return nil, fmt.Errorf("%w: STORE expects 2 operands, got %d", ErrOperandCount, len(args))
 	}
 	src, err := mapReg(args[0])
 	if err != nil {
@@ -440,7 +433,7 @@ func expandStore(args []string) ([]string, error) {
 
 func expandMovi(args []string) ([]string, error) {
 	if len(args) != 2 {
-		return nil, fmt.Errorf("MOVI expects 2 operands, got %d", len(args))
+		return nil, fmt.Errorf("%w: MOVI expects 2 operands, got %d", ErrOperandCount, len(args))
 	}
 	dst, err := mapReg(args[0])
 	if err != nil {
@@ -452,7 +445,7 @@ func expandMovi(args []string) ([]string, error) {
 
 func expandMov(args []string) ([]string, error) {
 	if len(args) != 2 {
-		return nil, fmt.Errorf("MOV expects 2 operands, got %d", len(args))
+		return nil, fmt.Errorf("%w: MOV expects 2 operands, got %d", ErrOperandCount, len(args))
 	}
 	dst, err := mapReg(args[0])
 	if err != nil {
@@ -467,7 +460,7 @@ func expandMov(args []string) ([]string, error) {
 
 func expandCmp(args []string) ([]string, error) {
 	if len(args) != 2 {
-		return nil, fmt.Errorf("CMP expects 2 operands, got %d", len(args))
+		return nil, fmt.Errorf("%w: CMP expects 2 operands, got %d", ErrOperandCount, len(args))
 	}
 	a, err := mapReg(args[0])
 	if err != nil {
@@ -486,7 +479,7 @@ func expandCmp(args []string) ([]string, error) {
 
 func expandJump(opcode string, args []string) ([]string, error) {
 	if len(args) != 1 {
-		return nil, fmt.Errorf("%s expects 1 operand, got %d", opcode, len(args))
+		return nil, fmt.Errorf("%w: %s expects 1 operand, got %d", ErrOperandCount, opcode, len(args))
 	}
 	target, err := mapReg(args[0])
 	if err != nil {
@@ -498,7 +491,7 @@ func expandJump(opcode string, args []string) ([]string, error) {
 
 func expandPush(args []string) ([]string, error) {
 	if len(args) != 1 {
-		return nil, fmt.Errorf("PUSH expects 1 operand, got %d", len(args))
+		return nil, fmt.Errorf("%w: PUSH expects 1 operand, got %d", ErrOperandCount, len(args))
 	}
 	reg, err := mapReg(args[0])
 	if err != nil {
@@ -509,7 +502,7 @@ func expandPush(args []string) ([]string, error) {
 
 func expandPop(args []string) ([]string, error) {
 	if len(args) != 1 {
-		return nil, fmt.Errorf("POP expects 1 operand, got %d", len(args))
+		return nil, fmt.Errorf("%w: POP expects 1 operand, got %d", ErrOperandCount, len(args))
 	}
 	reg, err := mapReg(args[0])
 	if err != nil {
@@ -520,14 +513,14 @@ func expandPop(args []string) ([]string, error) {
 
 func expandInt(args []string) ([]string, error) {
 	if len(args) != 1 {
-		return nil, fmt.Errorf("INT expects 1 operand, got %d", len(args))
+		return nil, fmt.Errorf("%w: INT expects 1 operand, got %d", ErrOperandCount, len(args))
 	}
 	return []string{fmt.Sprintf("\tint\t%s", args[0])}, nil
 }
 
 func expandLea(args []string) ([]string, error) {
 	if len(args) != 2 {
-		return nil, fmt.Errorf("LEA expects 2 operands, got %d", len(args))
+		return nil, fmt.Errorf("%w: LEA expects 2 operands, got %d", ErrOperandCount, len(args))
 	}
 	dst, err := mapReg(args[0])
 	if err != nil {

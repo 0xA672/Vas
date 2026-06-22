@@ -159,7 +159,7 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 
 	// Check for undefined labels
 	if undefined := checkUndefinedLabels(out); len(undefined) > 0 {
-		return "", fmt.Errorf("undefined label(s): %s", strings.Join(undefined, ", "))
+		return "", fmt.Errorf("%w: %s", ErrUndefinedLabel, strings.Join(undefined, ", "))
 	}
 
 	return out, nil
@@ -215,7 +215,7 @@ func PreprocessTestable(src, baseDir string, opts ...PreprocessOption) (string, 
 
 	// Check for undefined labels
 	if undefined := checkUndefinedLabels(out); len(undefined) > 0 {
-		return "", nil, fmt.Errorf("undefined label(s): %s", strings.Join(undefined, ", "))
+		return "", nil, fmt.Errorf("%w: %s", ErrUndefinedLabel, strings.Join(undefined, ", "))
 	}
 
 	return out, ctx.testCases, nil
@@ -284,7 +284,7 @@ func (ctx *prepContext) initPlatformDefines() {
 
 func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	if ctx.depth > 100 {
-		return "", fmt.Errorf("preprocessing recursion limit exceeded")
+		return "", fmt.Errorf("%w: recursion limit exceeded", ErrPreprocessing)
 	}
 	ctx.dir = dir
 	var out strings.Builder
