@@ -28,6 +28,7 @@ var (
 	addNegFuseRe  = regexp.MustCompile(`^\tadd\t([a-z][a-z0-9]+),\s*1$`)
 	pushModRe     = regexp.MustCompile(`^\t(add|sub|imul|mov|lea)\t([a-z][a-z0-9]+),.*$`)
 )
+
 func peephole(lines []string) []string {
 	lines = xorZero(lines)
 	lines = testCmp(lines)

@@ -617,4 +617,3 @@ func fwdBlock(lines []string) []string {
 	}
 	return result
 }
-

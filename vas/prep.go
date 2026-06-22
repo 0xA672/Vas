@@ -284,7 +284,7 @@ func (ctx *prepContext) initPlatformDefines() {
 
 func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	if ctx.depth > 100 {
-			return "", fmt.Errorf("%w: recursion limit exceeded", ErrPreprocessing)
+		return "", fmt.Errorf("%w: recursion limit exceeded", ErrPreprocessing)
 	}
 	ctx.dir = dir
 	var out strings.Builder

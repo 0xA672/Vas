@@ -478,4 +478,3 @@ func tailCallOpt(lines []string) []string {
 	}
 	return result
 }
-
