@@ -297,7 +297,7 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 			}
 			op := strings.ToUpper(fields[0])
 			if op == "PUSH" {
-				reg := strings.TrimRight(fields[1], ",")
+				reg := strings.ToLower(strings.TrimRight(fields[1], ","))
 				if callerSaveRegs[reg] {
 					saved[reg] = true
 				}
@@ -310,7 +310,7 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 				}
 				saved = map[string]bool{}
 			} else if op == "POP" {
-				reg := strings.TrimRight(fields[1], ",")
+				reg := strings.ToLower(strings.TrimRight(fields[1], ","))
 				if callerSaveRegs[reg] {
 					delete(clobbered, reg)
 				}
@@ -330,7 +330,7 @@ func (c *callerSaveCheck) Check(lines []string) []Violation {
 				}
 				dst := dstReg(op, fields[1:])
 				if dst >= 0 {
-					dstName := strings.TrimRight(fields[1], ",")
+					dstName := strings.ToLower(strings.TrimRight(fields[1], ","))
 					delete(clobbered, dstName)
 				}
 			}
@@ -477,16 +477,20 @@ func (l *infiniteLoopCheck) Check(lines []string) []Violation {
 // ── helpers ─────────────────────────────────────────────────────────────
 
 // splitFuncs splits lines into functions based on function entry labels
-// Only labels starting with '_' are treated as function entry points
+// Labels starting with '_' are treated as function entry points
+// If no function labels exist, returns the entire code as one function
 func splitFuncs(lines []string) [][]int {
 	var funcs [][]int
 	var current []int
+	foundFuncLabel := false
+
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasSuffix(trimmed, ":") && !isInstruction(trimmed) {
 			name := strings.TrimSuffix(trimmed, ":")
-			// Only treat labels starting with '_' as function boundaries
+			// Treat labels starting with '_' as function boundaries
 			if len(name) > 0 && name[0] == '_' {
+				foundFuncLabel = true
 				if len(current) > 0 {
 					funcs = append(funcs, current)
 				}
@@ -496,9 +500,20 @@ func splitFuncs(lines []string) [][]int {
 		}
 		current = append(current, i)
 	}
+
 	if len(current) > 0 {
 		funcs = append(funcs, current)
 	}
+
+	// If no function labels found, return entire code as one block
+	if !foundFuncLabel {
+		allLines := make([]int, len(lines))
+		for i := range lines {
+			allLines[i] = i
+		}
+		return [][]int{allLines}
+	}
+
 	return funcs
 }
 
