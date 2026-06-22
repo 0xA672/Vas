@@ -269,7 +269,7 @@ func mapReg(s string) (string, error) {
 			if j < len(s) && s[j] == ':' {
 				// Validate register name before accepting as label
 				if !IsValidVirtualReg(name) {
-					return "", fmt.Errorf("virtual register %s out of range (valid: v0-v12)", name)
+					return "", fmt.Errorf("%w: %s", ErrInvalidRegister, name)
 				}
 				out.WriteString(name) // keep "v0:" as-is for labels
 				i = j
@@ -282,7 +282,7 @@ func mapReg(s string) (string, error) {
 				i = j
 				continue
 			}
-			return "", fmt.Errorf("virtual register %s out of range (valid: v0-v12)", name)
+			return "", fmt.Errorf("%w: %s", ErrInvalidRegister, name)
 		}
 
 		out.WriteByte(s[i])
