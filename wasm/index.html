@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>VAS Playground - Virtual Assembler</title>
+    <meta
+      name="description"
+      content="VAS Playground — assemble Virtual Assembler source to x86-64 NASM in the browser via WebAssembly."
+    />
+    <title>VAS Playground · Virtual Assembler</title>
     <style>
       /* ── Reset ── */
       *,
@@ -16,36 +20,46 @@
 
       /* ── Tokens ── */
       :root {
-        --bg: #0d0d0f;
-        --bg-raised: #111114;
-        --bg-panel: #0a0a0c;
-        --border: #1e1e24;
-        --border-mid: #2a2a34;
-        --text: #c9cdd8;
-        --text-dim: #555a6e;
-        --text-muted: #3a3d4d;
-        --accent: #3b82f6;
-        --accent-dim: rgba(59, 130, 246, 0.12);
-        --accent-glow: rgba(59, 130, 246, 0.06);
-        --ok: #22c55e;
-        --err: #ef4444;
-        --warn: #f59e0b;
-        --radius: 6px;
+        --bg: #0b0c0f;
+        --bg-raised: #101218;
+        --bg-elev: #14161f;
+        --bg-panel: #08090c;
+        --border: #1c1f29;
+        --border-mid: #2a2e3c;
+        --border-soft: #161922;
+        --text: #d6dae6;
+        --text-dim: #5b6178;
+        --text-muted: #3a3e50;
+        --accent: #4f8ff7;
+        --accent-2: #7c5cff;
+        --accent-dim: rgba(79, 143, 247, 0.14);
+        --accent-glow: rgba(79, 143, 247, 0.22);
+        --ok: #2bd576;
+        --err: #ff5a5f;
+        --warn: #ffb547;
+        --radius: 8px;
+        --radius-sm: 5px;
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+        --shadow-md: 0 6px 24px -8px rgba(0, 0, 0, 0.6);
+        --shadow-glow: 0 0 0 3px var(--accent-dim);
 
         /* syntax */
-        --syn-cmt: #4a5568;
-        --syn-kw: #60a5fa;
-        --syn-reg: #fb923c;
-        --syn-num: #34d399;
-        --syn-label: #e2e8f0;
-        --syn-dir: #a78bfa;
-        --syn-str: #86efac;
+        --syn-cmt: #4b5572;
+        --syn-kw: #6cb0ff;
+        --syn-reg: #ff9d6c;
+        --syn-num: #4ad6a0;
+        --syn-label: #e6ebf5;
+        --syn-dir: #b794ff;
+        --syn-str: #8ff0b8;
 
         --font-mono:
-          "Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas", monospace;
-        --font-ui: "Segoe UI", system-ui, -apple-system, sans-serif;
-        --font-size-code: 13px;
+          "Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas",
+          "SFMono-Regular", monospace;
+        --font-ui:
+          "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+        --font-size-code: 13.5px;
         --font-size-ui: 12px;
+        --transition: 140ms cubic-bezier(0.4, 0, 0.2, 1);
       }
 
       /* ── Base ── */
@@ -58,6 +72,22 @@
         font-size: 14px;
         line-height: 1.5;
         overflow: hidden;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      body {
+        background:
+          radial-gradient(
+            1200px 600px at 80% -10%,
+            rgba(124, 92, 255, 0.06),
+            transparent 60%
+          ),
+          radial-gradient(
+            900px 500px at -10% 110%,
+            rgba(79, 143, 247, 0.05),
+            transparent 60%
+          ),
+          var(--bg);
       }
 
       /* ── App shell ── */
@@ -74,41 +104,83 @@
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        padding: 0 20px;
-        height: 52px;
-        background: var(--bg-raised);
+        padding: 0 22px;
+        height: 56px;
+        background: linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.02),
+          transparent
+        ),
+          var(--bg-raised);
         border-bottom: 1px solid var(--border);
         flex-wrap: wrap;
+        position: relative;
+        z-index: 10;
+      }
+      #header::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -1px;
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(79, 143, 247, 0.25),
+          transparent
+        );
       }
 
       #header-left {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 12px;
       }
 
       #logo {
         font-family: var(--font-mono);
-        font-size: 15px;
-        font-weight: 600;
+        font-size: 16px;
+        font-weight: 700;
         color: #fff;
-        letter-spacing: -0.3px;
+        letter-spacing: -0.4px;
+        background: linear-gradient(
+          135deg,
+          #fff 0%,
+          #b6c6e8 100%
+        );
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      #logo::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 2px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        box-shadow: 0 0 10px var(--accent-glow);
+        -webkit-text-fill-color: initial;
       }
 
       #logo-tag {
         font-family: var(--font-mono);
-        font-size: var(--font-size-ui);
+        font-size: 11px;
         color: var(--text-dim);
-        background: var(--border);
-        padding: 2px 7px;
-        border-radius: 4px;
-        letter-spacing: 0.4px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        padding: 3px 8px;
+        border-radius: 999px;
+        letter-spacing: 0.3px;
       }
 
       #header-controls {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
         flex-wrap: wrap;
       }
 
@@ -116,39 +188,46 @@
       .ctrl-group {
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 7px;
       }
 
       .ctrl-label {
         font-size: var(--font-size-ui);
         color: var(--text-dim);
         white-space: nowrap;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-weight: 500;
       }
 
       select {
         appearance: none;
-        background: var(--bg);
+        background: var(--bg-elev);
         color: var(--text);
         border: 1px solid var(--border-mid);
-        border-radius: var(--radius);
-        padding: 5px 28px 5px 10px;
+        border-radius: var(--radius-sm);
+        padding: 6px 30px 6px 11px;
         font-family: var(--font-mono);
         font-size: var(--font-size-ui);
         cursor: pointer;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23555a6e' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%235b6178' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
         background-repeat: no-repeat;
-        background-position: right 8px center;
-        transition: border-color 0.15s;
+        background-position: right 9px center;
+        transition:
+          border-color var(--transition),
+          box-shadow var(--transition);
       }
       select:hover {
-        border-color: #3a3d4d;
+        border-color: #3a3e50;
       }
       select:focus {
         outline: none;
         border-color: var(--accent);
+        box-shadow: var(--shadow-glow);
       }
       select option {
-        background: #1a1a20;
+        background: #15171f;
+        color: var(--text);
       }
 
       /* ── Buttons ── */
@@ -156,36 +235,66 @@
         font-family: var(--font-ui);
         cursor: pointer;
         border: none;
-        border-radius: var(--radius);
+        border-radius: var(--radius-sm);
         transition:
-          background 0.12s,
-          transform 0.08s,
-          opacity 0.12s;
+          background var(--transition),
+          border-color var(--transition),
+          color var(--transition),
+          transform 80ms ease,
+          box-shadow var(--transition),
+          opacity var(--transition);
       }
       button:active {
         transform: scale(0.97);
       }
+      button:focus-visible {
+        outline: none;
+        box-shadow: var(--shadow-glow);
+      }
 
       #run-btn {
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        gap: 6px;
-        background: var(--accent);
+        gap: 8px;
+        background: linear-gradient(
+          135deg,
+          var(--accent) 0%,
+          #3a6fd0 100%
+        );
         color: #fff;
         font-size: var(--font-size-ui);
         font-weight: 600;
-        padding: 6px 14px;
+        padding: 7px 16px;
         letter-spacing: 0.2px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.12) inset,
+          0 4px 12px -4px rgba(79, 143, 247, 0.5);
       }
-      #run-btn:hover {
-        background: #2563eb;
+      #run-btn:hover:not(:disabled) {
+        filter: brightness(1.08);
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.16) inset,
+          0 6px 18px -4px rgba(79, 143, 247, 0.6);
       }
       #run-btn:disabled {
-        background: var(--border-mid);
+        background: var(--bg-elev);
         color: var(--text-dim);
+        border-color: var(--border);
+        box-shadow: none;
         cursor: not-allowed;
         transform: none;
-        opacity: 0.7;
+        opacity: 0.65;
+      }
+      #run-btn.running {
+        background: linear-gradient(
+          135deg,
+          var(--warn) 0%,
+          #d68a2c 100%
+        );
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.12) inset,
+          0 4px 12px -4px rgba(255, 181, 71, 0.5);
       }
 
       #run-btn svg {
@@ -195,52 +304,102 @@
       }
 
       #force-refresh-btn {
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        gap: 4px;
-        background: var(--bg);
+        gap: 6px;
+        background: var(--bg-elev);
         color: var(--text-dim);
         border: 1px solid var(--border-mid);
-        padding: 5px 10px;
+        padding: 6px 11px;
         font-size: var(--font-size-ui);
-        border-radius: var(--radius);
-        transition:
-          color 0.1s,
-          border-color 0.1s,
-          background 0.1s;
+        border-radius: var(--radius-sm);
       }
       #force-refresh-btn:hover {
         color: var(--text);
-        border-color: #3a3d4d;
+        border-color: #3a3e50;
         background: var(--bg-raised);
+      }
+      #force-refresh-btn:hover svg {
+        transform: rotate(-60deg);
+      }
+      #force-refresh-btn svg {
+        transition: transform 280ms ease;
       }
 
       .kbd {
         font-family: var(--font-mono);
         font-size: 10px;
-        color: rgba(255, 255, 255, 0.5);
-        background: rgba(255, 255, 255, 0.1);
-        padding: 1px 4px;
+        color: rgba(255, 255, 255, 0.7);
+        background: rgba(255, 255, 255, 0.12);
+        padding: 2px 5px;
         border-radius: 3px;
+        letter-spacing: 0.5px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      #force-refresh-btn .kbd {
+        color: var(--text-dim);
+        background: var(--bg);
+        border-color: var(--border);
       }
 
       /* ── Divider ── */
       .ctrl-divider {
         width: 1px;
-        height: 20px;
-        background: var(--border-mid);
+        height: 22px;
+        background: linear-gradient(
+          180deg,
+          transparent,
+          var(--border-mid),
+          transparent
+        );
       }
 
       /* ── Main split ── */
       #main {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr 6px 1fr;
         min-height: 0;
+        position: relative;
+      }
+
+      /* Resize gutter between panels */
+      #split-gutter {
+        background: var(--border-soft);
+        cursor: col-resize;
+        position: relative;
+        transition: background var(--transition);
+      }
+      #split-gutter::before {
+        content: "";
+        position: absolute;
+        inset: 0 2px;
+        margin: auto;
+        width: 2px;
+        height: 28px;
+        border-radius: 2px;
+        background: var(--border-mid);
+        transition: background var(--transition);
+      }
+      #split-gutter:hover,
+      #split-gutter.dragging {
+        background: var(--accent-dim);
+      }
+      #split-gutter:hover::before,
+      #split-gutter.dragging::before {
+        background: var(--accent);
       }
 
       @media (max-width: 768px) {
         #main {
           grid-template-columns: 1fr;
+          grid-template-rows: 1fr 6px 1fr;
+        }
+        #split-gutter {
+          cursor: row-resize;
+        }
+        #split-gutter::before {
+          width: 28px;
+          height: 2px;
         }
       }
 
@@ -252,25 +411,18 @@
         min-width: 0;
       }
 
-      .panel + .panel {
-        border-left: 1px solid var(--border);
-      }
-
-      @media (max-width: 768px) {
-        .panel + .panel {
-          border-left: none;
-          border-top: 1px solid var(--border);
-        }
-      }
-
       /* ── Panel header ── */
       .panel-bar {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 0 16px;
-        height: 36px;
-        background: var(--bg-raised);
+        padding: 0 18px;
+        height: 38px;
+        background: linear-gradient(
+          180deg,
+          var(--bg-raised),
+          var(--bg-elev)
+        );
         border-bottom: 1px solid var(--border);
         flex-shrink: 0;
       }
@@ -280,10 +432,11 @@
         font-size: 11px;
         color: var(--text-dim);
         text-transform: uppercase;
-        letter-spacing: 0.8px;
+        letter-spacing: 0.9px;
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 9px;
+        font-weight: 500;
       }
 
       .panel-title-dot {
@@ -292,6 +445,12 @@
         border-radius: 50%;
         background: var(--text-muted);
         flex-shrink: 0;
+        transition: background var(--transition);
+        box-shadow: 0 0 0 0 transparent;
+      }
+      .panel.focused .panel-title-dot {
+        background: var(--accent);
+        box-shadow: 0 0 8px var(--accent-glow);
       }
 
       .panel-meta {
@@ -304,34 +463,38 @@
         font-family: var(--font-mono);
         font-size: 10px;
         color: var(--text-dim);
-        background: var(--bg);
+        background: var(--bg-panel);
         border: 1px solid var(--border);
-        padding: 2px 7px;
-        border-radius: 3px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        letter-spacing: 0.3px;
       }
 
       .copy-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
         font-family: var(--font-mono);
         font-size: 10px;
         color: var(--text-dim);
         background: transparent;
         border: 1px solid var(--border-mid) !important;
         padding: 3px 9px;
-        border-radius: 3px;
-        transition:
-          color 0.1s,
-          border-color 0.1s,
-          background 0.1s !important;
+        border-radius: 4px;
       }
       .copy-btn:hover {
         color: var(--text);
-        border-color: #3a3d4d !important;
-        background: var(--bg) !important;
+        border-color: #3a3e50 !important;
+        background: var(--bg-elev) !important;
       }
       .copy-btn.copied {
-        color: var(--ok);
-        border-color: rgba(34, 197, 94, 0.4) !important;
-        background: rgba(34, 197, 94, 0.06) !important;
+        color: var(--ok) !important;
+        border-color: rgba(43, 213, 118, 0.4) !important;
+        background: rgba(43, 213, 118, 0.08) !important;
+      }
+      .copy-btn svg {
+        width: 11px;
+        height: 11px;
       }
 
       /* ── Editor area ── */
@@ -344,7 +507,7 @@
       }
 
       .gutter {
-        width: 44px;
+        width: 48px;
         flex-shrink: 0;
         padding: 14px 0;
         font-family: var(--font-mono);
@@ -355,20 +518,22 @@
         user-select: none;
         text-align: right;
         overflow: hidden;
-        background: var(--bg-raised);
-        border-right: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.18);
+        border-right: 1px solid var(--border-soft);
         position: relative;
         z-index: 3;
       }
 
       .gutter span {
         display: block;
-        padding-right: 10px;
+        padding-right: 12px;
         height: calc(var(--font-size-code) * 1.6);
+        transition: color var(--transition);
       }
 
       .gutter .active-line {
-        color: var(--text-dim);
+        color: var(--accent);
+        font-weight: 600;
       }
 
       .editor-inner {
@@ -385,7 +550,7 @@
         left: 0;
         right: 0;
         bottom: 0;
-        padding: 14px 16px;
+        padding: 14px 18px;
         font-family: var(--font-mono);
         font-size: var(--font-size-code);
         line-height: 1.6;
@@ -409,16 +574,22 @@
       #editor-input {
         background: transparent;
         color: transparent;
-        caret-color: var(--text);
+        caret-color: var(--accent);
         z-index: 2;
         -webkit-text-fill-color: transparent;
+      }
+      #editor-input::placeholder {
+        color: var(--text-muted);
+      }
+      #editor-input::selection {
+        background: rgba(79, 143, 247, 0.28);
       }
 
       /* ── Output area ── */
       #output {
         flex: 1;
         background: var(--bg-panel);
-        padding: 14px 16px;
+        padding: 14px 18px;
         font-family: var(--font-mono);
         font-size: var(--font-size-code);
         line-height: 1.6;
@@ -427,10 +598,26 @@
         word-break: normal;
         overflow-wrap: normal;
       }
+      #output .empty-state {
+        color: var(--text-muted);
+        font-style: italic;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      #output .meta-line {
+        color: var(--text-muted);
+        font-size: 11px;
+        padding-bottom: 6px;
+        margin-bottom: 6px;
+        border-bottom: 1px dashed var(--border-soft);
+        display: block;
+      }
 
       /* ── Syntax colors ── */
       .c {
         color: var(--syn-cmt);
+        font-style: italic;
       }
       .k {
         color: var(--syn-kw);
@@ -467,53 +654,53 @@
       #examples-bar {
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 0 16px;
-        height: 40px;
+        gap: 7px;
+        padding: 0 18px;
+        height: 44px;
         background: var(--bg-raised);
         border-top: 1px solid var(--border);
         overflow-x: auto;
-        -ms-overflow-style: none; /* IE and Edge */
+        -ms-overflow-style: none;
         flex-shrink: 0;
+        scrollbar-width: none;
       }
       #examples-bar::-webkit-scrollbar {
-        display: none; /* Chrome, Safari, Opera */
+        display: none;
       }
 
       .examples-label {
-        font-size: 11px;
+        font-size: 10px;
         color: var(--text-muted);
         white-space: nowrap;
         flex-shrink: 0;
         font-family: var(--font-mono);
         text-transform: uppercase;
-        letter-spacing: 0.6px;
+        letter-spacing: 0.8px;
+        padding-right: 4px;
       }
 
       .example-btn {
         font-family: var(--font-mono);
         font-size: 11px;
         color: var(--text-dim);
-        background: var(--bg);
+        background: var(--bg-elev);
         border: 1px solid var(--border-mid);
-        padding: 4px 10px;
-        border-radius: 4px;
+        padding: 5px 12px;
+        border-radius: 999px;
         white-space: nowrap;
         flex-shrink: 0;
-        transition:
-          color 0.1s,
-          border-color 0.1s,
-          background 0.1s;
       }
       .example-btn:hover {
         color: var(--text);
-        border-color: #3a3d4d;
+        border-color: #3a3e50;
         background: var(--bg-raised);
+        transform: translateY(-1px);
       }
       .example-btn.active {
-        color: var(--accent);
-        border-color: rgba(59, 130, 246, 0.4);
+        color: #fff;
+        border-color: rgba(79, 143, 247, 0.55);
         background: var(--accent-dim);
+        box-shadow: 0 0 0 1px rgba(79, 143, 247, 0.2) inset;
       }
 
       /* ── Status bar ── */
@@ -522,8 +709,8 @@
         align-items: center;
         justify-content: space-between;
         gap: 16px;
-        padding: 0 16px;
-        height: 28px;
+        padding: 0 18px;
+        height: 30px;
         background: var(--bg-raised);
         border-top: 1px solid var(--border);
         font-family: var(--font-mono);
@@ -536,27 +723,35 @@
       #status-bar-right {
         display: flex;
         align-items: center;
-        gap: 16px;
+        gap: 14px;
       }
 
       #status-indicator {
         display: flex;
         align-items: center;
-        gap: 5px;
+        gap: 6px;
       }
 
       #status-dot {
-        width: 5px;
-        height: 5px;
+        width: 6px;
+        height: 6px;
         border-radius: 50%;
         background: var(--text-muted);
-        transition: background 0.2s;
+        transition:
+          background 0.2s,
+          box-shadow 0.2s;
       }
       #status-dot.ok {
         background: var(--ok);
+        box-shadow: 0 0 6px rgba(43, 213, 118, 0.6);
       }
       #status-dot.err {
         background: var(--err);
+        box-shadow: 0 0 6px rgba(255, 90, 95, 0.6);
+      }
+      #status-dot.warn {
+        background: var(--warn);
+        box-shadow: 0 0 6px rgba(255, 181, 71, 0.6);
       }
 
       #status-text {
@@ -568,36 +763,76 @@
       #status-text.err {
         color: var(--err);
       }
+      #status-text.warn {
+        color: var(--warn);
+      }
+
+      #stats {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+      }
+      #stats:empty {
+        display: none;
+      }
+      #stats .stat {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 4px;
+      }
+      #stats .stat-v {
+        color: var(--text);
+        font-weight: 600;
+      }
+      #stats .stat-k {
+        color: var(--text-muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+      }
+      #stats .stat-sep {
+        color: var(--border-mid);
+      }
 
       /* ── Loading overlay ── */
       #loading {
         display: none;
         position: fixed;
         inset: 0;
-        background: rgba(13, 13, 15, 0.9);
+        background: rgba(8, 9, 12, 0.92);
         z-index: 999;
         justify-content: center;
         align-items: center;
         flex-direction: column;
-        gap: 16px;
-        -webkit-backdrop-filter: blur(4px);
-        backdrop-filter: blur(4px);
+        gap: 18px;
+        -webkit-backdrop-filter: blur(8px);
+        backdrop-filter: blur(8px);
       }
       #loading.active {
         display: flex;
+        animation: fade-in 0.2s ease;
       }
 
       .spinner {
-        width: 32px;
-        height: 32px;
+        width: 36px;
+        height: 36px;
         border: 2px solid var(--border-mid);
         border-top-color: var(--accent);
+        border-right-color: var(--accent-2);
         border-radius: 50%;
         animation: spin 0.7s linear infinite;
       }
       @keyframes spin {
         to {
           transform: rotate(360deg);
+        }
+      }
+      @keyframes fade-in {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
         }
       }
 
@@ -608,37 +843,86 @@
         letter-spacing: 0.3px;
       }
 
-      /* ── Scrollbar ── */
-      ::-webkit-scrollbar {
+      /* ── Toast (for copy / refresh feedback) ── */
+      #toast {
+        position: fixed;
+        bottom: 48px;
+        left: 50%;
+        transform: translateX(-50%) translateY(12px);
+        background: var(--bg-elev);
+        color: var(--text);
+        border: 1px solid var(--border-mid);
+        padding: 8px 16px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-family: var(--font-mono);
+        box-shadow: var(--shadow-md);
+        z-index: 1000;
+        opacity: 0;
+        pointer-events: none;
+        transition:
+          opacity 0.2s,
+          transform 0.2s;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+      #toast.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+      #toast .toast-dot {
         width: 6px;
         height: 6px;
+        border-radius: 50%;
+        background: var(--ok);
+      }
+
+      /* ── Scrollbar ── */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
       }
       ::-webkit-scrollbar-track {
         background: transparent;
       }
       ::-webkit-scrollbar-thumb {
         background: var(--border-mid);
-        border-radius: 3px;
+        border-radius: 4px;
+        border: 2px solid transparent;
+        background-clip: padding-box;
       }
       ::-webkit-scrollbar-thumb:hover {
-        background: #3a3d4d;
+        background: #3a3e50;
+        background-clip: padding-box;
       }
 
-      /* ── Selection ── */
       ::selection {
-        background: rgba(59, 130, 246, 0.25);
+        background: rgba(79, 143, 247, 0.28);
       }
 
+      /* ── Responsive ── */
       @media (max-width: 768px) {
         #header {
           height: auto;
-          padding: 10px 16px;
-        }
-        #main {
-          grid-template-rows: 1fr 1fr;
+          padding: 10px 14px;
         }
         .ctrl-divider {
           display: none;
+        }
+        .panel-title {
+          font-size: 10px;
+        }
+      }
+
+      /* ── Reduced motion ── */
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
         }
       }
     </style>
@@ -646,7 +930,7 @@
   <body>
     <div id="loading">
       <div class="spinner"></div>
-      <p>Loading VAS engine...</p>
+      <p>Loading VAS engine…</p>
     </div>
 
     <div id="app">
@@ -667,9 +951,9 @@
           <div class="ctrl-group">
             <span class="ctrl-label">Opt</span>
             <select id="opt" aria-label="Optimization level">
-              <option value="0">O0</option>
-              <option value="1">O1 - const fold, DCE, peephole</option>
-              <option value="2">O2 - + CSE, LICM, tail call</option>
+              <option value="0">O0 — none</option>
+              <option value="1">O1 — fold · DCE · peephole</option>
+              <option value="2">O2 — + CSE · LICM · tail-call</option>
             </select>
           </div>
           <div class="ctrl-divider"></div>
@@ -677,12 +961,13 @@
             <svg viewBox="0 0 10 12" fill="currentColor">
               <polygon points="0,0 10,6 0,12" />
             </svg>
-            Assemble
-            <span class="kbd">^↵</span>
+            <span class="run-label">Assemble</span>
+            <span class="kbd">⌃↵</span>
           </button>
           <button
             id="force-refresh-btn"
             title="Clear cache & reload"
+            aria-label="Clear cache and reload"
             onclick="forceRefresh()"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -708,7 +993,7 @@
       <!-- Main editors -->
       <main id="main">
         <!-- Input panel -->
-        <div class="panel">
+        <div class="panel" id="panel-input">
           <div class="panel-bar">
             <span class="panel-title">
               <span class="panel-title-dot"></span>
@@ -716,7 +1001,30 @@
             </span>
             <div class="panel-meta">
               <span class="panel-badge" id="input-lines">0 lines</span>
-              <button class="copy-btn" onclick="copySource()">Copy</button>
+              <button
+                class="copy-btn"
+                onclick="copySource()"
+                aria-label="Copy source"
+              >
+                <svg viewBox="0 0 12 12" fill="none">
+                  <rect
+                    x="3.5"
+                    y="3.5"
+                    width="6"
+                    height="7"
+                    rx="1"
+                    stroke="currentColor"
+                    stroke-width="1"
+                  />
+                  <path
+                    d="M2 8V2.5C2 2.224 2.224 2 2.5 2H8"
+                    stroke="currentColor"
+                    stroke-width="1"
+                    stroke-linecap="round"
+                  />
+                </svg>
+                Copy
+              </button>
             </div>
           </div>
           <div class="editor-wrap">
@@ -726,7 +1034,7 @@
               <textarea
                 id="editor-input"
                 spellcheck="false"
-                placeholder="; Enter VAS code here"
+                placeholder="; Enter VAS code here…"
               >
 ; A simple VAS program
 ; Equivalent to sys_exit(0)
@@ -743,8 +1051,10 @@ _start:
           </div>
         </div>
 
+        <div id="split-gutter" aria-hidden="true"></div>
+
         <!-- Output panel -->
-        <div class="panel">
+        <div class="panel" id="panel-output">
           <div class="panel-bar">
             <span class="panel-title">
               <span class="panel-title-dot"></span>
@@ -752,12 +1062,35 @@ _start:
             </span>
             <div class="panel-meta">
               <span class="panel-badge" id="mode-label">standalone</span>
-              <button class="copy-btn" onclick="copyOutput()">Copy</button>
+              <button
+                class="copy-btn"
+                onclick="copyOutput()"
+                aria-label="Copy output"
+              >
+                <svg viewBox="0 0 12 12" fill="none">
+                  <rect
+                    x="3.5"
+                    y="3.5"
+                    width="6"
+                    height="7"
+                    rx="1"
+                    stroke="currentColor"
+                    stroke-width="1"
+                  />
+                  <path
+                    d="M2 8V2.5C2 2.224 2.224 2 2.5 2H8"
+                    stroke="currentColor"
+                    stroke-width="1"
+                    stroke-linecap="round"
+                  />
+                </svg>
+                Copy
+              </button>
             </div>
           </div>
           <div id="output">
-            <span class="info"
-              >; Press Assemble or Ctrl+Enter to generate output</span
+            <span class="empty-state"
+              >; Press Assemble or ⌃↵ to generate output</span
             >
           </div>
         </div>
@@ -804,6 +1137,8 @@ _start:
       </div>
     </div>
 
+    <div id="toast"><span class="toast-dot"></span><span id="toast-msg"></span></div>
+
     <script src="wasm_exec.js"></script>
     <script>
       "use strict";
@@ -814,6 +1149,17 @@ _start:
       const runBtn = $("run-btn");
       const statusDot = $("status-dot");
       const statusTxt = $("status-text");
+      const toastEl = $("toast");
+      const toastMsg = $("toast-msg");
+      let toastTimer = null;
+
+      // ── Toast ──
+      function toast(msg) {
+        toastMsg.textContent = msg;
+        toastEl.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toastEl.classList.remove("show"), 1800);
+      }
 
       // ── WASM Bootstrap ──
       async function bootstrap() {
@@ -830,7 +1176,8 @@ _start:
           setStatus("ok", "Ready");
           loading.classList.remove("active");
         } catch (e) {
-          loading.querySelector("p").textContent = "Load failed: " + e.message;
+          loading.querySelector("p").textContent =
+            "Load failed: " + e.message;
           setStatus("err", "Load failed");
         }
       }
@@ -851,10 +1198,21 @@ _start:
         const output = $("output");
 
         if (!input.trim()) {
-          output.innerHTML = '<span class="er">; Error: no input</span>';
+          output.innerHTML =
+            '<span class="er">; Error: no input</span>';
           setStatus("err", "Empty input");
           return;
         }
+
+        // Brief running state for tactile feedback
+        runBtn.classList.add("running");
+        const label = runBtn.querySelector(".run-label");
+        const prevLabel = label.textContent;
+        label.textContent = "Working…";
+        const done = () => {
+          runBtn.classList.remove("running");
+          label.textContent = prevLabel;
+        };
 
         try {
           const result =
@@ -866,19 +1224,20 @@ _start:
             output.innerHTML =
               '<span class="er">' + esc(result.error) + "</span>";
             setStatus("err", result.error.split("\n")[0].slice(0, 60));
-            $("stats").textContent = "";
+            $("stats").innerHTML = "";
+            done();
             return;
           }
 
           const text = result.output || "";
           output.innerHTML =
-            '<span class="ts">; Generated ' +
+            '<span class="meta-line">; generated ' +
             new Date().toLocaleTimeString() +
-            " - target=" +
+            " · target=" +
             target +
-            " opt=O" +
+            " · opt=O" +
             opt +
-            "</span>\n" +
+            "</span>" +
             highlightAsm(text);
 
           const lines = text.split("\n").length;
@@ -892,14 +1251,27 @@ _start:
               !t.includes(":")
             );
           }).length;
+          const bytes = new Blob([text]).size;
 
           setStatus("ok", "OK");
-          $("stats").textContent =
-            lines + " lines  " + instrs + " instructions";
+          $("stats").innerHTML =
+            '<span class="stat"><span class="stat-v">' +
+            lines +
+            '</span><span class="stat-k">lines</span></span>' +
+            '<span class="stat-sep">·</span>' +
+            '<span class="stat"><span class="stat-v">' +
+            instrs +
+            '</span><span class="stat-k">instrs</span></span>' +
+            '<span class="stat-sep">·</span>' +
+            '<span class="stat"><span class="stat-v">' +
+            bytes +
+            '</span><span class="stat-k">bytes</span></span>';
           $("mode-label").textContent = "standalone";
+          done();
         } catch (e) {
           output.innerHTML = '<span class="er">' + esc(String(e)) + "</span>";
           setStatus("err", "Exception");
+          done();
         }
       }
 
@@ -961,6 +1333,8 @@ _start:
       const editorInput = $("editor-input");
       const vasHighlight = $("vas-highlight");
       const gutter = $("gutter");
+      const panelInput = $("panel-input");
+      const panelOutput = $("panel-output");
 
       function syncEditor() {
         const val = editorInput.value;
@@ -1004,8 +1378,14 @@ _start:
       editorInput.addEventListener("keyup", syncEditor);
       editorInput.addEventListener("click", syncEditor);
       editorInput.addEventListener("scroll", syncScroll);
+      editorInput.addEventListener("focus", () =>
+        panelInput.classList.add("focused"),
+      );
+      editorInput.addEventListener("blur", () =>
+        panelInput.classList.remove("focused"),
+      );
 
-      // Tab key support
+      // Tab + Ctrl+Enter
       editorInput.addEventListener("keydown", function (e) {
         if (e.key === "Tab") {
           e.preventDefault();
@@ -1025,22 +1405,96 @@ _start:
       // Initial render
       syncEditor();
 
+      // ── Split gutter drag-to-resize ──
+      (function initSplit() {
+        const gutterEl = $("split-gutter");
+        const main = $("main");
+        const isMobile = () => window.innerWidth <= 768;
+        let dragging = false;
+
+        gutterEl.addEventListener("mousedown", (e) => {
+          dragging = true;
+          gutterEl.classList.add("dragging");
+          document.body.style.cursor = isMobile() ? "row-resize" : "col-resize";
+          document.body.style.userSelect = "none";
+          e.preventDefault();
+        });
+        window.addEventListener("mousemove", (e) => {
+          if (!dragging) return;
+          const rect = main.getBoundingClientRect();
+          if (isMobile()) {
+            const pct = ((e.clientY - rect.top) / rect.height) * 100;
+            main.style.gridTemplateRows =
+              Math.max(15, Math.min(85, pct)) +
+              "% 6px " +
+              Math.max(15, Math.min(85, 100 - pct)) +
+              "%";
+          } else {
+            const pct = ((e.clientX - rect.left) / rect.width) * 100;
+            main.style.gridTemplateColumns =
+              Math.max(15, Math.min(85, pct)) +
+              "% 6px " +
+              Math.max(15, Math.min(85, 100 - pct)) +
+              "%";
+          }
+        });
+        window.addEventListener("mouseup", () => {
+          if (!dragging) return;
+          dragging = false;
+          gutterEl.classList.remove("dragging");
+          document.body.style.cursor = "";
+          document.body.style.userSelect = "";
+        });
+        // Touch support
+        gutterEl.addEventListener(
+          "touchstart",
+          (e) => {
+            dragging = true;
+            gutterEl.classList.add("dragging");
+          },
+          { passive: true },
+        );
+        window.addEventListener("touchmove", (e) => {
+          if (!dragging || !e.touches[0]) return;
+          const t = e.touches[0];
+          const rect = main.getBoundingClientRect();
+          if (isMobile()) {
+            const pct = ((t.clientY - rect.top) / rect.height) * 100;
+            main.style.gridTemplateRows =
+              Math.max(15, Math.min(85, pct)) +
+              "% 6px " +
+              Math.max(15, Math.min(85, 100 - pct)) +
+              "%";
+          } else {
+            const pct = ((t.clientX - rect.left) / rect.width) * 100;
+            main.style.gridTemplateColumns =
+              Math.max(15, Math.min(85, pct)) +
+              "% 6px " +
+              Math.max(15, Math.min(85, 100 - pct)) +
+              "%";
+          }
+        });
+        window.addEventListener("touchend", () => {
+          dragging = false;
+          gutterEl.classList.remove("dragging");
+        });
+      })();
+
       // ── Examples ──
       const EXAMPLES = {};
-      let activeExample = null;
+      const EXAMPLE_NAMES = [
+        "hello",
+        "fib",
+        "fact",
+        "calc",
+        "sort",
+        "win-edge",
+        "opt_showcase",
+      ];
 
       async function loadExamples() {
-        const names = [
-          "hello",
-          "fib",
-          "fact",
-          "calc",
-          "sort",
-          "win-edge",
-          "opt_showcase",
-        ];
         await Promise.all(
-          names.map(async (name) => {
+          EXAMPLE_NAMES.map(async (name) => {
             try {
               const r = await fetch("examples/" + name + ".vas");
               if (r.ok) EXAMPLES[name] = await r.text();
@@ -1055,22 +1509,15 @@ _start:
         editorInput.value = EXAMPLES[name];
         syncEditor();
 
-        // Mark active button
         document
           .querySelectorAll(".example-btn")
           .forEach((b) => b.classList.remove("active"));
-        const btns = document.querySelectorAll(".example-btn");
-        const names = [
-          "hello",
-          "fib",
-          "fact",
-          "calc",
-          "sort",
-          "win-edge",
-          "opt_showcase",
-        ];
-        const idx = names.indexOf(name);
-        if (idx >= 0) btns[idx].classList.add("active");
+        const idx = EXAMPLE_NAMES.indexOf(name);
+        if (idx >= 0) {
+          document.querySelectorAll(".example-btn")[idx].classList.add(
+            "active",
+          );
+        }
 
         run();
       }
@@ -1080,21 +1527,24 @@ _start:
         copyToClipboard(
           editorInput.value,
           document.querySelector('[onclick="copySource()"]'),
+          "Source copied",
         );
       }
       function copyOutput() {
         copyToClipboard(
           $("output").textContent,
           document.querySelector('[onclick="copyOutput()"]'),
+          "Output copied",
         );
       }
-      function copyToClipboard(text, btn) {
+      function copyToClipboard(text, btn, toastMsg) {
         const write = () => {
           const orig = btn.textContent;
-          btn.textContent = "Copied";
+          btn.querySelector(":last-child").textContent = "Copied";
           btn.classList.add("copied");
+          toast(toastMsg);
           setTimeout(() => {
-            btn.textContent = orig;
+            btn.querySelector(":last-child").textContent = "Copy";
             btn.classList.remove("copied");
           }, 1600);
         };
@@ -1110,7 +1560,8 @@ _start:
       function fallbackCopy(text, cb) {
         const ta = document.createElement("textarea");
         ta.value = text;
-        ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+        ta.style.cssText =
+          "position:fixed;top:-9999px;left:-9999px;opacity:0";
         document.body.appendChild(ta);
         ta.select();
         document.execCommand("copy");
@@ -1118,22 +1569,20 @@ _start:
         cb();
       }
       async function forceRefresh() {
+        toast("Clearing cache…");
         if ("caches" in window) {
           const keys = await caches.keys();
           await Promise.all(keys.map((k) => caches.delete(k)));
         }
-
         if ("serviceWorker" in navigator) {
           const registrations =
             await navigator.serviceWorker.getRegistrations();
           await Promise.all(registrations.map((r) => r.unregister()));
         }
-
         try {
           localStorage.clear();
           sessionStorage.clear();
         } catch (e) {}
-
         window.location.reload(true);
       }
     </script>
