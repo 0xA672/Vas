@@ -209,6 +209,10 @@ func readRegs(op string, args []string) []int {
 		regs = append(regs, 0, 3, 4, 5, 6, 7, 8)
 	case "INT":
 		regs = append(regs, 0, 3, 4, 5, 6, 7, 8)
+	case "CALL":
+		// CALL clobbers caller-saved registers per AMD64 SysV ABI.
+		// Mark them as read so DCE does not eliminate saves of these regs.
+		regs = append(regs, 0, 2, 3, 6, 7, 8)
 	}
 	return regs
 }

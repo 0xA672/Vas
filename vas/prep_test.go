@@ -1393,3 +1393,71 @@ func TestErrorDirective(t *testing.T) {
 		t.Errorf("expected 'test error', got %v", err)
 	}
 }
+
+// ── Undefined label checks ─────────────────────────────────────────────────
+
+func TestCheckUndefinedLabelsIndirectJmp(t *testing.T) {
+	// Indirect jumps via registers must NOT produce false "undefined label" errors.
+	src := `start:
+	JMP [rax]
+	JMP [v0]
+	JMP [rsp]
+	CALL [rbx]
+	RET`
+	got, err := Preprocess(src, "/tmp")
+	if err != nil {
+		t.Fatalf("indirect jumps should not produce undefined label errors: %v", err)
+	}
+	if !strings.Contains(got, "start:") {
+		t.Errorf("expected 'start:' label to survive, got:\n%s", got)
+	}
+}
+
+func TestCheckUndefinedLabelsIndirectLabelRef(t *testing.T) {
+	// Indirect jumps via a label in brackets should reference that label correctly.
+	src := `start:
+	JMP [jtbl + v0*8]
+jtbl:
+	DQ target1
+	DQ target2
+target1:
+	RET
+target2:
+	RET`
+	got, err := Preprocess(src, "/tmp")
+	if err != nil {
+		t.Fatalf("indirect jump via label should not produce undefined label errors: %v", err)
+	}
+	if !strings.Contains(got, "jtbl") {
+		t.Errorf("expected jtbl to survive, got:\n%s", got)
+	}
+}
+
+func TestCheckUndefinedLabelsDirectJmpStillWorks(t *testing.T) {
+	// Direct jumps to defined labels must still work.
+	src := `start:
+	JMP target
+target:
+	RET`
+	got, err := Preprocess(src, "/tmp")
+	if err != nil {
+		t.Fatalf("direct jump to defined label should succeed: %v", err)
+	}
+	if !strings.Contains(got, "target:") {
+		t.Errorf("expected target: to survive, got:\n%s", got)
+	}
+}
+
+func TestCheckUndefinedLabelsDirectJmpUndefined(t *testing.T) {
+	// Direct jumps to undefined labels must still produce errors.
+	src := `start:
+	JMP nonexistent
+	RET`
+	_, err := Preprocess(src, "/tmp")
+	if err == nil {
+		t.Fatal("expected undefined label error")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("expected error mentioning 'nonexistent', got: %v", err)
+	}
+}

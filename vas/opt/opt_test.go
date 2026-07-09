@@ -1185,6 +1185,45 @@ func TestShlAddFuseNoMatchDifferentDst(t *testing.T) {
 	}
 }
 
+// ── CALL const-propagation safety ─────────────────────────────────────────
+
+func TestConstPropagationAcrossCall(t *testing.T) {
+	input := "\tMOVI\tv0, 42\n\tCALL\tfoo\n\tMOVI\tv1, 1\n\tSYSCALL"
+	output := Optimize(input, 1)
+	// v0 = 42 must NOT be eliminated or propagated past CALL since
+	// CALL clobbers v0 (caller-saved). The MOVI must survive.
+	if !strings.Contains(output, "MOVI\tv0, 42") {
+		t.Errorf("v0 assignment before CALL should survive (caller-saved reg clobbered):\n%s", output)
+	}
+}
+
+func TestConstPropagationCallClearsCallerSaved(t *testing.T) {
+	// v0 = 5, then v0 is used after CALL — value must NOT carry across
+	input := "\tMOVI\tv0, 5\n\tCALL\tbar\n\tADD\tv0, 1\n\tSYSCALL"
+	output := Optimize(input, 1)
+	// With the bug, the optimizer would try to fold ADD v0,1 into MOVI v0,6
+	// by keeping constKnown[0]=true across CALL. After fix, it should NOT.
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "MOVI\tv0, 6") {
+			t.Errorf("constant propagation incorrectly folded ADD across CALL:\n%s", output)
+		}
+	}
+}
+
+func TestDeadCodeElimPreservesCallerSaveAroundCall(t *testing.T) {
+	// Before CALL, v0 must be saved then reassigned — the save must not be eliminated
+	// as dead even though v0 is overwritten after CALL (because CALL clobbers it).
+	input := "\tMOVI\tv0, 42\n\tMOVI\tv4, 1\n\tCALL\tfoo\n\tMOVI\tv0, 99\n\tSYSCALL"
+	output := Optimize(input, 1)
+	if !strings.Contains(output, "MOVI\tv0, 42") {
+		t.Errorf("MOVI v0, 42 before CALL should be kept (register live across call):\n%s", output)
+	}
+	if !strings.Contains(output, "MOVI\tv0, 99") {
+		t.Errorf("MOVI v0, 99 after CALL should be kept:\n%s", output)
+	}
+}
+
 // ── Benchmarks ─────────────────────────────────────────────────────────
 // These benchmarks exercise the optimized peephole pipeline directly so
 // we can measure the effect of single-scan merging and sync.Pool reuse.

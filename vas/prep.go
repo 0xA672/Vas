@@ -1279,13 +1279,34 @@ func checkUndefinedLabels(src string) []string {
 			opcode == "JNO" || opcode == "JS" || opcode == "JNS" ||
 			opcode == "CALL" || opcode == "LOOP" || opcode == "LOOPE" ||
 			opcode == "LOOPNE" || opcode == "LOOPZ" || opcode == "LOOPNZ" {
-			// The operand is the label
-			if len(fields) >= 2 {
-				label := strings.Trim(fields[1], ",")
-				// Skip local labels
-				if !strings.HasPrefix(label, ".") {
-					referenced[label] = true
+			if len(fields) < 2 {
+				continue
+			}
+			operand := strings.Trim(fields[1], ",")
+			// Handle indirect memory references (e.g. jmp [rax], call [v0], jmp [table + rbx*8])
+			if strings.HasPrefix(operand, "[") {
+				inner := strings.TrimPrefix(operand, "[")
+				inner = strings.TrimSuffix(inner, "]")
+				inner = strings.TrimSpace(inner)
+				// Skip if empty or a pure register reference
+				if inner == "" || isRegister(inner) {
+					continue
 				}
+				// Extract label from expressions like "my_label + v0*8" or "my_table"
+				sym := inner
+				if idx := strings.IndexAny(sym, "+-*"); idx > 0 {
+					sym = strings.TrimSpace(sym[:idx])
+				}
+				if sym != "" && !isRegister(sym) {
+					if _, err := fmt.Sscanf(sym, "%d", new(int)); err != nil {
+						referenced[sym] = true
+					}
+				}
+				continue
+			}
+			// Skip local labels
+			if !strings.HasPrefix(operand, ".") {
+				referenced[operand] = true
 			}
 		}
 	}

@@ -303,6 +303,12 @@ func constBlock(lines []string) []string {
 			for _, r := range []int{0, 3, 4, 5, 6, 7, 8} {
 				constKnown[r] = false
 			}
+		case "CALL":
+			// CALL clobbers caller-saved registers per AMD64 SysV ABI.
+			// VAS maps these as v0=rax, v2=rcx, v3=rdx, v6=r8, v7=r9, v8=r11.
+			for _, r := range []int{0, 2, 3, 6, 7, 8} {
+				constKnown[r] = false
+			}
 		default:
 			dst := dstReg(op, args)
 			if dst >= 0 {
