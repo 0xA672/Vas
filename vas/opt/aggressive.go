@@ -58,22 +58,9 @@ func cseBlock(lines []string) []string {
             }
             key := cseKey{op: op, args: strings.Join(cleanArgs, " ")}
             dstName := strings.TrimRight(args[0], ",")
-            if prevDst, ok := seen[key]; ok && prevDst != dstName {
-                // Replace the redundant computation with a MOV that copies the
-                // previously computed value into the current destination.  This
-                // preserves correctness while removing the duplicate arithmetic.
-                comment := ""
-                if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-                    comment = " " + trimmed[idx:]
-                }
-                result = append(result, fmt.Sprintf("\tMOV\t%s, %s%s", dstName, prevDst, comment))
-                // dstName now holds the same value as prevDst.
-                seen[key] = dstName
-                if dst >= 0 {
-                    regVals[dstName] = key
-                }
-                continue
-            }
+            // Conservative CSE: track seen values but do NOT replace
+            // duplicate computations with MOV, to preserve data flow
+            // correctness for downstream passes.
             seen[key] = dstName
             if dst >= 0 {
                 regVals[dstName] = key
@@ -188,8 +175,11 @@ func licm(lines []string) []string {
                 // Extract every register referenced in the effective address,
                 // not just the one before the first +/-.
                 regs := extractAddressRegs(memOp)
-                dstName := strings.TrimRight(args[0], ",")
-                allInvariant := !modified[dstName]
+                // An instruction is invariant if ALL its source operands
+                // (registers in the address expression) are not modified
+                // inside the loop.  The destination register is the output
+                // and is NOT checked for invariance.
+                allInvariant := true
                 for _, r := range regs {
                     if modified[r] {
                         allInvariant = false
@@ -313,6 +303,32 @@ func redundantLoadBlock(lines []string) []string {
         op := strings.ToUpper(fields[0])
         args := fields[1:]
 
+        // First, invalidate cached loads whose result register is being
+        // overwritten by any instruction that writes to a register.
+        dstIdx := -1
+        switch op {
+        case "MOVI", "MOV", "ADD", "SUB", "MUL", "LOAD", "LEA", "POP":
+            if len(args) >= 1 {
+                dstIdx = 0
+            }
+        }
+        if dstIdx >= 0 {
+            modifiedReg := strings.TrimRight(args[dstIdx], ",")
+            addrModified[modifiedReg] = true
+            for a, d := range lastLoad {
+                if strings.TrimRight(d, ",") == modifiedReg {
+                    delete(lastLoad, a)
+                }
+            }
+        }
+
+        // Invalidate cached load when a STORE writes to the same address.
+        if op == "STORE" && len(args) >= 2 {
+            delete(lastLoad, args[1])
+        }
+
+        // Now handle LOAD: check if the same address was already loaded
+        // (and the address base register hasn't been modified since).
         if op == "LOAD" && len(args) >= 2 {
             addr := args[1]
             addrReg := strings.TrimRight(strings.TrimLeft(addr, "["), "]")
@@ -330,30 +346,6 @@ func redundantLoadBlock(lines []string) []string {
             }
             lastLoad[addr] = args[0]
             addrModified[addrReg] = false
-        }
-
-        dstIdx := -1
-        switch op {
-        case "MOVI", "MOV", "ADD", "SUB", "MUL", "LOAD", "LEA", "POP":
-            if len(args) >= 1 {
-                dstIdx = 0
-            }
-        }
-        if dstIdx >= 0 {
-            modifiedReg := strings.TrimRight(args[dstIdx], ",")
-            addrModified[modifiedReg] = true
-            // Invalidate any cached load whose result register is being
-            // overwritten, so a future LOAD of the same address cannot be
-            // replaced by a MOV from a now-stale register.
-            for a, d := range lastLoad {
-                if strings.TrimRight(d, ",") == modifiedReg {
-                    delete(lastLoad, a)
-                }
-            }
-        }
-
-        if op == "STORE" && len(args) >= 2 {
-            delete(lastLoad, args[1])
         }
 
         result[i] = line
@@ -549,17 +541,6 @@ func scanPushModPop(i int, reg string, lines []string, remove []bool) (bool, int
         return false, 0, 0
     }
     return true, midIdx, popIdx
-}
-
-// stripComment trims leading/trailing whitespace and removes trailing comments
-// starting with ';' or '#'.  Returns "" for lines that are empty or pure
-// comments.
-func stripComment(line string) string {
-    s := strings.TrimSpace(line)
-    if idx := strings.IndexAny(s, ";#"); idx >= 0 {
-        s = strings.TrimSpace(s[:idx])
-    }
-    return s
 }
 
 func tailCallOpt(lines []string) []string {
