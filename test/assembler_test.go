@@ -417,9 +417,10 @@ func TestRegOutOfBoundsV14(t *testing.T) {
 }
 
 func TestRegOutOfBoundsLabel(t *testing.T) {
+	// v13 is not a register, but v13: is a perfectly legal label.
 	_, err := vas.Assemble("v13:\n    NOP")
-	if err == nil {
-		t.Fatal("expected error for v13 label, got nil")
+	if err != nil {
+		t.Fatalf("v13 label should be accepted, got: %v", err)
 	}
 }
 

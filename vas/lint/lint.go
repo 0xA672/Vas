@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
+
+	"vas/vas/internal/asm"
 )
 
 // Violation represents a detected dangerous instruction pattern.
@@ -34,39 +35,15 @@ func Rules() []Rule {
 }
 
 // Run applies all rules to the source and returns all violations.
-// Rules run concurrently across goroutines; results are merged and sorted
-// by line number for stable output.
+// Rules run sequentially over one parsed line array; results are sorted by
+// line number for stable output.
 func Run(source string) []Violation {
 	lines := strings.Split(source, "\n")
-	rules := Rules()
-
-	// For very small inputs (a few lines), the overhead of goroutines
-	// is not worth it — fall back to sequential.
-	if len(lines) < 64 {
-		var all []Violation
-		for _, rule := range rules {
-			all = append(all, rule.Check(lines)...)
-		}
-		sort.Slice(all, func(i, j int) bool { return all[i].Line < all[j].Line })
-		return all
-	}
-
-	var wg sync.WaitGroup
-	results := make([][]Violation, len(rules))
-	for i, rule := range rules {
-		wg.Add(1)
-		go func(i int, rule Rule) {
-			defer wg.Done()
-			results[i] = rule.Check(lines)
-		}(i, rule)
-	}
-	wg.Wait()
-
 	var all []Violation
-	for _, r := range results {
-		all = append(all, r...)
+	for _, rule := range Rules() {
+		all = append(all, rule.Check(lines)...)
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].Line < all[j].Line })
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Line < all[j].Line })
 	return all
 }
 
@@ -115,13 +92,13 @@ func isRDXPreparedSigned(lines []string, idx int) bool {
 			continue
 		}
 		upper := strings.ToUpper(prev)
-		// Only CQO and CDQ correctly sign-extend RDX for IDIV.
-		// MOVI V3, 0 sets RDX to 0 without sign-extending — wrong for negative values.
+		if isControlBoundary(upper) {
+			return false
+		}
 		if strings.HasPrefix(upper, "CQO") || strings.HasPrefix(upper, "CDQ") {
 			return true
 		}
-		// Any write to v3 that isn't CQO/CDQ invalidates the preparation.
-		if strings.Contains(upper, "V3,") || strings.Contains(upper, " V3") || strings.HasSuffix(upper, " V3") {
+		if writesV3(upper) {
 			return false
 		}
 	}
@@ -129,6 +106,7 @@ func isRDXPreparedSigned(lines []string, idx int) bool {
 }
 
 // isRDXPreparedUnsigned checks whether RDX (v3) is zeroed for DIV.
+// CQO/CDQ sign-extend and are therefore wrong for unsigned division.
 func isRDXPreparedUnsigned(lines []string, idx int) bool {
 	for j := idx - 1; j >= 0; j-- {
 		prev := strings.TrimSpace(lines[j])
@@ -136,14 +114,42 @@ func isRDXPreparedUnsigned(lines []string, idx int) bool {
 			continue
 		}
 		upper := strings.ToUpper(prev)
-		if strings.HasPrefix(upper, "CQO") || strings.HasPrefix(upper, "CDQ") ||
-			strings.HasPrefix(upper, "XOR V3, V3") || strings.HasPrefix(upper, "MOVI V3, 0") ||
-			strings.HasPrefix(upper, "XOR EDX, EDX") {
-			return true
-		}
-		if strings.Contains(upper, "V3,") || strings.Contains(upper, " V3") || strings.HasSuffix(upper, " V3") {
+		if isControlBoundary(upper) {
 			return false
 		}
+		switch {
+		case strings.HasPrefix(upper, "XOR V3, V3"),
+			strings.HasPrefix(upper, "MOVI V3, 0"),
+			strings.HasPrefix(upper, "XOR EDX, EDX"),
+			strings.HasPrefix(upper, "MOV EDX, 0"),
+			strings.HasPrefix(upper, "MOV V3, 0"):
+			return true
+		}
+		if writesV3(upper) {
+			return false
+		}
+	}
+	return false
+}
+
+func writesV3(upper string) bool {
+	return strings.Contains(upper, "V3,") || strings.Contains(upper, " V3") || strings.HasSuffix(upper, " V3")
+}
+
+func isControlBoundary(upper string) bool {
+	fields := strings.Fields(upper)
+	if len(fields) == 0 {
+		return false
+	}
+	op := fields[0]
+	if strings.HasSuffix(op, ":") {
+		return true
+	}
+	switch op {
+	case "JMP", "JE", "JNE", "JG", "JL", "JGE", "JLE", "JA", "JB", "JAE", "JBE",
+		"JS", "JNS", "JO", "JNO", "JC", "JNC", "JZ", "JNZ", "JP", "JNP",
+		"CALL", "RET", "SYSCALL", "INT", "LOOP", "LOOPE", "LOOPNE":
+		return true
 	}
 	return false
 }
@@ -221,50 +227,34 @@ func (u *uninitRegCheck) Check(lines []string) []Violation {
 	var violations []Violation
 	funcs := splitFuncs(lines)
 	for _, fn := range funcs {
-		written := map[string]bool{}
-		for _, idx := range fn {
-			line := strings.TrimSpace(lines[idx])
-			if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
-				continue
-			}
-			fields := strings.Fields(line)
-			if len(fields) < 2 {
-				continue
-			}
-			op := strings.ToUpper(fields[0])
-			dst := dstReg(op, fields[1:])
-			if dst >= 0 {
-				regName := strings.TrimRight(fields[1], ",")
-				written[regName] = true
-			}
-		}
 		seen := map[string]bool{}
+		warned := map[string]bool{}
 		for _, idx := range fn {
-			line := strings.TrimSpace(lines[idx])
-			if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			trimmed := asm.TrimCode(lines[idx])
+			if trimmed == "" {
 				continue
 			}
-			fields := strings.Fields(line)
+			fields := asm.Fields(trimmed)
 			if len(fields) < 2 {
 				continue
 			}
 			op := strings.ToUpper(fields[0])
-			for _, reg := range readRegs(op, fields[1:]) {
+			args := fields[1:]
+			for _, reg := range readRegs(op, args) {
 				regName := fmt.Sprintf("v%d", reg)
-				if !seen[regName] && !written[regName] {
+				if !seen[regName] && !warned[regName] {
 					violations = append(violations, Violation{
 						Line:     idx + 1,
 						Message:  fmt.Sprintf("register %s may be used uninitialized at line %d", regName, idx+1),
 						Severity: "warning",
 						Fix:      fmt.Sprintf("initialize %s before use", regName),
 					})
-					seen[regName] = true
+					warned[regName] = true
 				}
 			}
-			dst := dstReg(op, fields[1:])
-			if dst >= 0 {
-				regName := strings.TrimRight(fields[1], ",")
-				written[regName] = true
+			if dst := dstReg(op, args); dst >= 0 && len(args) > 0 {
+				seen[fmt.Sprintf("v%d", dst)] = true
+				delete(warned, fmt.Sprintf("v%d", dst))
 			}
 		}
 	}
@@ -276,7 +266,8 @@ func (u *uninitRegCheck) Check(lines []string) []Violation {
 type callerSaveCheck struct{}
 
 var callerSaveRegs = map[string]bool{
-	"v0": true, "v2": true, "v3": true, "v6": true, "v7": true, "v8": true,
+	"v0": true, "v2": true, "v3": true, "v4": true, "v5": true,
+	"v6": true, "v7": true, "v8": true,
 }
 
 func (c *callerSaveCheck) Check(lines []string) []Violation {
@@ -394,12 +385,19 @@ func (c *cmpMemSizeCheck) Check(lines []string) []Violation {
 		if trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		fields := strings.Fields(trimmed)
+		fields := asm.Fields(trimmed)
 		if len(fields) < 3 || strings.ToUpper(fields[0]) != "CMP" {
 			continue
 		}
-		for _, arg := range fields[1:] {
-			if strings.Contains(arg, "byte") || strings.Contains(arg, "word") || strings.Contains(arg, "dword") {
+		for argIdx, arg := range fields[1:] {
+			low := strings.ToLower(arg)
+			if low != "byte" && low != "word" && low != "dword" && low != "qword" &&
+				low != "tword" && low != "oword" {
+				continue
+			}
+			// Only a genuine size prefix on a memory operand is a problem;
+			// symbols such as byte_count must not trigger this rule.
+			if argIdx+2 < len(fields) && strings.Contains(fields[argIdx+2], "[") {
 				violations = append(violations, Violation{
 					Line:     i + 1,
 					Message:  fmt.Sprintf("CMP with memory operand size prefix may generate invalid NASM syntax: %s", trimmed),
@@ -476,44 +474,55 @@ func (l *infiniteLoopCheck) Check(lines []string) []Violation {
 
 // ── helpers ─────────────────────────────────────────────────────────────
 
-// splitFuncs splits lines into functions based on function entry labels
-// Labels starting with '_' are treated as function entry points
-// If no function labels exist, returns the entire code as one function
+// splitFuncs partitions the source into function bodies. Call targets,
+// underscore-prefixed labels, main/vas_main, and non-local labels following a
+// RET are treated as entry points. Loop labels inside a function are not.
 func splitFuncs(lines []string) [][]int {
+	callTargets := map[string]bool{}
+	for _, line := range lines {
+		code := asm.TrimCode(line)
+		if code == "" {
+			continue
+		}
+		op, args, ok := asm.Parse(code)
+		if ok && op == "CALL" && len(args) > 0 {
+			callTargets[strings.TrimRight(args[0], ",")] = true
+		}
+	}
+	isFuncLabel := func(name string) bool {
+		if name == "" || strings.HasPrefix(name, ".") {
+			return false
+		}
+		return callTargets[name] || strings.HasPrefix(name, "_") || name == "main" || name == "vas_main"
+	}
+
 	var funcs [][]int
 	var current []int
-	foundFuncLabel := false
-
+	sawRet := false
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasSuffix(trimmed, ":") && !isInstruction(trimmed) {
-			name := strings.TrimSuffix(trimmed, ":")
-			// Treat labels starting with '_' as function boundaries
-			if len(name) > 0 && name[0] == '_' {
-				foundFuncLabel = true
+		code := asm.TrimCode(line)
+		if strings.HasSuffix(code, ":") && !isInstruction(code) {
+			name := strings.TrimSpace(strings.TrimSuffix(code, ":"))
+			if isFuncLabel(name) || sawRet {
 				if len(current) > 0 {
 					funcs = append(funcs, current)
 				}
 				current = []int{i}
+				sawRet = false
 				continue
+			}
+		}
+		if op, args, ok := asm.Parse(code); ok {
+			_ = args
+			if op == "RET" {
+				sawRet = true
 			}
 		}
 		current = append(current, i)
 	}
-
 	if len(current) > 0 {
 		funcs = append(funcs, current)
 	}
-
-	// If no function labels found, return entire code as one block
-	if !foundFuncLabel {
-		allLines := make([]int, len(lines))
-		for i := range lines {
-			allLines[i] = i
-		}
-		return [][]int{allLines}
-	}
-
 	return funcs
 }
 
@@ -581,71 +590,73 @@ func dstReg(op string, args []string) int {
 
 func readRegs(op string, args []string) []int {
 	var regs []int
-	switch op {
-	case "MOV":
-		if len(args) >= 2 {
-			if r := regIndex(args[1]); r >= 0 {
-				regs = append(regs, r)
+	add := func(a string) {
+		for _, tok := range asm.OperandRegs(a) {
+			if n := asm.VirtualRegNum(tok); n >= 0 {
+				regs = append(regs, n)
 			}
+		}
+	}
+	switch strings.ToUpper(op) {
+	case "MOVI":
+		if len(args) >= 2 {
+			add(args[1])
+		}
+	case "MOV":
+		for _, a := range args[1:] {
+			add(a)
 		}
 	case "ADD", "SUB", "MUL":
 		if len(args) >= 2 {
-			if r := regIndex(args[1]); r >= 0 {
-				regs = append(regs, r)
+			if len(args) == 2 {
+				add(args[0])
 			}
-			if len(args) >= 3 {
-				if r := regIndex(args[2]); r >= 0 {
-					regs = append(regs, r)
-				}
+			for _, a := range args[1:] {
+				add(a)
 			}
 		}
 	case "LOAD", "LEA":
 		if len(args) >= 2 {
-			a := strings.TrimSuffix(strings.TrimPrefix(args[1], "["), "]")
-			if r := regIndex(a); r >= 0 {
-				regs = append(regs, r)
-			}
+			add(args[1])
 		}
 	case "STORE":
 		if len(args) >= 2 {
-			if r := regIndex(args[0]); r >= 0 {
-				regs = append(regs, r)
-			}
-			a := strings.TrimSuffix(strings.TrimPrefix(args[1], "["), "]")
-			if r := regIndex(a); r >= 0 {
-				regs = append(regs, r)
-			}
+			add(args[0])
+			add(args[1])
 		}
 	case "CMP":
 		for _, a := range args {
-			if r := regIndex(a); r >= 0 {
-				regs = append(regs, r)
-			}
+			add(a)
 		}
 	case "PUSH":
 		if len(args) >= 1 {
-			if r := regIndex(args[0]); r >= 0 {
-				regs = append(regs, r)
-			}
+			add(args[0])
 		}
-	case "SYSCALL":
+	case "SYSCALL", "INT":
 		regs = append(regs, 0, 3, 4, 5, 6, 7, 8)
-	case "INT":
-		regs = append(regs, 0, 3, 4, 5, 6, 7, 8)
+	default:
+		for _, a := range args {
+			add(a)
+		}
 	}
-	return regs
+	return uniqueInts(regs)
+}
+
+func uniqueInts(in []int) []int {
+	if len(in) < 2 {
+		return in
+	}
+	seen := [13]bool{}
+	out := in[:0]
+	for _, v := range in {
+		if v >= 0 && v < len(seen) && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func regIndex(s string) int {
-	s = strings.TrimRight(s, ",")
-	if len(s) >= 2 && s[0] == 'v' {
-		rest := s[1:]
-		if len(rest) == 1 && rest[0] >= '0' && rest[0] <= '9' {
-			return int(rest[0] - '0')
-		}
-		if len(rest) == 2 && rest[0] == '1' && rest[1] >= '0' && rest[1] <= '2' {
-			return 10 + int(rest[1]-'0')
-		}
-	}
-	return -1
+	return asm.VirtualRegNum(strings.TrimRight(strings.TrimSpace(s), ","))
 }

@@ -3,6 +3,8 @@ package vas
 import (
 	"fmt"
 	"strings"
+
+	"vas/vas/internal/asm"
 )
 
 // RegInfo holds the physical register names for each size variant.
@@ -34,34 +36,10 @@ var AllRegs = map[string]RegInfo{
 const MaxVirtualReg = 12
 
 // IsValidVirtualReg reports whether s is a valid virtual register name (v0..v12).
-func IsValidVirtualReg(s string) bool {
-	if len(s) < 2 || s[0] != 'v' {
-		return false
-	}
-	n := len(s)
-	if n == 2 {
-		return s[1] >= '0' && s[1] <= '9' && s[1] <= '9'-('9'-'9') // just '9'
-	}
-	if n == 3 && s[1] == '1' {
-		return s[2] >= '0' && s[2] <= '2' // v10..v12
-	}
-	return false
-}
+func IsValidVirtualReg(s string) bool { return asm.IsVirtualReg(s) }
 
 // VirtualRegNum returns the register number from "v0".."v12", or -1.
-func VirtualRegNum(s string) int {
-	if len(s) < 2 || s[0] != 'v' {
-		return -1
-	}
-	rest := s[1:]
-	if len(rest) == 1 && rest[0] >= '0' && rest[0] <= '9' {
-		return int(rest[0] - '0')
-	}
-	if len(rest) == 2 && rest[0] == '1' && rest[1] >= '0' && rest[1] <= '2' {
-		return 10 + int(rest[1]-'0')
-	}
-	return -1
-}
+func VirtualRegNum(s string) int { return asm.VirtualRegNum(s) }
 
 // PhysReg64 returns the 64-bit physical register for a virtual register name,
 // or ("", false) if not a valid virtual register.
@@ -189,103 +167,101 @@ func isPhysReg(s string) bool {
 	return false
 }
 
-// hasVirtualReg reports whether s contains any virtual register token.
+// hasVirtualReg reports whether s contains any exact virtual register token.
 // This is used as a fast-path check before running heavy optimizations.
 func hasVirtualReg(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] == 'v' && i+1 < len(s) {
-			c := s[i+1]
-			if c >= '0' && c <= '9' {
-				rest := s[i+2:]
-				// Must not be followed by more alphanumeric chars (not v0..v12)
-				if len(rest) == 0 {
-					return true
-				}
-				if rest[0] >= '0' && rest[0] <= '9' {
-					// Two-digit number: v10, v11, v12 are valid; v13+ invalid
-					if len(rest) == 1 {
-						n := (c - '0') * 10
-						n += rest[0] - '0'
-						if n >= 0 && n <= MaxVirtualReg {
-							return true
-						}
-						// v13+ is invalid, skip past the two digits
-						i++
-						continue
-					}
-					// vNNN (3+ digits) is invalid
-					i++
-					continue
-				}
-				// Single digit v0..v9 is valid
-				return true
-			}
+	for _, tok := range asm.OperandRegs(s) {
+		if asm.IsVirtualReg(tok) {
+			return true
 		}
 	}
 	return false
 }
 
-// mapReg maps virtual register names in s to their physical counterparts.
-// It correctly skips content inside string literals and comments.
+func isIdentByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// VirtualRegisters returns every exact v0..v12 token in s, in order and
+// without duplicates. It is used by CLI statistics and documentation tooling.
+func VirtualRegisters(s string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, tok := range asm.OperandRegs(s) {
+		if asm.IsVirtualReg(tok) && !seen[tok] {
+			seen[tok] = true
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+// mapReg maps exact virtual-register tokens in s to their physical
+// counterparts. Identifiers such as v0_loop, av0 and v13_loop are left alone;
+// quoted text and comments are copied verbatim. A standalone v13 token is
+// rejected because it is neither a register nor a plausible symbol.
 func mapReg(s string) (string, error) {
+	if !hasVirtualReg(s) && strings.IndexByte(s, 'v') < 0 {
+		return s, nil
+	}
 	var out strings.Builder
-	inQuote := false
-	quoteChar := byte(0)
+	out.Grow(len(s))
+	quote := byte(0)
 
 	for i := 0; i < len(s); {
-		if inQuote {
-			out.WriteByte(s[i])
-			if s[i] == quoteChar {
-				inQuote = false
+		c := s[i]
+		if quote != 0 {
+			out.WriteByte(c)
+			if c == '\\' && i+1 < len(s) {
+				i++
+				out.WriteByte(s[i])
+			} else if c == quote {
+				quote = 0
 			}
 			i++
 			continue
 		}
-
-		// Enter quoted string literal — skip all content inside
-		if s[i] == '"' || s[i] == '\'' {
-			inQuote = true
-			quoteChar = s[i]
-			out.WriteByte(s[i])
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+			out.WriteByte(c)
 			i++
 			continue
-		}
-
-		// Skip comment — copy rest verbatim
-		if s[i] == ';' || s[i] == '#' {
+		case ';', '#':
 			out.WriteString(s[i:])
-			break
+			return out.String(), nil
 		}
 
-		// Potential virtual register: starts with 'v' followed by digit(s)
-		if s[i] == 'v' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
+		if c == 'v' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
 			j := i + 1
 			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
 				j++
 			}
-			name := s[i:j]
-
-			// Check for label: name followed by colon (e.g. "v0:")
-			if j < len(s) && s[j] == ':' {
-				// Validate register name before accepting as label
-				if !IsValidVirtualReg(name) {
-					return "", fmt.Errorf("%w: %s", ErrInvalidRegister, name)
+			// Require a token boundary before the 'v' and after the digits.
+			// The '.' case is a local label suffix and is left untouched.
+			beforeOK := i == 0 || !isIdentByte(s[i-1])
+			afterOK := j == len(s) || (!isIdentByte(s[j]) && s[j] != '.')
+			if beforeOK && afterOK {
+				name := s[i:j]
+				if j < len(s) && s[j] == ':' {
+					// Labels named v0..v12 keep their virtual spelling.
+					out.WriteString(name)
+					i = j
+					continue
 				}
-				out.WriteString(name) // keep "v0:" as-is for labels
-				i = j
-				continue
+				if info, ok := AllRegs[name]; ok {
+					out.WriteString(info.Name64)
+					i = j
+					continue
+				}
+				// A standalone vN outside v0..v12 is invalid.
+				return "", fmt.Errorf("%w: %s", ErrInvalidRegister, name)
 			}
-
-			// Regular register reference
-			if info, ok := AllRegs[name]; ok {
-				out.WriteString(info.Name64)
-				i = j
-				continue
-			}
-			return "", fmt.Errorf("%w: %s", ErrInvalidRegister, name)
+			out.WriteString(s[i:j])
+			i = j
+			continue
 		}
-
-		out.WriteByte(s[i])
+		out.WriteByte(c)
 		i++
 	}
 	return out.String(), nil

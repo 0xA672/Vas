@@ -117,7 +117,7 @@ func TestXorZero(t *testing.T) {
 func TestTestCmp(t *testing.T) {
 	lines := []string{"\tcmp\trax, 0", "\tcmp\trbx, 1", "\tcmp\trcx, 0"}
 	result := testCmp(lines)
-	expected := []string{"\ttest\teax, eax", "\tcmp\trbx, 1", "\ttest\tecx, ecx"}
+	expected := []string{"\ttest\trax, rax", "\tcmp\trbx, 1", "\ttest\trcx, rcx"}
 	for i := range expected {
 		if result[i] != expected[i] {
 			t.Errorf("testCmp[%d] = %q, want %q", i, result[i], expected[i])
@@ -649,9 +649,9 @@ func TestPeepholeCombined(t *testing.T) {
 	if result[0] != "\txor\teax, eax" {
 		t.Errorf("peephole[0] = %q, want 'xor eax, eax'", result[0])
 	}
-	// testCmp: cmp rax,0 → test eax,eax
-	if result[1] != "\ttest\teax, eax" {
-		t.Errorf("peephole[1] = %q, want 'test eax, eax'", result[1])
+	// testCmp: cmp rax,0 → test rax,rax (same width; narrowing to eax is wrong)
+	if result[1] != "\ttest\trax, rax" {
+		t.Errorf("peephole[1] = %q, want 'test rax, rax'", result[1])
 	}
 	// nopMerge: two nops merged into one
 	if !strings.Contains(result[2], "merged") {
@@ -839,18 +839,18 @@ func FuzzOptimize(f *testing.F) {
 // --- -O2: CSE (common subexpression elimination) ---
 
 func TestCseSimple(t *testing.T) {
-	// Same MUL appears twice with different dst → CSE should keep both (conservative approach)
+	// Same MUL appears twice with different dst → versioned CSE replaces the
+	// second computation with a MOV from the first result.
 	lines := []string{"\tMUL\tv5, v3, 8", "\tMUL\tv6, v3, 8"}
 	result := cse(lines)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 lines, got %d: %v", len(result), result)
 	}
-	// Conservative CSE keeps both instructions to preserve data flow correctness
 	if result[0] != "\tMUL\tv5, v3, 8" {
 		t.Errorf("first MUL should be preserved: %q", result[0])
 	}
-	if result[1] != "\tMUL\tv6, v3, 8" {
-		t.Errorf("second MUL should be preserved (conservative CSE): %q", result[1])
+	if result[1] != "\tMOV\tv6, v5" {
+		t.Errorf("second MUL should be replaced by MOV v6, v5: %q", result[1])
 	}
 }
 

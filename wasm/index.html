@@ -1023,7 +1023,7 @@
                     stroke-linecap="round"
                   />
                 </svg>
-                Copy
+                <span class="copy-label">Copy</span>
               </button>
             </div>
           </div>
@@ -1084,7 +1084,7 @@ _start:
                     stroke-linecap="round"
                   />
                 </svg>
-                Copy
+                <span class="copy-label">Copy</span>
               </button>
             </div>
           </div>
@@ -1161,9 +1161,17 @@ _start:
         toastTimer = setTimeout(() => toastEl.classList.remove("show"), 1800);
       }
 
+      let markWasmReady;
+      const wasmReady = new Promise((resolve) => {
+        markWasmReady = resolve;
+      });
+
       // ── WASM Bootstrap ──
       async function bootstrap() {
         loading.classList.add("active");
+        // Go's wasm main calls window.vasReady() after registering the
+        // exported assembly functions. Do not enable Run before that.
+        window.vasReady = () => markWasmReady();
         try {
           const go = new Go();
           const resp = await fetch("vas.wasm");
@@ -1172,9 +1180,17 @@ _start:
           go.run(res.instance).catch((e) =>
             setStatus("err", "Engine: " + e.message),
           );
+          await Promise.race([
+            wasmReady,
+            new Promise((resolve) => setTimeout(resolve, 5000)),
+          ]);
+          if (typeof vasAssembleStandalone !== "function") {
+            throw new Error("assembly engine did not initialize");
+          }
           runBtn.disabled = false;
           setStatus("ok", "Ready");
           loading.classList.remove("active");
+          run();
         } catch (e) {
           loading.querySelector("p").textContent =
             "Load failed: " + e.message;
@@ -1538,13 +1554,14 @@ _start:
         );
       }
       function copyToClipboard(text, btn, toastMsg) {
+        const label = btn.querySelector(".copy-label");
         const write = () => {
-          const orig = btn.textContent;
-          btn.querySelector(":last-child").textContent = "Copied";
+          const orig = label.textContent;
+          label.textContent = "Copied";
           btn.classList.add("copied");
           toast(toastMsg);
           setTimeout(() => {
-            btn.querySelector(":last-child").textContent = "Copy";
+            label.textContent = orig;
             btn.classList.remove("copied");
           }, 1600);
         };

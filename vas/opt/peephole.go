@@ -29,30 +29,34 @@ var (
 	pushModRe     = regexp.MustCompile(`^\t(add|sub|imul|mov|lea)\t([a-z][a-z0-9]+),.*$`)
 )
 
-func peephole(lines []string) []string {
-	lines = xorZero(lines)
-	lines = testCmp(lines)
-	lines = nopMerge(lines)
-	lines = leaFuse(lines)
-	lines = noopElim(lines)
-	lines = pushPopMov(lines)
-	lines = xorMovElim(lines)
-	lines = shlAddFuse(lines)
-	lines = addNegFuse(lines)
-	lines = cancelPairElim(lines)
-	lines = pushModPopElim(lines)
+func peephole(lines []string, explain ...bool) []string {
+	ex := explainValue(explain...)
+	lines = xorZero(lines, ex)
+	lines = testCmp(lines, ex)
+	lines = nopMerge(lines, ex)
+	lines = leaFuse(lines, ex)
+	lines = noopElim(lines, ex)
+	lines = pushPopMov(lines, ex)
+	lines = xorMovElim(lines, ex)
+	lines = shlAddFuse(lines, ex)
+	lines = addNegFuse(lines, ex)
+	lines = cancelPairElim(lines, ex)
+	lines = pushModPopElim(lines, ex)
+	// Some rewrites expose earlier no-ops (push/pop -> mov reg,reg). A second
+	// bounded pass cleans those without risking a fixpoint explosion.
+	lines = noopElim(lines, ex)
 	return lines
 }
 
-func xorZero(lines []string) []string {
+func xorZero(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
-	for _, line := range lines {
+	for i, line := range lines {
 		m := movZeroRe.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
-		if m != nil {
+		if m != nil && !flagsLiveAfter(lines, i) {
 			reg := m[1]
 			r32 := regTo32(reg)
-			if isExplain() {
-				result = append(result, fmt.Sprintf("; [OPT] xor %s, %s  replaces mov %s, 0 (shorter encoding, sets ZF=1 CF=0 OF=0)",
+			if explainValue(explain...) {
+				result = append(result, fmt.Sprintf("; [OPT] xor %s, %s  replaces mov %s, 0 (shorter encoding)",
 					r32, r32, reg))
 			}
 			result = append(result, fmt.Sprintf("\txor\t%s, %s", r32, r32))
@@ -63,18 +67,20 @@ func xorZero(lines []string) []string {
 	return result
 }
 
-func testCmp(lines []string) []string {
+func testCmp(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
 		m := testCmpZeroRe.FindStringSubmatch(strings.TrimRight(line, " \t\r"))
 		if m != nil {
 			reg := m[1]
-			r32 := regTo32(reg)
-			if isExplain() {
+			// cmp reg, 0 and test reg, reg set the same ZF/SF/PF/CF/OF for
+			// the same operand width. Never narrow a 64-bit comparison to
+			// 32 bits: that would change ZF for values with zero low bits.
+			if explainValue(explain...) {
 				result = append(result, fmt.Sprintf("; [OPT] test %s, %s  replaces cmp %s, 0 (shorter encoding)",
-					r32, r32, reg))
+					reg, reg, reg))
 			}
-			result = append(result, fmt.Sprintf("\ttest\t%s, %s", r32, r32))
+			result = append(result, fmt.Sprintf("\ttest\t%s, %s", reg, reg))
 		} else {
 			result = append(result, line)
 		}
@@ -82,7 +88,7 @@ func testCmp(lines []string) []string {
 	return result
 }
 
-func nopMerge(lines []string) []string {
+func nopMerge(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
@@ -92,7 +98,7 @@ func nopMerge(lines []string) []string {
 				count++
 			}
 			if count > 1 {
-				if isExplain() {
+				if explainValue(explain...) {
 					result = append(result, fmt.Sprintf("; [OPT] merged %d nops into one", count))
 				}
 				result = append(result, "\tnop\t; merged "+strconv.Itoa(count)+" nops")
@@ -108,14 +114,14 @@ func nopMerge(lines []string) []string {
 	return result
 }
 
-func leaFuse(lines []string) []string {
+func leaFuse(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
-		if i+1 < len(lines) {
+		if i+1 < len(lines) && !flagsLiveAfter(lines, i+1) {
 			fused, ok := tryLeaFuse(lines[i], lines[i+1])
 			if ok {
-				if isExplain() {
+				if explainValue(explain...) {
 					// Build description from the two fused lines
 					line1 := strings.TrimSpace(lines[i])
 					line2 := strings.TrimSpace(lines[i+1])
@@ -170,30 +176,24 @@ func tryLeaFuse(line1, line2 string) (string, bool) {
 	return "", false
 }
 
-func noopElim(lines []string) []string {
+func noopElim(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
-	for _, line := range lines {
+	for i, line := range lines {
 		trimmed := strings.TrimRight(line, " \t\r")
 		if m := peepMovRe.FindStringSubmatch(trimmed); m != nil && m[1] == m[2] {
-			if isExplain() {
+			if explainValue(explain...) {
 				result = append(result, fmt.Sprintf("; [OPT] removed no-op: mov %s, %s", m[1], m[2]))
 			}
 			continue
 		}
-		if noopAddZeroRe.MatchString(trimmed) {
-			if isExplain() {
-				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
-			}
+		// add/sub 0 and imul 1 are value no-ops but still write FLAGS.
+		if flagsLiveAfter(lines, i) {
+			result = append(result, line)
 			continue
 		}
-		if noopSubZeroRe.MatchString(trimmed) {
-			if isExplain() {
-				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
-			}
-			continue
-		}
-		if noopImulOneRe.MatchString(trimmed) {
-			if isExplain() {
+		if noopAddZeroRe.MatchString(trimmed) || noopSubZeroRe.MatchString(trimmed) ||
+			noopImulOneRe.MatchString(trimmed) {
+			if explainValue(explain...) {
 				result = append(result, fmt.Sprintf("; [OPT] removed no-op: %s", trimmed))
 			}
 			continue
@@ -203,7 +203,7 @@ func noopElim(lines []string) []string {
 	return result
 }
 
-func pushPopMov(lines []string) []string {
+func pushPopMov(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
@@ -211,7 +211,7 @@ func pushPopMov(lines []string) []string {
 			m1 := pushRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
 			m2 := popRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 			if m1 != nil && m2 != nil {
-				if isExplain() {
+				if explainValue(explain...) {
 					result = append(result, fmt.Sprintf("; [OPT] push %s; pop %s  replaced by mov %s, %s",
 						m1[1], m2[1], m2[1], m1[1]))
 				}
@@ -226,11 +226,11 @@ func pushPopMov(lines []string) []string {
 	return result
 }
 
-func xorMovElim(lines []string) []string {
+func xorMovElim(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
-		if i+1 < len(lines) {
+		if i+1 < len(lines) && !flagsLiveAfter(lines, i+1) {
 			m1 := xorSelfRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
 			if m1 != nil && m1[1] == m1[2] {
 				reg32 := m1[1]
@@ -256,7 +256,7 @@ func xorMovElim(lines []string) []string {
 								}
 							}
 							if valid {
-								if isExplain() {
+								if explainValue(explain...) {
 									result = append(result, fmt.Sprintf("; [OPT] xor %s,%s; mov %s,%s  replaced by mov %s, %s",
 										m1[1], m1[2], reg64, srcReg, reg64, srcReg))
 								}
@@ -275,11 +275,11 @@ func xorMovElim(lines []string) []string {
 	return result
 }
 
-func shlAddFuse(lines []string) []string {
+func shlAddFuse(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
-		if i+2 < len(lines) {
+		if i+2 < len(lines) && !flagsLiveAfter(lines, i+2) {
 			m1 := peepMovRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
 			if m1 == nil {
 				result = append(result, lines[i])
@@ -311,7 +311,7 @@ func shlAddFuse(lines []string) []string {
 			}
 			scale := 1 << uint(shift)
 
-			if isExplain() {
+			if explainValue(explain...) {
 				result = append(result, fmt.Sprintf("; [OPT] shl+add fused into lea %s, [%s+%s*%d]",
 					movDst, movSrc, movSrc, scale))
 			}
@@ -325,11 +325,11 @@ func shlAddFuse(lines []string) []string {
 	return result
 }
 
-func addNegFuse(lines []string) []string {
+func addNegFuse(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
-		if i+1 < len(lines) {
+		if i+1 < len(lines) && !flagsLiveAfter(lines, i+1) {
 			m1 := addNegFuseRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
 			if m1 == nil {
 				result = append(result, lines[i])
@@ -340,7 +340,7 @@ func addNegFuse(lines []string) []string {
 
 			m2 := negRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 			if m2 != nil && m2[1] == reg {
-				if isExplain() {
+				if explainValue(explain...) {
 					result = append(result, fmt.Sprintf("; [OPT] add %s,1; neg %s  replaced by not %s", reg, reg, reg))
 				}
 				result = append(result, fmt.Sprintf("\tnot\t%s", reg))
@@ -354,60 +354,51 @@ func addNegFuse(lines []string) []string {
 	return result
 }
 
-func cancelPairElim(lines []string) []string {
+func cancelPairElim(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
 		if i+1 < len(lines) {
-			m1 := notRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
-			if m1 != nil {
-				reg := m1[1]
-				m2 := notRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
-				if m2 != nil && m2[1] == reg {
-					if isExplain() {
-						result = append(result, fmt.Sprintf("; [OPT] removed redundant not %s; not %s", reg, reg))
+			// NOT does not modify FLAGS, so not;not is always removable.
+			if m1 := notRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r")); m1 != nil {
+				if m2 := notRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r")); m2 != nil && m2[1] == m1[1] {
+					if explainValue(explain...) {
+						result = append(result, fmt.Sprintf("; [OPT] removed redundant not %s; not %s", m1[1], m1[1]))
 					}
 					i += 2
 					continue
 				}
 			}
 
-			m1 = negRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
-			if m1 != nil {
-				reg := m1[1]
-				m2 := negRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
-				if m2 != nil && m2[1] == reg {
-					if isExplain() {
-						result = append(result, fmt.Sprintf("; [OPT] removed redundant neg %s; neg %s", reg, reg))
+			// NEG/INC/DEC write FLAGS. Removing the pair is only valid when
+			// the resulting FLAGS value is dead.
+			if !flagsLiveAfter(lines, i+1) {
+				if m1 := negRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r")); m1 != nil {
+					if m2 := negRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r")); m2 != nil && m2[1] == m1[1] {
+						if explainValue(explain...) {
+							result = append(result, fmt.Sprintf("; [OPT] removed redundant neg %s; neg %s", m1[1], m1[1]))
+						}
+						i += 2
+						continue
 					}
-					i += 2
-					continue
 				}
-			}
-
-			m1 = incRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
-			if m1 != nil {
-				reg := m1[1]
-				m2 := decRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
-				if m2 != nil && m2[1] == reg {
-					if isExplain() {
-						result = append(result, fmt.Sprintf("; [OPT] removed redundant inc %s; dec %s", reg, reg))
+				if m1 := incRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r")); m1 != nil {
+					if m2 := decRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r")); m2 != nil && m2[1] == m1[1] {
+						if explainValue(explain...) {
+							result = append(result, fmt.Sprintf("; [OPT] removed redundant inc %s; dec %s", m1[1], m1[1]))
+						}
+						i += 2
+						continue
 					}
-					i += 2
-					continue
 				}
-			}
-
-			m1 = decRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r"))
-			if m1 != nil {
-				reg := m1[1]
-				m2 := incRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
-				if m2 != nil && m2[1] == reg {
-					if isExplain() {
-						result = append(result, fmt.Sprintf("; [OPT] removed redundant dec %s; inc %s", reg, reg))
+				if m1 := decRe.FindStringSubmatch(strings.TrimRight(lines[i], " \t\r")); m1 != nil {
+					if m2 := incRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r")); m2 != nil && m2[1] == m1[1] {
+						if explainValue(explain...) {
+							result = append(result, fmt.Sprintf("; [OPT] removed redundant dec %s; inc %s", m1[1], m1[1]))
+						}
+						i += 2
+						continue
 					}
-					i += 2
-					continue
 				}
 			}
 		}
@@ -419,7 +410,7 @@ func cancelPairElim(lines []string) []string {
 
 // pushModPopElim removes push; instr reg, ... ; pop reg triples
 // when the pop restores the old value and the intermediate result dies.
-func pushModPopElim(lines []string) []string {
+func pushModPopElim(lines []string, explain ...bool) []string {
 	result := make([]string, 0, len(lines))
 	i := 0
 	for i < len(lines) {
@@ -430,7 +421,16 @@ func pushModPopElim(lines []string) []string {
 				reg := m1[1]
 				m2 := pushModRe.FindStringSubmatch(strings.TrimRight(lines[i+1], " \t\r"))
 				if m2 != nil && m2[2] == reg {
-					if isExplain() {
+					// add/sub/imul write FLAGS. Only remove the middle
+					// instruction when that FLAGS result is dead; mov/lea
+					// are flag-neutral.
+					midOp := strings.ToLower(m2[1])
+					if (midOp == "add" || midOp == "sub" || midOp == "imul") && flagsLiveAfter(lines, i+1) {
+						result = append(result, lines[i])
+						i++
+						continue
+					}
+					if explainValue(explain...) {
 						result = append(result, fmt.Sprintf("; [OPT] removed dead push %s; %s %s; pop %s",
 							m1[1], m2[1], m2[2], m3[1]))
 					}

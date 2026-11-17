@@ -97,18 +97,29 @@ func regTo64(reg string) string {
 var explainEnabled bool
 var explainMu sync.RWMutex
 
-// SetExplain atomically updates the explain mode flag.
+// SetExplain atomically updates the legacy global explain mode flag.
+// New code should use the *WithExplain entry points; the global remains for
+// source compatibility with older callers.
 func SetExplain(v bool) {
 	explainMu.Lock()
 	explainEnabled = v
 	explainMu.Unlock()
 }
 
-// isExplain returns the current explain mode.
+// isExplain returns the current legacy explain mode.
 func isExplain() bool {
 	explainMu.RLock()
 	defer explainMu.RUnlock()
 	return explainEnabled
+}
+
+// explainValue resolves an explicitly threaded explain flag, falling back to
+// the legacy global for one-argument calls from older code.
+func explainValue(opts ...bool) bool {
+	if len(opts) > 0 {
+		return opts[0]
+	}
+	return isExplain()
 }
 
 // hasVirtualReg reports whether s contains any virtual register token (v0..v12).
@@ -155,6 +166,12 @@ func PeepholeOnlyLines(lines []string) []string {
 	return peephole(lines)
 }
 
+// PeepholeOnlyLinesWithExplain runs peephole passes with an explicit explain
+// flag, avoiding process-global state for concurrent library callers.
+func PeepholeOnlyLinesWithExplain(lines []string, explain bool) []string {
+	return peephole(lines, explain)
+}
+
 // PeepholeOnly runs only peephole optimizations on fully assembled output.
 func PeepholeOnly(input string) string {
 	return strings.Join(PeepholeOnlyLines(strings.Split(input, "\n")), "\n")
@@ -162,6 +179,10 @@ func PeepholeOnly(input string) string {
 
 // runPipeline executes the optimization pipeline for the given level.
 func runPipeline(lines []string, level int) []string {
+	return runPipelineWithExplain(lines, level, isExplain())
+}
+
+func runPipelineWithExplain(lines []string, level int, explain bool) []string {
 	if !hasVirtualRegLine(lines) {
 		return lines
 	}
@@ -170,12 +191,14 @@ func runPipeline(lines []string, level int) []string {
 	lines = copyPropagate(lines)
 	lines = constPropagate(lines)
 	lines = strengthReduce(lines)
-	lines = storeLoadFwd(lines)
+	// Eliminate dead stores before forwarding: forwarding can replace a LOAD
+	// that was acting as a memory barrier, causing a live store to look dead.
 	lines = deadStoreElim(lines)
+	lines = storeLoadFwd(lines)
 	lines = deadCodeElim(lines)
 
-	lines = peephole(lines)
-	lines = peephole(lines)
+	lines = peephole(lines, explain)
+	lines = peephole(lines, explain)
 
 	if level >= 2 {
 		lines = cse(lines)
@@ -193,6 +216,14 @@ func OptimizeLines(lines []string, level int) []string {
 		return lines
 	}
 	return runPipeline(lines, level)
+}
+
+// OptimizeLinesWithExplain is OptimizeLines with an explicit explain flag.
+func OptimizeLinesWithExplain(lines []string, level int, explain bool) []string {
+	if level <= 0 {
+		return lines
+	}
+	return runPipelineWithExplain(lines, level, explain)
 }
 
 // Optimize runs all enabled optimization passes on VAS source.

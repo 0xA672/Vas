@@ -4,7 +4,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"vas/vas/internal/asm"
 )
+
+// ---------------------------------------------------------------------------
+// Copy propagation
+// ---------------------------------------------------------------------------
 
 func copyPropagate(lines []string) []string {
 	blocks := splitBlocks(lines)
@@ -16,13 +22,15 @@ func copyPropagate(lines []string) []string {
 }
 
 func propagateBlock(lines []string) []string {
-	alias := make([]int, 13)
+	alias := [13]int{}
 	for i := range alias {
 		alias[i] = -1
 	}
-
 	resolve := func(ri int) int {
-		for ri >= 0 && alias[ri] >= 0 {
+		if ri < 0 {
+			return -1
+		}
+		for steps := 0; steps < len(alias) && ri >= 0 && alias[ri] >= 0; steps++ {
 			ri = alias[ri]
 		}
 		return ri
@@ -30,61 +38,37 @@ func propagateBlock(lines []string) []string {
 
 	result := make([]string, len(lines))
 	for i, line := range lines {
-		code := strings.TrimSpace(line)
-		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-			code = strings.TrimSpace(code[:idx])
-		}
-		if code == "" {
+		p, ok := parseOptLine(line)
+		if !ok {
 			result[i] = line
 			continue
 		}
-
-		fields := strings.Fields(code)
-		if len(fields) == 0 {
-			result[i] = line
-			continue
-		}
-		op := strings.ToUpper(fields[0])
-		args := fields[1:]
-
-		hasVReg := false
-		for _, a := range args {
-			if regIndex(a) >= 0 {
-				hasVReg = true
-				break
+		if touchesPhysicalReg(line) {
+			for j := range alias {
+				alias[j] = -1
 			}
+			result[i] = line
+			continue
 		}
-		if !hasVReg {
+		op := p.op
+		args := p.args
+		if !knownDstOp(op) && op != "CMP" {
+			for j := range alias {
+				alias[j] = -1
+			}
 			result[i] = line
 			continue
 		}
 
 		dst := dstReg(op, args)
-
 		propagated := make([]string, len(args))
 		for j, a := range args {
 			if j == 0 && dst >= 0 {
 				propagated[j] = a
 				continue
 			}
-			ri := regIndex(a)
-			resolved := resolve(ri)
-			if resolved >= 0 && resolved != ri {
-				comma := ""
-				if strings.HasSuffix(a, ",") {
-					comma = ","
-				}
-				propagated[j] = fmt.Sprintf("v%d%s", resolved, comma)
-			} else {
-				propagated[j] = a
-			}
+			propagated[j] = replaceVirtualTokens(a, resolve)
 		}
-
-		newLine := fmt.Sprintf("\t%s\t%s", op, strings.Join(propagated, " "))
-		if idx := strings.IndexAny(line, ";#"); idx >= 0 {
-			newLine += line[idx:]
-		}
-
 		if dst >= 0 {
 			for j := range alias {
 				if alias[j] == dst {
@@ -92,241 +76,212 @@ func propagateBlock(lines []string) []string {
 				}
 			}
 		}
-
 		if op == "MOV" && dst >= 0 && len(args) >= 2 {
-			srcRi := resolve(regIndex(args[1]))
+			srcRi := regIndex(args[1])
 			if srcRi >= 0 {
-				alias[dst] = srcRi
+				srcRi = resolve(srcRi)
+				if srcRi >= 0 && srcRi != dst {
+					alias[dst] = srcRi
+				}
 			}
 		} else if dst >= 0 {
 			alias[dst] = -1
 		}
-		result[i] = newLine
+		result[i] = formatOptimizedLine(op, propagated, line)
 	}
 	return result
 }
 
+func replaceVirtualTokens(s string, resolve func(int) int) string {
+	if !strings.Contains(s, "v") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == 'v' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
+			j := i + 1
+			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+				j++
+			}
+			name := s[i:j]
+			beforeOK := i == 0 || !isIdentChar(s[i-1])
+			afterOK := j == len(s) || !isIdentChar(s[j])
+			if beforeOK && afterOK {
+				if n := asm.VirtualRegNum(name); n >= 0 {
+					if r := resolve(n); r >= 0 && r != n {
+						fmt.Fprintf(&b, "v%d", r)
+						i = j
+						continue
+					}
+				}
+			}
+			b.WriteString(name)
+			i = j
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+func commentSuffix(raw string) string {
+	if idx := strings.IndexAny(raw, ";#"); idx >= 0 {
+		return " " + raw[idx:]
+	}
+	return ""
+}
+
+func formatOptimizedLine(op string, args []string, raw string) string {
+	return "\t" + strings.ToUpper(op) + "\t" + strings.Join(args, ", ") + commentSuffix(raw)
+}
+
 // ---------------------------------------------------------------------------
-// Pre-expansion: constant propagation (MOVI vX, imm -> fold subsequent uses)
+// Constant propagation and folding
 // ---------------------------------------------------------------------------
 
 func constPropagate(lines []string) []string {
-	blocks := splitBlocks(lines)
-	var result []string
-	for _, block := range blocks {
-		result = append(result, constBlock(block)...)
-	}
-	return result
+	return constBlock(lines)
 }
 
 func constBlock(lines []string) []string {
-	constVal := make([]int64, 13)
-	constKnown := make([]bool, 13)
-	used := map[int]bool{}
-	moviLine := map[int]int{}
+	var vals [13]int64
+	var known [13]bool
 
-	parseArg := func(a string) (int64, bool) {
-		a = strings.TrimRight(a, ",")
-		ri := regIndex(a)
-		if ri >= 0 && constKnown[ri] {
-			return constVal[ri], true
+	argValue := func(a string) (int64, bool) {
+		if ri := regIndex(a); ri >= 0 {
+			return vals[ri], known[ri]
 		}
-		n, err := strconv.ParseInt(a, 0, 64)
-		if err == nil {
-			return n, true
-		}
-		return 0, false
+		return parseNASMInt(strings.TrimRight(a, ","))
 	}
 
 	result := make([]string, len(lines))
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		code := trimmed
-		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-			code = strings.TrimSpace(code[:idx])
-		}
-		if code == "" {
+		p, ok := parseOptLine(line)
+		if !ok {
+			if strings.HasSuffix(strings.TrimSpace(line), ":") {
+				known = [13]bool{}
+			}
 			result[i] = line
 			continue
 		}
-
-		tokens := tokenizeFold(code)
-		if len(tokens) < 2 {
+		if touchesPhysicalReg(line) {
+			known = [13]bool{}
 			result[i] = line
 			continue
 		}
-		op := strings.ToUpper(tokens[0])
-		args := tokens[1:]
-
-		reads := readRegs(op, args)
-		folded := false
+		op := p.op
+		args := p.args
+		if asm.IsBranch(op) {
+			// A branch ends the local dataflow region. Process earlier
+			// instructions normally, then discard constant knowledge.
+			if op == "CALL" || op == "SYSCALL" || op == "INT" {
+				known = [13]bool{}
+			}
+			result[i] = line
+			known = [13]bool{}
+			continue
+		}
 
 		switch op {
 		case "MOVI":
 			if len(args) >= 2 {
-				dst := args[0]
-				dstRi := regIndex(dst)
-				imm, err := strconv.ParseInt(args[1], 0, 64)
-				if dstRi >= 0 && err == nil {
-					constVal[dstRi] = imm
-					constKnown[dstRi] = true
-					moviLine[dstRi] = i
-					delete(used, dstRi)
+				if ri := regIndex(args[0]); ri >= 0 {
+					if v, ok := parseNASMInt(args[1]); ok {
+						vals[ri], known[ri] = v, true
+					} else {
+						// MOVI v0, symbol: previous numeric value is dead.
+						known[ri] = false
+					}
 				}
 			}
-			reads = nil
-		case "ADD", "SUB":
-			if len(args) == 2 {
-				dst := args[0]
-				dstRi := regIndex(dst)
-				if dstRi >= 0 {
-					if constKnown[dstRi] {
-						if imm, ok := parseArg(args[1]); ok {
-							var val int64
-							switch op {
-							case "ADD":
-								val = constVal[dstRi] + imm
-							case "SUB":
-								val = constVal[dstRi] - imm
-							}
-							constVal[dstRi] = val
-							constKnown[dstRi] = true
-							comment := ""
-							if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-								comment = " " + trimmed[idx:]
-							}
-							result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
-							reads = nil
-							folded = true
-							continue
-						}
-					}
-					constKnown[dstRi] = false
-				}
-			} else if len(args) == 3 {
-				dst := args[0]
-				dstRi := regIndex(dst)
-				if dstRi < 0 {
-					result[i] = line
-					continue
-				}
-				v1, ok1 := parseArg(args[1])
-				v2, ok2 := parseArg(args[2])
-				if ok1 && ok2 {
-					var val int64
-					switch op {
-					case "ADD":
-						val = v1 + v2
-					case "SUB":
-						val = v1 - v2
-					}
-					constVal[dstRi] = val
-					constKnown[dstRi] = true
-					comment := ""
-					if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-						comment = " " + trimmed[idx:]
-					}
-					result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
-					folded = true
-					continue
-				}
-				constKnown[dstRi] = false
-			}
-		case "MUL":
-			if len(args) == 2 {
-				dst := args[0]
-				dstRi := regIndex(dst)
-				if dstRi >= 0 {
-					if constKnown[dstRi] {
-						if imm, ok := parseArg(args[1]); ok {
-							val := constVal[dstRi] * imm
-							constVal[dstRi] = val
-							constKnown[dstRi] = true
-							comment := ""
-							if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-								comment = " " + trimmed[idx:]
-							}
-							result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
-							reads = nil
-							folded = true
-							continue
-						}
-					}
-					constKnown[dstRi] = false
-				}
-			} else if len(args) == 3 {
-				dst := args[0]
-				dstRi := regIndex(dst)
-				if dstRi >= 0 {
-					v1, ok1 := parseArg(args[1])
-					v2, ok2 := parseArg(args[2])
-					if ok1 && ok2 {
-						val := v1 * v2
-						constVal[dstRi] = val
-						constKnown[dstRi] = true
-						comment := ""
-						if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-							comment = " " + trimmed[idx:]
-						}
-						result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, val, comment)
-						folded = true
-						continue
-					}
-					constKnown[dstRi] = false
-				}
-			}
+			result[i] = line
+			continue
+
 		case "MOV":
 			if len(args) >= 2 {
-				dst := args[0]
-				dstRi := regIndex(dst)
-				if dstRi >= 0 {
-					src := strings.TrimRight(args[1], ",")
-					srcRi := regIndex(src)
-					if srcRi >= 0 && constKnown[srcRi] {
-						cp := constVal[srcRi]
-						constVal[dstRi] = cp
-						constKnown[dstRi] = true
+				if ri := regIndex(args[0]); ri >= 0 {
+					if src := regIndex(args[1]); src >= 0 && known[src] {
+						vals[ri], known[ri] = vals[src], true
 						comment := ""
-						if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-							comment = " " + trimmed[idx:]
+						if idx := strings.IndexAny(line, ";#"); idx >= 0 {
+							comment = " " + line[idx:]
 						}
-						result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", dst, cp, comment)
-						reads = nil
-						folded = true
+						result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", args[0], vals[src], comment)
 						continue
-					} else {
-						constKnown[dstRi] = false
 					}
+					known[ri] = false
 				}
 			}
-		case "SYSCALL", "INT":
-			for _, r := range []int{0, 3, 4, 5, 6, 7, 8} {
-				constKnown[r] = false
+			result[i] = line
+			continue
+
+		case "ADD", "SUB", "MUL":
+			var dst int
+			var v int64
+			folded := false
+			if len(args) == 2 {
+				dst = regIndex(args[0])
+				if dst >= 0 && known[dst] {
+					if imm, ok := argValue(args[1]); ok {
+						v = foldArith(op, vals[dst], imm)
+						folded = true
+					}
+				}
+			} else if len(args) >= 3 {
+				dst = regIndex(args[0])
+				v1, ok1 := argValue(args[1])
+				v2, ok2 := argValue(args[2])
+				if dst >= 0 && ok1 && ok2 {
+					v = foldArith(op, v1, v2)
+					folded = true
+				}
 			}
-		case "CALL":
-			// CALL clobbers caller-saved registers per AMD64 SysV ABI.
-			// VAS maps these as v0=rax, v2=rcx, v3=rdx, v6=r8, v7=r9, v8=r11.
-			for _, r := range []int{0, 2, 3, 6, 7, 8} {
-				constKnown[r] = false
-			}
-		default:
-			dst := dstReg(op, args)
 			if dst >= 0 {
-				constKnown[dst] = false
+				if folded && !flagsLiveAfter(lines, i) {
+					comment := ""
+					if idx := strings.IndexAny(line, ";#"); idx >= 0 {
+						comment = " " + line[idx:]
+					}
+					result[i] = fmt.Sprintf("\tMOVI\t%s, %d%s", args[0], v, comment)
+					vals[dst], known[dst] = v, true
+					continue
+				}
+				known[dst] = false
 			}
+			result[i] = line
+			continue
+
+		case "CALL", "SYSCALL", "INT":
+			known = [13]bool{}
+			result[i] = line
+			continue
 		}
-		if !folded {
-			for _, r := range reads {
-				used[r] = true
-			}
+
+		if dst := dstReg(op, args); dst >= 0 {
+			known[dst] = false
 		}
 		result[i] = line
 	}
 	return result
 }
 
-// deadStoreElim removes STORE instructions whose target label is stored again
-// before any LOAD within the same basic block.
+func foldArith(op string, a, b int64) int64 {
+	switch op {
+	case "ADD":
+		return a + b
+	case "SUB":
+		return a - b
+	case "MUL":
+		return a * b
+	}
+	return 0
+}
+
+// ---------------------------------------------------------------------------
+// Dead store elimination
+// ---------------------------------------------------------------------------
+
 func deadStoreElim(lines []string) []string {
 	blocks := splitBlocks(lines)
 	var result []string
@@ -337,43 +292,43 @@ func deadStoreElim(lines []string) []string {
 }
 
 func elimDeadStoreBlock(lines []string) []string {
-	lastAccess := map[string]string{} // label -> "STORE" or "LOAD"
+	// key -> "STORE" or "LOAD" seen at a later point in the block.
+	lastAccess := map[string]string{}
 	remove := make([]bool, len(lines))
 
+	clear := func() { lastAccess = map[string]string{} }
+
 	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		code := trimmed
-		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-			code = strings.TrimSpace(code[:idx])
-		}
-		if code == "" {
+		p, ok := parseOptLine(lines[i])
+		if !ok {
 			continue
 		}
-		fields := strings.Fields(code)
-		if len(fields) < 2 {
+		op := p.op
+		args := p.args
+		if op == "CALL" || op == "SYSCALL" || op == "INT" || touchesPhysicalReg(lines[i]) {
+			clear()
 			continue
 		}
-		op := strings.ToUpper(fields[0])
 		if op != "STORE" && op != "LOAD" {
-			if op == "CALL" || op == "SYSCALL" || op == "INT" {
-				lastAccess = map[string]string{}
-			}
 			continue
 		}
-		args := fields[1:]
 		if len(args) < 2 {
 			continue
 		}
-		label := extractLabel(args[1])
-		if label == "" {
+		if !isStaticMemory(args[1]) {
+			// A register-based address may alias any static symbol.
+			clear()
 			continue
 		}
-
-		prev := lastAccess[label]
+		key, ok := memKey(args[1])
+		if !ok {
+			continue
+		}
+		prev := lastAccess[key]
 		if op == "STORE" && prev == "STORE" {
 			remove[i] = true
 		}
-		lastAccess[label] = op
+		lastAccess[key] = op
 	}
 
 	result := make([]string, 0, len(lines))
@@ -386,11 +341,16 @@ func elimDeadStoreBlock(lines []string) []string {
 }
 
 // ---------------------------------------------------------------------------
-// Pre-expansion: strength reduction (MUL by power-of-2 -> SHL)
+// Strength reduction
 // ---------------------------------------------------------------------------
+
 func strengthReduce(lines []string) []string {
 	var result []string
-	for _, line := range lines {
+	for i, line := range lines {
+		if writesFlags(line) && flagsLiveAfter(lines, i) {
+			result = append(result, line)
+			continue
+		}
 		reduced := reduceLine(line)
 		if strings.Contains(reduced, "\n") {
 			result = append(result, strings.Split(reduced, "\n")...)
@@ -402,135 +362,90 @@ func strengthReduce(lines []string) []string {
 }
 
 func reduceLine(line string) string {
-	trimmed := strings.TrimSpace(line)
-	code := trimmed
-	if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-		code = strings.TrimSpace(code[:idx])
-	}
-	if code == "" {
+	p, ok := parseOptLine(line)
+	if !ok || p.op != "MUL" {
 		return line
 	}
-	fields := strings.Fields(code)
-	if len(fields) < 2 {
-		return line
-	}
-	op := strings.ToUpper(fields[0])
-	if op != "MUL" {
-		return line
-	}
-
-	arg := func(i int) string {
-		s := fields[i]
-		s = strings.TrimRight(s, ",")
-		return s
-	}
-
-	if len(fields) == 3 {
-		dst := arg(1)
-		imm, err := strconv.ParseInt(arg(2), 0, 64)
-		if err != nil || imm <= 0 {
+	args := p.args
+	comment := commentSuffix(line)
+	if len(args) == 2 {
+		imm, ok := parseNASMInt(args[1])
+		if !ok || imm <= 0 {
 			return line
 		}
-		if result := decomposeMul2Op(dst, imm, trimmed); result != "" {
+		if result := decomposeMul2Op(args[0], imm, comment); result != "" {
 			return result
 		}
 		return line
-	} else if len(fields) == 4 {
-		dst := arg(1)
-		src := arg(2)
-		imm, err := strconv.ParseInt(arg(3), 0, 64)
-		if err != nil || imm <= 0 {
+	}
+	if len(args) >= 3 {
+		imm, ok := parseNASMInt(args[2])
+		if !ok || imm <= 0 {
 			return line
 		}
-		if result := decomposeMul3Op(dst, src, imm, trimmed); result != "" {
+		if result := decomposeMul3Op(args[0], args[1], imm, comment); result != "" {
 			return result
 		}
-		return line
 	}
 	return line
 }
 
-func decomposeMul2Op(dst string, C int64, trimmed string) string {
-	comment := ""
-	if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-		comment = " " + trimmed[idx:]
+func decomposeMul2Op(dst string, c int64, comment string) string {
+	if isPowerOf2(c) && c <= 0x80000000 {
+		return fmt.Sprintf("\tshl\t%s, %d%s", dst, log2(c), comment)
 	}
-
-	if isPowerOf2(C) && C <= 0x80000000 {
-		shift := log2(C)
-		return fmt.Sprintf("\tshl\t%s, %d%s", dst, shift, comment)
-	}
-
-	scale := C - 1
-	switch scale {
+	switch c - 1 {
 	case 1, 2, 4, 8:
-		return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s", dst, dst, dst, scale, comment)
+		return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s", dst, dst, dst, c-1, comment)
 	}
-
 	shift := int64(0)
-	odd := C
+	odd := c
 	for odd%2 == 0 {
 		odd /= 2
 		shift++
 	}
-
 	if shift > 0 {
-		oddScale := odd - 1
-		switch oddScale {
+		switch odd - 1 {
 		case 1, 2, 4, 8:
 			return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s\n\tshl\t%s, %d%s",
-				dst, dst, dst, oddScale, comment, dst, shift, comment)
+				dst, dst, dst, odd-1, comment, dst, shift, comment)
 		}
 	}
-
 	return ""
 }
 
-func decomposeMul3Op(dst, src string, C int64, trimmed string) string {
-	comment := ""
-	if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-		comment = " " + trimmed[idx:]
+func decomposeMul3Op(dst, src string, c int64, comment string) string {
+	if isPowerOf2(c) && c <= 0x80000000 {
+		return fmt.Sprintf("\tMOV\t%s, %s%s\n\tshl\t%s, %d%s",
+			dst, src, comment, dst, log2(c), comment)
 	}
-
-	if isPowerOf2(C) && C <= 0x80000000 {
-		shift := log2(C)
-		return fmt.Sprintf("\tMOV\t%s, %s%s\n\tshl\t%s, %d%s", dst, src, comment, dst, shift, comment)
-	}
-
-	scale := C - 1
-	switch scale {
+	switch c - 1 {
 	case 1, 2, 4, 8:
-		return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s", dst, src, src, scale, comment)
+		return fmt.Sprintf("\tLEA\t%s, [%s+%s*%d]%s", dst, src, src, c-1, comment)
 	}
-
 	shift := int64(0)
-	odd := C
+	odd := c
 	for odd%2 == 0 {
 		odd /= 2
 		shift++
 	}
 	if shift > 0 {
-		oddScale := odd - 1
-		switch oddScale {
+		switch odd - 1 {
 		case 1, 2, 4, 8:
 			return fmt.Sprintf("\tMOV\t%s, %s%s\n\tLEA\t%s, [%s+%s*%d]%s\n\tshl\t%s, %d%s",
-				dst, src, comment, dst, dst, dst, oddScale, comment, dst, shift, comment)
+				dst, src, comment, dst, dst, dst, odd-1, comment, dst, shift, comment)
 		}
 	}
-
 	for k := int64(2); k <= 3; k++ {
-		if C == (1<<k)-1 {
+		if c == (1<<k)-1 {
 			return fmt.Sprintf("\tLEA\t%s, [%s*%d]%s\n\tSUB\t%s, %s%s",
 				dst, src, 1<<k, comment, dst, src, comment)
 		}
 	}
-
 	return ""
 }
 
-func isPowerOf2(n int64) bool {
-	return n > 0 && (n&(n-1)) == 0
-}
+func isPowerOf2(n int64) bool { return n > 0 && (n&(n-1)) == 0 }
 
 func log2(n int64) int {
 	r := 0
@@ -542,7 +457,7 @@ func log2(n int64) int {
 }
 
 // ---------------------------------------------------------------------------
-// Pre-expansion: STORE-LOAD forwarding
+// STORE -> LOAD forwarding
 // ---------------------------------------------------------------------------
 
 func storeLoadFwd(lines []string) []string {
@@ -554,71 +469,86 @@ func storeLoadFwd(lines []string) []string {
 	return result
 }
 
+type forwardedStore struct {
+	reg     int
+	regVer  int
+	addrKey string
+}
+
 func fwdBlock(lines []string) []string {
-	lastStore := map[string]int{}
+	var versions [13]int
+	stores := map[string]forwardedStore{}
+
+	clear := func() { stores = map[string]forwardedStore{} }
 
 	result := make([]string, len(lines))
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		code := trimmed
-		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-			code = strings.TrimSpace(code[:idx])
+		p, ok := parseOptLine(line)
+		if !ok {
+			result[i] = line
+			continue
 		}
-		if code == "" {
-			lastStore = map[string]int{}
+		op := p.op
+		args := p.args
+		if touchesPhysicalReg(line) || isUnknownOrClobber(p) {
+			clear()
 			result[i] = line
 			continue
 		}
 
-		fields := strings.Fields(code)
-		if len(fields) < 2 {
-			result[i] = line
-			continue
+		// Any register write kills forwarding whose source register it is,
+		// and changes the address-version fingerprint.
+		dst := dstReg(op, args)
+		if dst >= 0 {
+			delete(stores, "dst:"+strconv.Itoa(dst))
+			for k, st := range stores {
+				if st.reg == dst {
+					delete(stores, k)
+				}
+			}
 		}
-		op := strings.ToUpper(fields[0])
-		args := fields[1:]
 
 		switch op {
 		case "STORE":
 			if len(args) >= 2 {
-				src := strings.TrimRight(args[0], ",")
-				srcRi := regIndex(src)
-				if srcRi >= 0 {
-					label := extractLabel(args[1])
-					if label != "" {
-						lastStore[label] = srcRi
-					}
+				if !isStaticMemory(args[1]) || addressHasPhysical(args[1]) {
+					clear()
+					break
+				}
+				src := regIndex(args[0])
+				key, ok := memKey(args[1])
+				if !ok {
+					clear()
+					break
+				}
+				full := key + addressVersions(args[1], &versions)
+				if src >= 0 {
+					stores[full] = forwardedStore{reg: src, regVer: versions[src], addrKey: key}
+				} else {
+					delete(stores, full)
 				}
 			}
 		case "LOAD":
 			if len(args) >= 2 {
-				dst := strings.TrimRight(args[0], ",")
-				dstRi := regIndex(dst)
-				if dstRi >= 0 {
-					label := extractLabel(args[1])
-					if label != "" {
-						if srcRi, ok := lastStore[label]; ok {
-							comment := ""
-							if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-								comment = " " + trimmed[idx:]
-							}
-							result[i] = fmt.Sprintf("\tMOV\t%s, v%d%s", dst, srcRi, comment)
-							continue
-						}
-					}
+				if !isStaticMemory(args[1]) || addressHasPhysical(args[1]) {
+					clear()
+					break
 				}
-			}
-		default:
-			if op == "CALL" || op == "SYSCALL" || op == "INT" {
-				lastStore = map[string]int{}
-			} else if len(fields) >= 2 {
-				firstArg := strings.TrimRight(args[0], ",")
-				if strings.HasPrefix(firstArg, "[") {
-					lastStore = map[string]int{}
+				key, ok := memKey(args[1])
+				if !ok {
+					break
+				}
+				full := key + addressVersions(args[1], &versions)
+				if st, ok := stores[full]; ok && st.reg != dst && versions[st.reg] == st.regVer {
+					result[i] = fmt.Sprintf("\tMOV\t%s, v%d%s", args[0], st.reg, commentSuffix(line))
+					continue
 				}
 			}
 		}
 
+		if dst >= 0 {
+			versions[dst]++
+		}
 		result[i] = line
 	}
 	return result

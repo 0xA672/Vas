@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"vas/vas/internal/asm"
 )
 
 // ifState tracks conditional inclusion nesting.
@@ -70,6 +72,15 @@ func WithPostHook(hook PostHook) PreprocessOption {
 	}
 }
 
+// WithTarget selects the target platform whose __VAS_OS_*__ define is
+// exported during preprocessing. Accepted values are "elf64" (Linux/SysV)
+// and "win64" (Windows). An empty target keeps the host platform defaults.
+func WithTarget(target string) PreprocessOption {
+	return func(ctx *prepContext) {
+		ctx.target = target
+	}
+}
+
 func withInheritContext(parent *prepContext) PreprocessOption {
 	return func(child *prepContext) {
 		child.included = parent.included
@@ -78,6 +89,13 @@ func withInheritContext(parent *prepContext) PreprocessOption {
 		child.depth = parent.depth
 	}
 }
+
+const (
+	// maxReptCount and maxExpandedLines bound pathological macro/.rept input.
+	// They are intentionally generous; legitimate generated tables still fit.
+	maxReptCount     = 1_000_000
+	maxExpandedLines = 5_000_000
+)
 
 type prepContext struct {
 	dir            string
@@ -102,6 +120,8 @@ type prepContext struct {
 	pkgStack       []string
 	pkgIncluded    map[string]bool
 	depth          int
+	target         string
+	expandedLines  int
 	preHook        PreHook
 	postHook       PostHook
 	testCases      []TestCase
@@ -137,15 +157,7 @@ func Preprocess(src, baseDir string, opts ...PreprocessOption) (string, error) {
 		}
 	}
 
-	out, err := ctx.resolve(src, baseDir)
-	if err != nil {
-		return "", err
-	}
-	out, err = ctx.expandMacros(out)
-	if err != nil {
-		return "", err
-	}
-	out, err = ctx.applyConsts(out)
+	out, err := ctx.expand(src, baseDir)
 	if err != nil {
 		return "", err
 	}
@@ -193,15 +205,7 @@ func PreprocessTestable(src, baseDir string, opts ...PreprocessOption) (string, 
 		}
 	}
 
-	out, err := ctx.resolve(src, baseDir)
-	if err != nil {
-		return "", nil, err
-	}
-	out, err = ctx.expandMacros(out)
-	if err != nil {
-		return "", nil, err
-	}
-	out, err = ctx.applyConsts(out)
+	out, err := ctx.expand(src, baseDir)
 	if err != nil {
 		return "", nil, err
 	}
@@ -221,6 +225,57 @@ func PreprocessTestable(src, baseDir string, opts ...PreprocessOption) (string, 
 	return out, ctx.testCases, nil
 }
 
+// expand runs the preprocessor to a bounded fixed point. Macro and .rept
+// bodies may themselves emit directives (.ifdef, .const, .include, …), so a
+// single resolve+expand pass is not enough. Each pass consumes at least one
+// level of generated directives; the cap turns runaway recursive expansion
+// into a diagnostic instead of a hang.
+func (ctx *prepContext) expand(src, baseDir string) (string, error) {
+	out := src
+	const maxPasses = 8
+	for pass := 0; pass < maxPasses; pass++ {
+		var err error
+		out, err = ctx.resolve(out, baseDir)
+		if err != nil {
+			return "", err
+		}
+		out, err = ctx.expandMacros(out)
+		if err != nil {
+			return "", err
+		}
+		out, err = ctx.applyConsts(out)
+		if err != nil {
+			return "", err
+		}
+		if !hasPreprocessorDirectives(out) && !ctx.hasUnresolvedMacro(out) {
+			return out, nil
+		}
+	}
+	return "", fmt.Errorf("%w: expansion limit exceeded (%d passes)", ErrPreprocessing, maxPasses)
+}
+
+// hasUnresolvedMacro reports whether any line begins with a defined macro
+// name, which is how nested macro invocations are detected between passes.
+func (ctx *prepContext) hasUnresolvedMacro(src string) bool {
+	if len(ctx.macros) == 0 {
+		return false
+	}
+	for _, line := range strings.Split(src, "\n") {
+		code := strings.TrimSpace(asm.StripComment(line))
+		if code == "" || strings.HasPrefix(code, ".") {
+			continue
+		}
+		name := code
+		if i := strings.IndexAny(name, " \t"); i >= 0 {
+			name = name[:i]
+		}
+		if _, ok := ctx.macros[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (ctx *prepContext) initPlatformDefines() {
 	goos := os.Getenv("GOOS")
 	if goos == "" {
@@ -229,6 +284,20 @@ func (ctx *prepContext) initPlatformDefines() {
 	goarch := os.Getenv("GOARCH")
 	if goarch == "" {
 		goarch = runtime.GOARCH
+	}
+
+	// The target, when supplied, controls __VAS_OS_*__ / __VAS_ARCH_*__.
+	// Host values remain available under a distinct namespace so build logic
+	// can still detect the machine it is running on.
+	ctx.defines["__VAS_HOST_OS_"+strings.ToUpper(goos)+"__"] = true
+	ctx.defines["__VAS_HOST_ARCH_"+strings.ToUpper(goarch)+"__"] = true
+	switch ctx.target {
+	case "win64", "windows":
+		goos = "windows"
+		goarch = "amd64"
+	case "elf64", "linux":
+		goos = "linux"
+		goarch = "amd64"
 	}
 
 	switch goos {
@@ -286,35 +355,14 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	if ctx.depth > 100 {
 		return "", fmt.Errorf("%w: recursion limit exceeded", ErrPreprocessing)
 	}
+	oldDir := ctx.dir
 	ctx.dir = dir
+	defer func() { ctx.dir = oldDir }()
 	var out strings.Builder
 	lines := strings.Split(src, "\n")
 
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		if strings.HasPrefix(trimmed, ".author") {
-			author, err := parseAuthor(line)
-			if err != nil {
-				return "", err
-			}
-			out.WriteString("; Author: ")
-			out.WriteString(author)
-			out.WriteString("\n")
-			continue
-		}
-
-		// .error directive triggers a compile-time error
-		if strings.HasPrefix(trimmed, ".error") {
-			msg := strings.TrimSpace(strings.TrimPrefix(trimmed, ".error"))
-			if len(msg) >= 2 && msg[0] == '"' {
-				end := strings.IndexByte(msg[1:], '"')
-				if end >= 0 {
-					msg = msg[1 : end+1]
-				}
-			}
-			return "", fmt.Errorf("%s", msg)
-		}
+		trimmed := strings.TrimSpace(asm.StripComment(line))
 
 		if ctx.inMacro {
 			if strings.HasPrefix(trimmed, ".endm") {
@@ -334,19 +382,24 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 		}
 
 		if len(ctx.reptStack) > 0 {
-			if strings.HasPrefix(trimmed, ".rept") {
-				countStr := strings.TrimSpace(strings.TrimPrefix(trimmed, ".rept"))
-				count, err := strconv.Atoi(countStr)
-				if err != nil {
-					return "", fmt.Errorf("invalid .rept count: %s", countStr)
+			if count, ok, err := parseReptDirective(trimmed); err != nil {
+				return "", err
+			} else if ok {
+				if count < 0 || count > maxReptCount {
+					return "", fmt.Errorf(".rept count %d exceeds limit %d", count, maxReptCount)
 				}
 				ctx.reptStack = append(ctx.reptStack, reptState{count: count, buf: []string{}})
 				continue
 			}
-			if strings.HasPrefix(trimmed, ".endr") {
+			if isDirectiveWord(trimmed, ".endr") {
 				top := ctx.reptStack[len(ctx.reptStack)-1]
 				ctx.reptStack = ctx.reptStack[:len(ctx.reptStack)-1]
 
+				total := len(top.buf) * top.count
+				if total > maxExpandedLines || ctx.expandedLines+total > maxExpandedLines {
+					return "", fmt.Errorf(".rept expansion exceeds %d lines", maxExpandedLines)
+				}
+				ctx.expandedLines += total
 				var expanded []string
 				for i := 0; i < top.count; i++ {
 					expanded = append(expanded, top.buf...)
@@ -368,10 +421,12 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 		}
 
 		if ctx.skipBlockDepth > 0 {
-			if strings.HasPrefix(trimmed, ".once begin") {
-				ctx.skipBlockDepth++
-			} else if strings.HasPrefix(trimmed, ".once end") {
-				ctx.skipBlockDepth--
+			if kind, _, ok := parseOnceDirective(trimmed); ok {
+				if kind == "begin" {
+					ctx.skipBlockDepth++
+				} else if kind == "end" {
+					ctx.skipBlockDepth--
+				}
 			}
 			continue
 		}
@@ -392,6 +447,80 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 				}
 				continue
 			}
+		}
+
+		// Everything inside a .test block is collected verbatim so that
+		// .const/.include/.macro-like text cannot leak into the main output.
+		if ctx.inTest {
+			if strings.HasPrefix(trimmed, ".endtest") {
+				exitCode := -1
+				var stdout string
+				filtered := make([]string, 0, len(ctx.testBuf))
+				for _, l := range ctx.testBuf {
+					t := strings.TrimSpace(asm.StripComment(l))
+					if strings.HasPrefix(t, ".expect_exit") {
+						v := strings.TrimSpace(strings.TrimPrefix(t, ".expect_exit"))
+						if n, err := strconv.Atoi(v); err == nil {
+							exitCode = n
+						}
+					} else if strings.HasPrefix(t, ".expect_stdout") {
+						v := strings.TrimSpace(strings.TrimPrefix(t, ".expect_stdout"))
+						if len(v) >= 2 && v[0] == '"' {
+							if end := strings.IndexByte(v[1:], '"'); end >= 0 {
+								stdout = v[1 : end+1]
+							}
+						}
+					} else {
+						filtered = append(filtered, l)
+					}
+				}
+				code, err := ctx.expandMacros(strings.Join(filtered, "\n"))
+				if err != nil {
+					return "", err
+				}
+				code, err = ctx.applyConsts(code)
+				if err != nil {
+					return "", err
+				}
+				ctx.testCases = append(ctx.testCases, TestCase{
+					Name:         ctx.testName,
+					Code:         code,
+					ExpectExit:   exitCode,
+					ExpectStdout: stdout,
+				})
+				ctx.inTest = false
+				ctx.testBuf = nil
+				continue
+			}
+			ctx.testBuf = append(ctx.testBuf, line)
+			continue
+		}
+
+		// .author and .error are handled only after every skip/macro/test
+		// check above. Otherwise a false .ifdef would still emit the author
+		// line or fire a compile-time error, and a macro definition
+		// containing .error would fail at definition time.
+		if strings.HasPrefix(trimmed, ".author") {
+			author, err := parseAuthor(line)
+			if err != nil {
+				return "", err
+			}
+			out.WriteString("; Author: ")
+			out.WriteString(author)
+			out.WriteByte('\n')
+			continue
+		}
+		if strings.HasPrefix(trimmed, ".error") {
+			msg := strings.TrimSpace(strings.TrimPrefix(trimmed, ".error"))
+			if len(msg) >= 2 && msg[0] == '"' {
+				if end := strings.IndexByte(msg[1:], '"'); end >= 0 {
+					msg = msg[1 : end+1]
+				}
+			}
+			if len(msg) >= 2 && msg[0] == '"' && msg[len(msg)-1] == '"' {
+				msg = msg[1 : len(msg)-1]
+			}
+			return "", fmt.Errorf("%s", msg)
 		}
 
 		if strings.HasPrefix(trimmed, ".include_bytes") {
@@ -429,6 +558,10 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 
 		if strings.HasPrefix(trimmed, ".const") {
 			name, value, err := parseConst(line)
+			if err != nil {
+				return "", err
+			}
+			value, err = ctx.resolveConstValue(name, value, map[string]bool{name: true})
 			if err != nil {
 				return "", err
 			}
@@ -494,37 +627,31 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			continue
 		}
 
-		if strings.HasPrefix(trimmed, ".once begin") {
-			name := strings.TrimSpace(strings.TrimPrefix(trimmed, ".once begin"))
+		if kind, name, ok := parseOnceDirective(trimmed); ok {
 			if name == "" {
-				return "", fmt.Errorf(".once begin requires a block name")
+				return "", fmt.Errorf(".once %s requires a block name", kind)
 			}
-			if ctx.blockIncluded[name] {
-				ctx.skipBlockDepth = 1
+			if kind == "begin" {
+				if ctx.blockIncluded[name] {
+					ctx.skipBlockDepth = 1
+				} else {
+					ctx.blockOnceStack = append(ctx.blockOnceStack, name)
+				}
 			} else {
-				ctx.blockOnceStack = append(ctx.blockOnceStack, name)
+				if ctx.skipBlockDepth > 0 {
+					ctx.skipBlockDepth--
+					continue
+				}
+				if len(ctx.blockOnceStack) == 0 {
+					return "", fmt.Errorf(".once end %q without matching .once begin", name)
+				}
+				top := ctx.blockOnceStack[len(ctx.blockOnceStack)-1]
+				if top != name {
+					return "", fmt.Errorf(".once end name mismatch: began as %q, ended as %q", top, name)
+				}
+				ctx.blockOnceStack = ctx.blockOnceStack[:len(ctx.blockOnceStack)-1]
+				ctx.blockIncluded[name] = true
 			}
-			continue
-		}
-
-		if strings.HasPrefix(trimmed, ".once end") {
-			name := strings.TrimSpace(strings.TrimPrefix(trimmed, ".once end"))
-			if name == "" {
-				return "", fmt.Errorf(".once end requires a block name")
-			}
-			if ctx.skipBlockDepth > 0 {
-				ctx.skipBlockDepth--
-				continue
-			}
-			if len(ctx.blockOnceStack) == 0 {
-				return "", fmt.Errorf(".once end %q without matching .once begin", name)
-			}
-			top := ctx.blockOnceStack[len(ctx.blockOnceStack)-1]
-			if top != name {
-				return "", fmt.Errorf(".once end name mismatch: began as %q, ended as %q", top, name)
-			}
-			ctx.blockOnceStack = ctx.blockOnceStack[:len(ctx.blockOnceStack)-1]
-			ctx.blockIncluded[name] = true
 			continue
 		}
 
@@ -532,17 +659,17 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			continue
 		}
 
-		if strings.HasPrefix(trimmed, ".rept") {
-			countStr := strings.TrimSpace(strings.TrimPrefix(trimmed, ".rept"))
-			count, err := strconv.Atoi(countStr)
-			if err != nil {
-				return "", fmt.Errorf("invalid .rept count: %s", countStr)
+		if count, ok, err := parseReptDirective(trimmed); err != nil {
+			return "", err
+		} else if ok {
+			if count < 0 || count > maxReptCount {
+				return "", fmt.Errorf(".rept count %d exceeds limit %d", count, maxReptCount)
 			}
 			ctx.reptStack = append(ctx.reptStack, reptState{count: count, buf: []string{}})
 			continue
 		}
 
-		// .test block collection (preprocessed but not output)
+		// .test block start (the body is collected by the early branch above)
 		if strings.HasPrefix(trimmed, ".test") {
 			name := strings.TrimSpace(strings.TrimPrefix(trimmed, ".test"))
 			if len(name) >= 2 && name[0] == '"' {
@@ -554,43 +681,6 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 			ctx.inTest = true
 			ctx.testName = name
 			ctx.testBuf = []string{}
-			continue
-		}
-		if ctx.inTest {
-			if strings.HasPrefix(trimmed, ".endtest") {
-				exitCode := -1
-				var stdout string
-				filtered := make([]string, 0, len(ctx.testBuf))
-				for _, l := range ctx.testBuf {
-					t := strings.TrimSpace(l)
-					if strings.HasPrefix(t, ".expect_exit") {
-						v := strings.TrimSpace(strings.TrimPrefix(t, ".expect_exit"))
-						if n, err := strconv.Atoi(v); err == nil {
-							exitCode = n
-						}
-					} else if strings.HasPrefix(t, ".expect_stdout") {
-						v := strings.TrimSpace(strings.TrimPrefix(t, ".expect_stdout"))
-						if len(v) >= 2 && v[0] == '"' {
-							end := strings.IndexByte(v[1:], '"')
-							if end >= 0 {
-								stdout = v[1 : end+1]
-							}
-						}
-					} else {
-						filtered = append(filtered, l)
-					}
-				}
-				ctx.testCases = append(ctx.testCases, TestCase{
-					Name:         ctx.testName,
-					Code:         strings.Join(filtered, "\n"),
-					ExpectExit:   exitCode,
-					ExpectStdout: stdout,
-				})
-				ctx.inTest = false
-				ctx.testBuf = nil
-				continue
-			}
-			ctx.testBuf = append(ctx.testBuf, line)
 			continue
 		}
 
@@ -617,8 +707,114 @@ func (ctx *prepContext) resolve(src, dir string) (string, error) {
 	return out.String(), nil
 }
 
+// resolveConstValue expands earlier constants referenced by value. Cycles are
+// rejected with a diagnostic instead of producing an unstable expansion.
+func (ctx *prepContext) resolveConstValue(owner, value string, stack map[string]bool) (string, error) {
+	names := make([]string, 0, len(ctx.consts))
+	for name := range ctx.consts {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool { return len(names[i]) > len(names[j]) })
+	for _, name := range names {
+		if !containsIdent(value, name) {
+			continue
+		}
+		if stack[name] {
+			return "", fmt.Errorf("circular constant definition involving %q", owner)
+		}
+		stack[name] = true
+		resolved, err := ctx.resolveConstValue(name, ctx.consts[name], stack)
+		delete(stack, name)
+		if err != nil {
+			return "", err
+		}
+		value = replaceIdent(value, name, resolved)
+	}
+	return value, nil
+}
+
+func isIdentChar(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+func containsIdent(s, name string) bool {
+	for start := 0; start+len(name) <= len(s); {
+		i := strings.Index(s[start:], name)
+		if i < 0 {
+			return false
+		}
+		i += start
+		before := i == 0 || !isIdentChar(s[i-1])
+		end := i + len(name)
+		after := end == len(s) || !isIdentChar(s[end])
+		if before && after {
+			return true
+		}
+		start = i + len(name)
+	}
+	return false
+}
+
+func replaceIdent(s, name, value string) string {
+	var b strings.Builder
+	for start := 0; start < len(s); {
+		i := strings.Index(s[start:], name)
+		if i < 0 {
+			b.WriteString(s[start:])
+			break
+		}
+		i += start
+		b.WriteString(s[start:i])
+		before := i == 0 || !isIdentChar(s[i-1])
+		end := i + len(name)
+		after := end == len(s) || !isIdentChar(s[end])
+		if before && after {
+			b.WriteString(value)
+			start = end
+		} else {
+			b.WriteString(s[i:end])
+			start = end
+		}
+	}
+	return b.String()
+}
+
+func isDirectiveWord(line, word string) bool {
+	fields := strings.Fields(line)
+	return len(fields) > 0 && fields[0] == word
+}
+
+// parseOnceDirective accepts ".once begin NAME" / ".once end NAME" with any
+// amount of internal whitespace. Prefix matching used to mis-handle
+// ".once  begin".
+func parseOnceDirective(line string) (kind, name string, ok bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 2 || fields[0] != ".once" {
+		return "", "", false
+	}
+	if fields[1] != "begin" && fields[1] != "end" {
+		return "", "", false
+	}
+	return fields[1], strings.Join(fields[2:], " "), true
+}
+
+func parseReptDirective(line string) (int, bool, error) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 || fields[0] != ".rept" {
+		return 0, false, nil
+	}
+	if len(fields) != 2 {
+		return 0, true, fmt.Errorf("invalid .rept syntax: %s", line)
+	}
+	n, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, true, fmt.Errorf("invalid .rept count: %s", fields[1])
+	}
+	return n, true, nil
+}
+
 func parseAuthor(line string) (string, error) {
-	trimmed := strings.TrimSpace(line)
+	trimmed := strings.TrimSpace(asm.StripComment(line))
 	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, ".author"))
 	if len(rest) >= 2 && rest[0] == '"' {
 		end := strings.IndexByte(rest[1:], '"')
@@ -630,7 +826,7 @@ func parseAuthor(line string) (string, error) {
 }
 
 func parseInclude(line string) (path string, isPkg bool, ok bool) {
-	trimmed := strings.TrimSpace(line)
+	trimmed := strings.TrimSpace(asm.StripComment(line))
 	if !strings.HasPrefix(trimmed, ".include") || strings.HasPrefix(trimmed, ".include_bytes") {
 		return "", false, false
 	}
@@ -651,7 +847,7 @@ func parseInclude(line string) (path string, isPkg bool, ok bool) {
 }
 
 func parseIncludeBytes(line string) (path string, isPkg bool, ok bool) {
-	rest, found := strings.CutPrefix(strings.TrimSpace(line), ".include_bytes")
+	rest, found := strings.CutPrefix(strings.TrimSpace(asm.StripComment(line)), ".include_bytes")
 	if !found {
 		return "", false, false
 	}
@@ -672,7 +868,8 @@ func parseIncludeBytes(line string) (path string, isPkg bool, ok bool) {
 }
 
 func parseConst(line string) (string, string, error) {
-	parts := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ".const")), "=", 2)
+	code := strings.TrimSpace(asm.StripComment(line))
+	parts := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(code, ".const")), "=", 2)
 	if len(parts) != 2 {
 		return "", "", fmt.Errorf("invalid .const syntax: %s", line)
 	}
@@ -680,7 +877,7 @@ func parseConst(line string) (string, string, error) {
 }
 
 func parseMacro(line string) (string, []string, map[string]string, error) {
-	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ".macro"))
+	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(asm.StripComment(line)), ".macro"))
 	var name string
 	var paramStr string
 	if idx := strings.IndexAny(rest, " \t"); idx >= 0 {
@@ -906,7 +1103,9 @@ func (r *defaultResolver) ResolvePackage(pkgPath string) (string, error) {
 				continue
 			}
 			if data, err := os.ReadFile(cand); err == nil {
-				return Preprocess(string(data), filepath.Dir(cand), withInheritContext(r.parentCtx))
+				// Resolve in the parent context so package-defined
+				// constants and macros remain visible to the caller.
+				return r.parentCtx.resolve(string(data), filepath.Dir(cand))
 			}
 		}
 	}
@@ -971,58 +1170,61 @@ func (ctx *prepContext) expandMacros(src string) (string, error) {
 	var outLines []string
 	lines := strings.Split(src, "\n")
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if len(trimmed) == 0 || strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, ";") {
+		code := strings.TrimSpace(asm.StripComment(line))
+		if code == "" || strings.HasPrefix(code, ".") {
 			outLines = append(outLines, line)
 			continue
 		}
-		parts := strings.Fields(trimmed)
-		if macro, ok := ctx.macros[parts[0]]; ok {
-			var args []string
-			if len(parts) > 1 {
-				argStr := strings.Join(parts[1:], " ")
-				args = splitArgs(argStr)
-			}
-
-			if len(args) > len(macro.params) {
-				return "", fmt.Errorf("macro %s: too many arguments, expected at most %d, got %d", parts[0], len(macro.params), len(args))
-			}
-
-			finalArgs := make([]string, len(macro.params))
-			for i, p := range macro.params {
-				if i < len(args) {
-					finalArgs[i] = args[i]
-				} else if defVal, hasDef := macro.defaults[p]; hasDef {
-					finalArgs[i] = defVal
-				} else {
-					return "", fmt.Errorf("macro %s: missing required argument %q (expected %d arguments, got %d)", parts[0], p, len(macro.params), len(args))
-				}
-			}
-
-			ctx.labelCounter++
-
-			type paramPair struct {
-				name string
-				idx  int
-			}
-			ordered := make([]paramPair, len(macro.params))
-			for i, p := range macro.params {
-				ordered[i] = paramPair{p, i}
-			}
-			sort.Slice(ordered, func(i, j int) bool {
-				return len(ordered[i].name) > len(ordered[j].name)
-			})
-
-			for _, mline := range macro.body {
-				expanded := mline
-				for _, pp := range ordered {
-					expanded = strings.ReplaceAll(expanded, `\`+pp.name, finalArgs[pp.idx])
-				}
-				expanded = strings.ReplaceAll(expanded, `\@`, fmt.Sprintf("_%d", ctx.labelCounter))
-				outLines = append(outLines, expanded)
-			}
-		} else {
+		// Preserve the exact argument substring: strings.Fields+Join would
+		// collapse repeated spaces inside quoted macro arguments.
+		nameEnd := 0
+		for nameEnd < len(code) && code[nameEnd] != ' ' && code[nameEnd] != '\t' {
+			nameEnd++
+		}
+		name := code[:nameEnd]
+		macro, ok := ctx.macros[name]
+		if !ok {
 			outLines = append(outLines, line)
+			continue
+		}
+		var args []string
+		if rest := strings.TrimSpace(code[nameEnd:]); rest != "" {
+			args = splitArgs(rest)
+			if len(args) > 0 && args[len(args)-1] == "" {
+				args = args[:len(args)-1]
+			}
+		}
+		if len(args) > len(macro.params) {
+			return "", fmt.Errorf("macro %s: too many arguments, expected at most %d, got %d", name, len(macro.params), len(args))
+		}
+
+		finalArgs := make([]string, len(macro.params))
+		for i, p := range macro.params {
+			if i < len(args) {
+				finalArgs[i] = args[i]
+			} else if defVal, hasDef := macro.defaults[p]; hasDef {
+				finalArgs[i] = defVal
+			} else {
+				return "", fmt.Errorf("macro %s: missing required argument %q (expected %d arguments, got %d)", name, p, len(macro.params), len(args))
+			}
+		}
+
+		ctx.labelCounter++
+		order := make([]int, len(macro.params))
+		for i := range order {
+			order[i] = i
+		}
+		sort.Slice(order, func(i, j int) bool {
+			return len(macro.params[order[i]]) > len(macro.params[order[j]])
+		})
+
+		for _, mline := range macro.body {
+			expanded := substituteMacroLine(mline, macro.params, order, finalArgs, ctx.labelCounter)
+			outLines = append(outLines, expanded)
+			ctx.expandedLines++
+			if ctx.expandedLines > maxExpandedLines {
+				return "", fmt.Errorf("macro expansion exceeds %d lines", maxExpandedLines)
+			}
 		}
 	}
 	var out strings.Builder
@@ -1033,6 +1235,69 @@ func (ctx *prepContext) expandMacros(src string) (string, error) {
 		}
 	}
 	return out.String(), nil
+}
+
+// substituteMacroLine expands \param and \@ in one macro body line. It
+// respects token boundaries (so \a never matches the prefix of \abc) and
+// never rewrites a comment.
+func substituteMacroLine(line string, params []string, order []int, args []string, label int) string {
+	var b strings.Builder
+	quote := byte(0)
+	for i := 0; i < len(line); {
+		c := line[i]
+		if quote != 0 {
+			if c == '\\' && i+2 < len(line) && line[i+1] == '\\' {
+				// Keep NASM escapes verbatim; only macro parameters are
+				// substituted below on a boundary match.
+			}
+			if c == quote {
+				quote = 0
+			}
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+			b.WriteByte(c)
+			i++
+			continue
+		case ';', '#':
+			b.WriteString(line[i:])
+			return b.String()
+		}
+		if c != '\\' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if i+1 < len(line) && line[i+1] == '@' {
+			fmt.Fprintf(&b, "_%d", label)
+			i += 2
+			continue
+		}
+		matched := false
+		for _, pi := range order {
+			p := params[pi]
+			if !strings.HasPrefix(line[i+1:], p) {
+				continue
+			}
+			end := i + 1 + len(p)
+			if end < len(line) && isIdentChar(line[end]) {
+				continue
+			}
+			b.WriteString(args[pi])
+			i = end
+			matched = true
+			break
+		}
+		if !matched {
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
 }
 
 func (ctx *prepContext) applyConsts(src string) (string, error) {
@@ -1062,8 +1327,16 @@ func (ctx *prepContext) applyConsts(src string) (string, error) {
 	var result strings.Builder
 	lines := strings.Split(src, "\n")
 	for _, line := range lines {
+		// Never substitute into a directive line. In particular
+		// ".ifdef DEBUG" must keep the symbol name; rewriting it to
+		// ".ifdef 1" would make the conditional evaluate false.
+		if strings.HasPrefix(strings.TrimSpace(line), ".") {
+			result.WriteString(line)
+			result.WriteByte('\n')
+			continue
+		}
 		var outLine strings.Builder
-		inString := false
+		quote := byte(0)
 		inComment := false
 		codeStart := 0
 		for i := 0; i < len(line); i++ {
@@ -1072,19 +1345,22 @@ func (ctx *prepContext) applyConsts(src string) (string, error) {
 				outLine.WriteByte(c)
 				continue
 			}
-			if inString {
-				if c == '"' {
-					inString = false
+			if quote != 0 {
+				outLine.WriteByte(c)
+				if c == '\\' && i+1 < len(line) {
+					i++
+					outLine.WriteByte(line[i])
+				} else if c == quote {
+					quote = 0
 					codeStart = i + 1
 				}
-				outLine.WriteByte(c)
 				continue
 			}
-			if c == '"' {
+			if c == '"' || c == '\'' || c == '`' {
 				code := line[codeStart:i]
 				outLine.WriteString(re.ReplaceAllStringFunc(code, replace))
 				outLine.WriteByte(c)
-				inString = true
+				quote = c
 				codeStart = i + 1
 				continue
 			}
@@ -1097,9 +1373,8 @@ func (ctx *prepContext) applyConsts(src string) (string, error) {
 				continue
 			}
 		}
-		if !inComment && !inString {
-			code := line[codeStart:]
-			outLine.WriteString(re.ReplaceAllStringFunc(code, replace))
+		if !inComment && quote == 0 {
+			outLine.WriteString(re.ReplaceAllStringFunc(line[codeStart:], replace))
 		}
 		result.WriteString(outLine.String())
 		result.WriteByte('\n')
@@ -1219,6 +1494,54 @@ func searchPath() []string {
 	return strings.Split(env, sep)
 }
 
+// firstDirectSymbol extracts a label from "short label", "rel label" or a
+// plain symbol operand, skipping registers, numbers and local labels.
+func firstDirectSymbol(operand string) string {
+	for _, tok := range strings.Fields(operand) {
+		tok = strings.Trim(tok, ",[]")
+		if tok == "" || isRegister(tok) || nasmKeywords[strings.ToLower(tok)] {
+			continue
+		}
+		if strings.HasPrefix(tok, ".") {
+			return ""
+		}
+		if _, err := strconv.ParseInt(tok, 0, 64); err == nil {
+			return ""
+		}
+		return tok
+	}
+	return ""
+}
+
+// firstAddressSymbol extracts the first possible static symbol from a memory
+// address, e.g. "table + rbx*8" -> "table", "rel msg" -> "msg".
+func firstAddressSymbol(inner string) string {
+	var b strings.Builder
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '+', '-', '*', '/', '?', '(', ')', ',', '[', ']':
+			b.WriteByte(' ')
+		default:
+			b.WriteByte(inner[i])
+		}
+	}
+	for _, tok := range strings.Fields(b.String()) {
+		tok = strings.Trim(tok, ",:")
+		if tok == "" || isRegister(tok) || nasmKeywords[strings.ToLower(tok)] {
+			continue
+		}
+		if strings.HasPrefix(tok, ".") || strings.HasPrefix(tok, "$") ||
+			strings.ContainsAny(tok, ":[]\"'`%") {
+			return ""
+		}
+		if _, err := strconv.ParseInt(tok, 0, 64); err == nil {
+			return ""
+		}
+		return tok
+	}
+	return ""
+}
+
 // checkUndefinedLabels scans src for label definitions and references,
 // returning the names of labels that are referenced but never defined.
 func checkUndefinedLabels(src string) []string {
@@ -1227,16 +1550,7 @@ func checkUndefinedLabels(src string) []string {
 
 	lines := strings.Split(src, "\n")
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-
-		// Strip comments
-		code := trimmed
-		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-			code = strings.TrimSpace(code[:idx])
-		}
+		code := strings.TrimSpace(asm.StripComment(line))
 		if code == "" {
 			continue
 		}
@@ -1264,12 +1578,22 @@ func checkUndefinedLabels(src string) []string {
 			continue
 		}
 
-		// Check for label references in jump/call instructions
+		// Register external symbols so CALL printf with EXTERN printf is
+		// accepted; also record global/common declarations.
 		fields := strings.Fields(code)
 		if len(fields) == 0 {
 			continue
 		}
 		opcode := strings.ToUpper(fields[0])
+		if opcode == "EXTERN" || opcode == "GLOBAL" || opcode == "COMMON" {
+			for _, f := range fields[1:] {
+				name := strings.TrimSuffix(strings.TrimSpace(f), ",")
+				if name != "" {
+					defined[name] = true
+				}
+			}
+			continue
+		}
 
 		// Jump and call instructions that reference labels
 		if opcode == "JMP" || opcode == "JE" || opcode == "JNE" ||
@@ -1282,31 +1606,18 @@ func checkUndefinedLabels(src string) []string {
 			if len(fields) < 2 {
 				continue
 			}
-			operand := strings.Trim(fields[1], ",")
-			// Handle indirect memory references (e.g. jmp [rax], call [v0], jmp [table + rbx*8])
+			operand := strings.Trim(strings.Join(fields[1:], " "), ",")
+			// Handle indirect memory references (e.g. jmp [rax],
+			// call [v0], jmp [table + rbx*8]).
 			if strings.HasPrefix(operand, "[") {
-				inner := strings.TrimPrefix(operand, "[")
-				inner = strings.TrimSuffix(inner, "]")
-				inner = strings.TrimSpace(inner)
-				// Skip if empty or a pure register reference
-				if inner == "" || isRegister(inner) {
-					continue
-				}
-				// Extract label from expressions like "my_label + v0*8" or "my_table"
-				sym := inner
-				if idx := strings.IndexAny(sym, "+-*"); idx > 0 {
-					sym = strings.TrimSpace(sym[:idx])
-				}
-				if sym != "" && !isRegister(sym) {
-					if _, err := fmt.Sscanf(sym, "%d", new(int)); err != nil {
-						referenced[sym] = true
-					}
+				inner := strings.TrimSuffix(strings.TrimPrefix(operand, "["), "]")
+				if sym := firstAddressSymbol(inner); sym != "" {
+					referenced[sym] = true
 				}
 				continue
 			}
-			// Skip local labels
-			if !strings.HasPrefix(operand, ".") {
-				referenced[operand] = true
+			if sym := firstDirectSymbol(operand); sym != "" {
+				referenced[sym] = true
 			}
 		}
 	}

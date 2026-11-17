@@ -1,4 +1,4 @@
 *.vas linguist-language=Assembly linguist-vendored=false
 
-"# Force LF for golden test files (comparison is byte-exact)"  
-"testdata/golden/* text eol=lf"  
+# Force LF for golden test files (comparison is byte-exact)
+testdata/golden/* text eol=lf

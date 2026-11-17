@@ -532,25 +532,31 @@ If the assembled output already defines a `.text` section, output is passed thro
 
 ## Optimization (-O1)
 
-`-O1` enables:
+`-O1` is semantics-preserving. Every rewrite that would change EFLAGS is gated
+by flag-liveness analysis; a `mov reg, 0` before a conditional jump is left
+alone, for example. `-O1` enables:
 
-1. **Constant Folding**: Computes literal arithmetic at compile time. `ADD v1, 1, 2` becomes `MOVI v1, 3`.
-2. **Dead Code Elimination**: Removes register writes that are never read before being overwritten.
-3. **Peephole Optimizations**:
-   - `mov reg, 0` -> `xor reg, reg` (smaller encoding)
-   - `cmp reg, 0` -> `test reg, reg` (smaller encoding)
+1. **Constant Folding / Propagation**: Literal arithmetic is evaluated at compile time. `ADD v1, 1, 2` becomes `MOVI v1, 3`.
+2. **Copy Propagation**: `MOV v1, v0` aliases are propagated through later operands, including memory addresses.
+3. **Dead Code Elimination**: Writes that are overwritten before being read are removed, unless their FLAGS result is live.
+4. **Dead Store / Store-Load Forwarding**: Redundant stores are removed and a `LOAD` immediately following a matching `STORE` becomes a `MOV`.
+5. **Strength Reduction**: Multiplications by small constants become `LEA`/`SHL` sequences.
+6. **Peephole Optimizations** on the expanded NASM output:
+   - `mov reg, 0` -> `xor reg, reg` (only when FLAGS are dead)
+   - `cmp reg, 0` -> `test reg, reg` at the same operand width
    - Multi-nop sequences merged into one
-   - `mov + add` fused into `lea`
+   - `mov + add` / `shl + add` fused into `lea`
+   - Adjacent `push`/`pop` and `push`/`modify`/`pop` patterns removed
 
 ## Optimization (-O2)
 
 `-O2` includes all `-O1` passes plus:
 
-1. **Common Subexpression Elimination (CSE)**: Repeats of (op, arg1, arg2) replaced with MOV from the first result.
-2. **Loop Invariant Code Motion (LICM)**: LEA with label operand hoisted before loop header.
-3. **Redundant Load Elimination**: LOAD from same address replaced with MOV from previous load.
-4. **PUSH/POP Elimination**: Balanced push/pop pairs removed when the register is unmodified.
-5. **Tail Call Optimization**: `CALL label; RET` -> `JMP label`.
+1. **Common Subexpression Elimination (CSE)**: Versioned block-local value numbering replaces a repeated pure computation with `MOV` from the first result.
+2. **Loop Invariant Code Motion (LICM)**: Invariant `LEA`s are hoisted only when the address registers are unmodified, the destination is safe, and the loop header has no external entry.
+3. **Redundant Load Elimination**: A repeated `LOAD` from the same address becomes `MOV` when neither the address nor the cached register has changed.
+4. **PUSH/POP Elimination**: Balanced push/pop pairs are removed when the register and stack pointer are unmodified.
+5. **Tail Call Optimization**: `CALL label; RET` -> `JMP label`, only when the enclosing function has no pending stack adjustment.
 
 ## Examples
 
@@ -639,7 +645,7 @@ vas/
 
 VAS explicitly does not perform:
 - Register allocation or instruction scheduling
-- Instruction selection or optimization (beyond simple -O1)
+- Instruction selection beyond the documented `-O1`/`-O2` optimizer
 - Linking or relocation
 
 Generated `.asm` files must be assembled by NASM and linked by ld to produce an executable. VAS is a thin translation layer; NASM handles the rest.

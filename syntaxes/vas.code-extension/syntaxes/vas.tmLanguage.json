@@ -80,7 +80,7 @@
     "registers": {
       "patterns": [
         {
-          "match": "\\bv[0-7]\\b",
+          "match": "\\bv(?:[0-9]|1[0-2])\\b",
           "name": "variable.language.vas"
         },
         {

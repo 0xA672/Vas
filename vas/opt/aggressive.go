@@ -2,8 +2,15 @@ package opt
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+
+	"vas/vas/internal/asm"
 )
+
+// ---------------------------------------------------------------------------
+// Common subexpression elimination (block-local, versioned)
+// ---------------------------------------------------------------------------
 
 func cse(lines []string) []string {
 	blocks := splitBlocks(lines)
@@ -19,69 +26,98 @@ type cseKey struct {
 	args string
 }
 
+type cseEntry struct {
+	dst int
+}
+
 func cseBlock(lines []string) []string {
-	seen := map[cseKey]string{}    // value key -> canonical register holding it
-	regVals := map[string]cseKey{} // register -> value key it currently holds
-
+	seen := map[cseKey]cseEntry{}
+	var versions [13]int
 	result := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		code := trimmed
-		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-			code = strings.TrimSpace(code[:idx])
-		}
-		if code == "" {
-			result = append(result, line)
-			continue
-		}
-		tokens := strings.Fields(code)
-		if len(tokens) < 2 {
-			result = append(result, line)
-			continue
-		}
-		op := strings.ToUpper(tokens[0])
-		args := tokens[1:]
 
+	clear := func() { seen = map[cseKey]cseEntry{} }
+
+	for i, line := range lines {
+		p, ok := parseOptLine(line)
+		if !ok {
+			result = append(result, line)
+			continue
+		}
+		if touchesPhysicalReg(line) || isUnknownOrClobber(p) {
+			clear()
+			result = append(result, line)
+			continue
+		}
+		op := p.op
+		args := p.args
 		dst := dstReg(op, args)
-		// Invalidate any prior value held in the destination register.
+
+		// A write to dst invalidates every cached expression that produced it.
 		if dst >= 0 {
-			dstName := strings.TrimRight(args[0], ",")
-			if prevKey, ok := regVals[dstName]; ok {
-				delete(seen, prevKey)
+			for key, entry := range seen {
+				if entry.dst == dst {
+					delete(seen, key)
+				}
 			}
 		}
 
-		if len(args) >= 2 && (op == "ADD" || op == "SUB" || op == "MUL") {
-			cleanArgs := make([]string, len(args[1:]))
-			for i, a := range args[1:] {
-				cleanArgs[i] = strings.TrimRight(a, ",")
+		pure := (op == "ADD" || op == "SUB" || op == "MUL") && len(args) >= 2 &&
+			!hasMemoryOperand(args) && allArgsHaveOnlyVirtualRegs(args)
+		if pure && dst >= 0 {
+			key := cseKey{op: op, args: versionedArgs(args[1:], &versions)}
+			if entry, found := seen[key]; found && entry.dst != dst && !flagsLiveAfter(lines, i) {
+				result = append(result, fmt.Sprintf("\tMOV\t%s, v%d%s", args[0], entry.dst, commentSuffix(line)))
+				if dst >= 0 {
+					versions[dst]++
+				}
+				continue
 			}
-			key := cseKey{op: op, args: strings.Join(cleanArgs, " ")}
-			dstName := strings.TrimRight(args[0], ",")
-			// Conservative CSE: track seen values but do NOT replace
-			// duplicate computations with MOV, to preserve data flow
-			// correctness for downstream passes.
-			seen[key] = dstName
-			if dst >= 0 {
-				regVals[dstName] = key
-			}
+			seen[key] = cseEntry{dst: dst}
 		}
 
+		if dst >= 0 {
+			versions[dst]++
+		}
 		result = append(result, line)
 	}
 	return result
 }
 
+func versionedArgs(args []string, versions *[13]int) string {
+	var b strings.Builder
+	for i, a := range args {
+		if i > 0 {
+			b.WriteByte('|')
+		}
+		b.WriteString(asm.AddrKey(a))
+		for _, r := range virtualRegsIn(a) {
+			fmt.Fprintf(&b, "@%d", versions[r])
+		}
+	}
+	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// Loop-invariant code motion
+// ---------------------------------------------------------------------------
+
 func licm(lines []string) []string {
 	labelIdx := map[string]int{}
+	jumpTargets := map[string][]int{}
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-			trimmed = strings.TrimSpace(trimmed[:idx])
+		p, ok := parseOptLine(line)
+		if !ok {
+			code := asm.TrimCode(line)
+			if strings.HasSuffix(code, ":") {
+				labelIdx[strings.TrimSuffix(code, ":")] = i
+			}
+			continue
 		}
-		if strings.HasSuffix(trimmed, ":") {
-			name := strings.TrimSuffix(trimmed, ":")
-			labelIdx[name] = i
+		if asm.IsBranch(p.op) && len(p.args) > 0 {
+			target := strings.TrimRight(strings.TrimSpace(p.args[0]), ",")
+			if target != "" {
+				jumpTargets[target] = append(jumpTargets[target], i)
+			}
 		}
 	}
 
@@ -91,185 +127,163 @@ func licm(lines []string) []string {
 	}
 	var loops []loop
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		code := trimmed
-		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-			code = strings.TrimSpace(code[:idx])
-		}
-		if code == "" {
+		p, ok := parseOptLine(line)
+		if !ok || !asm.IsBranch(p.op) || len(p.args) == 0 {
 			continue
 		}
-		fields := strings.Fields(code)
-		if len(fields) != 2 {
-			continue
-		}
-		op := strings.ToUpper(fields[0])
-		switch op {
-		case "JMP", "JE", "JNE", "JG", "JL", "JGE", "JLE":
-			target := fields[1]
-			if idx, ok := labelIdx[target]; ok && idx < i {
-				loops = append(loops, loop{header: idx, back: i})
-			}
+		target := strings.TrimRight(strings.TrimSpace(p.args[0]), ",")
+		if idx, ok := labelIdx[target]; ok && idx < i {
+			loops = append(loops, loop{header: idx, back: i})
 		}
 	}
-
 	if len(loops) == 0 {
 		return lines
 	}
 
-	for li := len(loops) - 1; li >= 0; li-- {
-		l := loops[li]
+	for _, l := range loops {
 		isNested := false
 		for _, outer := range loops {
 			if outer.header < l.header && outer.back > l.back {
 				isNested = true
+				break
 			}
 		}
 		if isNested {
 			continue
 		}
+		// The hoisted code executes only on fall-through into the header. If
+		// any jump from outside the loop targets the header, skip the loop.
+		headerName := ""
+		for name, idx := range labelIdx {
+			if idx == l.header {
+				headerName = name
+				break
+			}
+		}
+		externalEntry := false
+		for _, j := range jumpTargets[headerName] {
+			if j < l.header || j > l.back {
+				externalEntry = true
+				break
+			}
+		}
+		if headerName == "" || externalEntry {
+			continue
+		}
 
-		modified := map[string]bool{}
+		modified := map[int]bool{}
+		writes := map[int]int{}
 		for j := l.header + 1; j <= l.back; j++ {
-			trimmed := strings.TrimSpace(lines[j])
-			code := trimmed
-			if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-				code = strings.TrimSpace(code[:idx])
-			}
-			if code == "" {
+			p, ok := parseOptLine(lines[j])
+			if !ok {
 				continue
 			}
-			fields := strings.Fields(code)
-			if len(fields) < 2 {
+			if touchesPhysicalReg(lines[j]) || isUnknownOrClobber(p) {
+				for r := 0; r <= 12; r++ {
+					modified[r] = true
+				}
 				continue
 			}
-			op := strings.ToUpper(fields[0])
-			args := fields[1:]
-			if dst := dstReg(op, args); dst >= 0 && len(args) >= 1 {
-				modified[strings.TrimRight(args[0], ",")] = true
+			if dst := dstReg(p.op, p.args); dst >= 0 {
+				modified[dst] = true
+				writes[dst]++
+			}
+			// Passthrough instructions that mention a virtual register may
+			// write it; treat it as modified.
+			if !knownDstOp(p.op) && p.op != "CMP" {
+				for _, a := range p.args {
+					for _, r := range virtualRegsIn(a) {
+						modified[r] = true
+					}
+				}
 			}
 		}
 
 		var hoisted []int
 		var hoistedLines []string
 		for j := l.header + 1; j < l.back; j++ {
-			trimmed := strings.TrimSpace(lines[j])
-			code := trimmed
-			if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-				code = strings.TrimSpace(code[:idx])
-			}
-			if code == "" {
+			p, ok := parseOptLine(lines[j])
+			if !ok || p.op != "LEA" || len(p.args) < 2 {
 				continue
 			}
-			fields := strings.Fields(code)
-			if len(fields) < 2 {
+			dst := regIndex(p.args[0])
+			if dst < 0 || writes[dst] != 1 || modified[dst] && writes[dst] > 1 {
 				continue
 			}
-			op := strings.ToUpper(fields[0])
-			args := fields[1:]
-
-			isInvariant := false
-			if op == "LEA" && len(args) >= 2 {
-				memOp := strings.TrimPrefix(args[1], "[")
-				memOp = strings.TrimSuffix(memOp, "]")
-				// Extract every register referenced in the effective address,
-				// not just the one before the first +/-.
-				regs := extractAddressRegs(memOp)
-				// An instruction is invariant if ALL its source operands
-				// (registers in the address expression) are not modified
-				// inside the loop.  The destination register is the output
-				// and is NOT checked for invariance.
-				allInvariant := true
-				for _, r := range regs {
-					if modified[r] {
-						allInvariant = false
+			// Destination must not be read before this LEA in the loop.
+			readBefore := false
+			for k := l.header + 1; k < j; k++ {
+				pp, ok := parseOptLine(lines[k])
+				if !ok {
+					continue
+				}
+				for _, r := range readRegs(pp.op, pp.args) {
+					if r == dst {
+						readBefore = true
 						break
 					}
 				}
-				if allInvariant {
-					isInvariant = true
+				if readBefore {
+					break
 				}
 			}
-
-			if isInvariant {
-				hoisted = append(hoisted, j)
-				hoistedLines = append(hoistedLines, lines[j])
+			if readBefore {
+				continue
 			}
+			// Every register in the effective address must be loop-invariant
+			// and must not be the destination itself.
+			invariant := true
+			for _, r := range virtualRegsIn(p.args[1]) {
+				if r == dst || modified[r] {
+					invariant = false
+					break
+				}
+			}
+			if !invariant || addressHasPhysical(p.args[1]) {
+				continue
+			}
+			hoisted = append(hoisted, j)
+			hoistedLines = append(hoistedLines, lines[j])
 		}
 
 		if len(hoistedLines) > 0 {
-			var newResult []string
+			remove := map[int]bool{}
+			for _, h := range hoisted {
+				remove[h] = true
+			}
+			var out []string
 			for i, line := range lines {
 				if i == l.header {
-					newResult = append(newResult, hoistedLines...)
+					out = append(out, hoistedLines...)
 				}
-				isHoisted := false
-				for _, h := range hoisted {
-					if i == h {
-						isHoisted = true
-						break
-					}
-				}
-				if !isHoisted {
-					newResult = append(newResult, line)
+				if !remove[i] {
+					out = append(out, line)
 				}
 			}
-			lines = newResult
-			break
+			return out
 		}
 	}
 	return lines
 }
 
 // extractAddressRegs returns every register referenced in an effective-address
-// expression such as "R1+R2*4-8" or "R10+R11".  Constants and scale factors
-// are ignored.
+// expression such as "v1+v2*4-8". Constants and scale factors are ignored.
 func extractAddressRegs(expr string) []string {
-	var regs []string
-	var cur strings.Builder
-	flush := func() {
-		s := cur.String()
-		cur.Reset()
-		if s != "" && isRegName(s) {
-			regs = append(regs, s)
+	toks := asm.OperandRegs(expr)
+	out := make([]string, 0, len(toks))
+	for _, tok := range toks {
+		if asm.IsReg(tok) {
+			out = append(out, tok)
 		}
 	}
-	for _, c := range expr {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
-			cur.WriteRune(c)
-		} else {
-			flush()
-		}
-	}
-	flush()
-	return regs
+	return out
 }
 
-// isRegName reports whether s looks like a register name (Rn or RAX/RBX/…).
-func isRegName(s string) bool {
-	if len(s) < 2 {
-		return false
-	}
-	if s[0] != 'R' && s[0] != 'r' {
-		return false
-	}
-	rest := s[1:]
-	allDigits := rest != ""
-	for i := 0; i < len(rest); i++ {
-		if rest[i] < '0' || rest[i] > '9' {
-			allDigits = false
-			break
-		}
-	}
-	if allDigits {
-		return true
-	}
-	switch strings.ToUpper(rest) {
-	case "AX", "BX", "CX", "DX", "SI", "DI", "BP", "SP", "IP":
-		return true
-	}
-	return false
-}
+func isRegName(s string) bool { return asm.IsReg(s) }
+
+// ---------------------------------------------------------------------------
+// Redundant load elimination
+// ---------------------------------------------------------------------------
 
 func redundantLoadElim(lines []string) []string {
 	blocks := splitBlocks(lines)
@@ -280,78 +294,94 @@ func redundantLoadElim(lines []string) []string {
 	return result
 }
 
+type cachedLoad struct {
+	reg    int
+	regVer int
+}
+
 func redundantLoadBlock(lines []string) []string {
-	lastLoad := map[string]string{}   // addr -> dst register holding the loaded value
-	addrModified := map[string]bool{} // address base register -> modified since last load
+	var versions [13]int
+	loads := map[string]cachedLoad{}
+	clear := func() { loads = map[string]cachedLoad{} }
 
 	result := make([]string, len(lines))
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		code := trimmed
-		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-			code = strings.TrimSpace(code[:idx])
-		}
-		if code == "" {
+		p, ok := parseOptLine(line)
+		if !ok {
 			result[i] = line
 			continue
 		}
-		fields := strings.Fields(code)
-		if len(fields) < 2 {
+		if touchesPhysicalReg(line) || isUnknownOrClobber(p) {
+			clear()
 			result[i] = line
 			continue
 		}
-		op := strings.ToUpper(fields[0])
-		args := fields[1:]
+		op := p.op
+		args := p.args
+		dst := dstReg(op, args)
 
-		// First, invalidate cached loads whose result register is being
-		// overwritten by any instruction that writes to a register.
-		dstIdx := -1
-		switch op {
-		case "MOVI", "MOV", "ADD", "SUB", "MUL", "LOAD", "LEA", "POP":
-			if len(args) >= 1 {
-				dstIdx = 0
-			}
-		}
-		if dstIdx >= 0 {
-			modifiedReg := strings.TrimRight(args[dstIdx], ",")
-			addrModified[modifiedReg] = true
-			for a, d := range lastLoad {
-				if strings.TrimRight(d, ",") == modifiedReg {
-					delete(lastLoad, a)
-				}
-			}
-		}
-
-		// Invalidate cached load when a STORE writes to the same address.
 		if op == "STORE" && len(args) >= 2 {
-			delete(lastLoad, args[1])
-		}
-
-		// Now handle LOAD: check if the same address was already loaded
-		// (and the address base register hasn't been modified since).
-		if op == "LOAD" && len(args) >= 2 {
-			addr := args[1]
-			addrReg := strings.TrimRight(strings.TrimLeft(addr, "["), "]")
-			if prevDst, ok := lastLoad[addr]; ok && !addrModified[addrReg] {
-				dst := strings.TrimRight(args[0], ",")
-				src := strings.TrimRight(prevDst, ",")
-				comment := ""
-				if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-					comment = " " + trimmed[idx:]
-				}
-				result[i] = fmt.Sprintf("\tMOV\t%s, %s%s", dst, src, comment)
-				// The new destination now also holds the value.
-				lastLoad[addr] = args[0]
+			if addressHasPhysical(args[1]) || !isStaticMemory(args[1]) {
+				clear()
+				result[i] = line
 				continue
 			}
-			lastLoad[addr] = args[0]
-			addrModified[addrReg] = false
+			key, ok := memKey(args[1])
+			if ok {
+				delete(loads, key+addressVersions(args[1], &versions))
+			}
+			if dst >= 0 {
+				versions[dst]++
+			}
+			result[i] = line
+			continue
 		}
 
+		if op == "LOAD" && len(args) >= 2 {
+			if addressHasPhysical(args[1]) {
+				clear()
+				result[i] = line
+				continue
+			}
+			key, ok := memKey(args[1])
+			if !ok {
+				result[i] = line
+				continue
+			}
+			full := key + addressVersions(args[1], &versions)
+			if c, ok := loads[full]; ok && c.reg != dst && versions[c.reg] == c.regVer {
+				result[i] = fmt.Sprintf("\tMOV\t%s, v%d%s", args[0], c.reg, commentSuffix(line))
+				if dst >= 0 {
+					versions[dst]++
+					loads[full] = cachedLoad{reg: dst, regVer: versions[dst]}
+				}
+				continue
+			}
+		}
+
+		if dst >= 0 {
+			for key, c := range loads {
+				if c.reg == dst {
+					delete(loads, key)
+				}
+			}
+			versions[dst]++
+		}
+		// A LOAD defines a new cached value. Invalidate the cache first so a
+		// register that was written concurrently cannot be reused.
+		if op == "LOAD" && len(args) >= 2 && !addressHasPhysical(args[1]) {
+			if key, ok := memKey(args[1]); ok {
+				loads[key+addressVersions(args[1], &versions)] = cachedLoad{reg: dst, regVer: versions[dst]}
+			}
+		}
 		result[i] = line
 	}
 	return result
 }
+
+// ---------------------------------------------------------------------------
+// PUSH/POP elimination
+// ---------------------------------------------------------------------------
 
 func pushPopElim(lines []string) []string {
 	blocks := splitBlocks(lines)
@@ -368,28 +398,14 @@ func pushPopBlock(lines []string) []string {
 		if remove[i] {
 			continue
 		}
-		trimmed := strings.TrimSpace(line)
-		code := trimmed
-		if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-			code = strings.TrimSpace(code[:idx])
-		}
-		if code == "" {
+		p, ok := parseOptLine(line)
+		if !ok || p.op != "PUSH" || len(p.args) < 1 {
 			continue
 		}
-		fields := strings.Fields(code)
-		if len(fields) < 2 {
-			continue
-		}
-		op := strings.ToUpper(fields[0])
-		if op != "PUSH" {
-			continue
-		}
-		reg := strings.TrimRight(fields[1], ",")
+		reg := strings.TrimRight(p.args[0], ",")
 
 		if removed, mid, pop := scanPushModPop(i, reg, lines, remove); removed {
-			remove[i] = true
-			remove[mid] = true
-			remove[pop] = true
+			remove[i], remove[mid], remove[pop] = true, true, true
 			continue
 		}
 
@@ -397,39 +413,22 @@ func pushPopBlock(lines []string) []string {
 			if remove[j] {
 				continue
 			}
-			jTrimmed := strings.TrimSpace(lines[j])
-			jCode := jTrimmed
-			if idx := strings.IndexAny(jCode, ";#"); idx >= 0 {
-				jCode = strings.TrimSpace(jCode[:idx])
-			}
-			if jCode == "" {
+			pp, ok := parseOptLine(lines[j])
+			if !ok {
 				continue
 			}
-			jFields := strings.Fields(jCode)
-			if len(jFields) < 1 {
-				continue
-			}
-			jOp := strings.ToUpper(jFields[0])
-
-			if jOp == "POP" {
-				if len(jFields) >= 2 {
-					jReg := strings.TrimRight(jFields[1], ",")
-					if jReg == reg {
-						remove[i] = true
-						remove[j] = true
-					}
+			if pp.op == "POP" {
+				if len(pp.args) >= 1 && strings.TrimRight(pp.args[0], ",") == reg {
+					remove[i], remove[j] = true, true
 				}
 				break
 			}
-
-			// Abort if the saved register is read OR written between PUSH and
-			// POP.  A read is just as unsafe as a write: the original value
-			// would be lost when POP overwrites the modified register.
-			if len(jFields) >= 2 && instrTouchesReg(jOp, jFields[1:], reg) {
+			// Reading the saved value, changing the stack pointer, or
+			// touching the register makes the pair unsafe.
+			if instrTouchesReg(pp.op, pp.args, reg) || usesStackPointer(lines[j]) {
 				break
 			}
-
-			if jOp == "CALL" || jOp == "SYSCALL" || jOp == "INT" {
+			if pp.op == "CALL" || pp.op == "SYSCALL" || pp.op == "INT" {
 				break
 			}
 		}
@@ -444,10 +443,16 @@ func pushPopBlock(lines []string) []string {
 	return result
 }
 
-// instrTouchesReg reports whether the instruction with opcode op and args
-// references the register `reg` as either a read or a write.  This covers
-// registers appearing as plain operands and registers embedded inside memory
-// operands such as [R1+R2*4].
+func usesStackPointer(line string) bool {
+	for _, tok := range asm.OperandRegs(line) {
+		switch strings.ToLower(tok) {
+		case "rsp", "esp", "sp", "rbp", "ebp", "bp":
+			return true
+		}
+	}
+	return false
+}
+
 func instrTouchesReg(op string, args []string, reg string) bool {
 	for _, a := range args {
 		if containsRegToken(a, reg) {
@@ -457,121 +462,71 @@ func instrTouchesReg(op string, args []string, reg string) bool {
 	return false
 }
 
-// containsRegToken reports whether s contains `reg` as a distinct
-// alphanumeric token.  This avoids false positives such as matching "R1"
-// inside "R10" or "R11".
 func containsRegToken(s, reg string) bool {
-	var cur strings.Builder
-	check := func() bool {
-		if cur.String() == reg {
-			cur.Reset()
+	want := strings.ToLower(reg)
+	for _, tok := range asm.OperandRegs(s) {
+		if strings.ToLower(tok) == want {
 			return true
 		}
-		cur.Reset()
-		return false
 	}
-	for _, c := range s {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
-			cur.WriteRune(c)
-		} else {
-			if check() {
-				return true
-			}
-		}
-	}
-	return cur.String() == reg
+	return false
 }
 
-// scanPushModPop checks whether lines[i:i+N] is a PUSH reg; instr-writes-reg; POP reg
-// pattern. If yes, returns (true, midIdx, popIdx). Otherwise (false, 0, 0).
 func scanPushModPop(i int, reg string, lines []string, remove []bool) (bool, int, int) {
-	midIdx := -1
-	for j := i + 1; j < len(lines); j++ {
-		if remove[j] {
-			continue
+	nextCode := func(from int) int {
+		for j := from; j < len(lines); j++ {
+			if !remove[j] && asm.TrimCode(lines[j]) != "" {
+				return j
+			}
 		}
-		if stripComment(lines[j]) == "" {
-			continue
-		}
-		midIdx = j
-		break
+		return -1
 	}
+	midIdx := nextCode(i + 1)
 	if midIdx < 0 {
 		return false, 0, 0
 	}
-	midFields := strings.Fields(stripComment(lines[midIdx]))
-	if len(midFields) < 2 {
+	mid, ok := parseOptLine(lines[midIdx])
+	if !ok || len(mid.args) < 2 || strings.TrimRight(mid.args[0], ",") != reg {
 		return false, 0, 0
 	}
-	midOp := strings.ToUpper(midFields[0])
-	midReg := strings.TrimRight(midFields[1], ",")
-	if midReg != reg {
+	if dstReg(mid.op, mid.args) < 0 {
 		return false, 0, 0
 	}
-	if dstReg(midOp, midFields[1:]) < 0 {
-		return false, 0, 0
-	}
-	switch midOp {
-	case "MOV", "MOVI", "LOAD", "LEA", "STORE":
-		// These do not set FLAGS — safe to drop.
+	switch mid.op {
+	case "MOV", "MOVI", "LOAD", "LEA":
+		// These do not set FLAGS. STORE writes memory and is not a
+		// register-defining instruction for this pattern.
 	default:
 		return false, 0, 0
 	}
-	popIdx := -1
-	for j := midIdx + 1; j < len(lines); j++ {
-		if remove[j] {
-			continue
-		}
-		if stripComment(lines[j]) == "" {
-			continue
-		}
-		popIdx = j
-		break
-	}
+	popIdx := nextCode(midIdx + 1)
 	if popIdx < 0 {
 		return false, 0, 0
 	}
-	popFields := strings.Fields(stripComment(lines[popIdx]))
-	if len(popFields) < 2 {
-		return false, 0, 0
-	}
-	popOp := strings.ToUpper(popFields[0])
-	popReg := strings.TrimRight(popFields[1], ",")
-	if popOp != "POP" || popReg != reg {
+	pop, ok := parseOptLine(lines[popIdx])
+	if !ok || pop.op != "POP" || len(pop.args) < 1 ||
+		strings.TrimRight(pop.args[0], ",") != reg {
 		return false, 0, 0
 	}
 	return true, midIdx, popIdx
 }
 
+// ---------------------------------------------------------------------------
+// Tail-call optimization
+// ---------------------------------------------------------------------------
+
 func tailCallOpt(lines []string) []string {
 	result := make([]string, 0, len(lines))
-	i := 0
-	for i < len(lines) {
+	for i := 0; i < len(lines); {
 		if i+1 < len(lines) {
-			trimmed := strings.TrimSpace(lines[i])
-			code := trimmed
-			if idx := strings.IndexAny(code, ";#"); idx >= 0 {
-				code = strings.TrimSpace(code[:idx])
-			}
-			if code != "" {
-				fields := strings.Fields(code)
-				if len(fields) == 2 && strings.ToUpper(fields[0]) == "CALL" {
-					nextTrimmed := strings.TrimSpace(lines[i+1])
-					nextCode := nextTrimmed
-					if idx := strings.IndexAny(nextCode, ";#"); idx >= 0 {
-						nextCode = strings.TrimSpace(nextCode[:idx])
-					}
-					nextFields := strings.Fields(nextCode)
-					if len(nextFields) == 1 && strings.ToUpper(nextFields[0]) == "RET" {
-						target := fields[1]
-						comment := ""
-						if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-							comment = " " + trimmed[idx:]
-						}
-						result = append(result, fmt.Sprintf("\tJMP\t%s%s", target, comment))
-						i += 2
-						continue
-					}
+			p, ok := parseOptLine(lines[i])
+			if ok && p.op == "CALL" {
+				next, ok := parseOptLine(lines[i+1])
+				if ok && next.op == "RET" && safeTailCallContext(lines, i) {
+					target := p.args[0]
+					result = append(result, fmt.Sprintf("\tJMP\t%s%s", target, commentSuffix(lines[i])))
+					i += 2
+					continue
 				}
 			}
 		}
@@ -580,3 +535,28 @@ func tailCallOpt(lines []string) []string {
 	}
 	return result
 }
+
+// safeTailCallContext rejects tail calls in functions that adjust the stack.
+func safeTailCallContext(lines []string, callIdx int) bool {
+	for j := callIdx - 1; j >= 0; j-- {
+		p, ok := parseOptLine(lines[j])
+		if !ok {
+			if strings.HasSuffix(asm.TrimCode(lines[j]), ":") {
+				break
+			}
+			continue
+		}
+		op := strings.ToLower(p.op)
+		switch op {
+		case "push", "pop", "enter", "leave", "ret":
+			return false
+		case "add", "sub":
+			if usesStackPointer(lines[j]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+var _ = strconv.Itoa

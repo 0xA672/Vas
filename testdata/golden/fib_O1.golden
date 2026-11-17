@@ -8,7 +8,7 @@
 	global _start
 
 _start:
-	mov	rax, 0
+	xor	eax, eax
 	mov	rbx, 1
 	mov	rcx, 20
 	mov	rdx, 1

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"vas/vas/internal/asm"
 	"vas/vas/lint"
 	"vas/vas/opt"
 )
@@ -13,15 +14,21 @@ import (
 // OptConfig controls optimization and lint behaviour.
 // All fields are optional; zero values produce safe defaults.
 type OptConfig struct {
-	Level      int  // 0=no opt, 1=-O1, 2=-O2
-	Explain    bool // annotate output with [OPT] comments
-	FailOnLint bool // treat lint errors as fatal (default true)
+	Level    int    // 0=no opt, 1=-O1, 2=-O2
+	Explain  bool   // annotate output with [OPT] comments
+	WarnOnly bool   // downgrade lint errors to warnings
+	Target   string // elf64 (default) or win64; affects platform defines
+	BaseDir  string // base directory for .include resolution
+
+	// FailOnLint is retained for source compatibility. Lint errors are fatal
+	// by default now, so the zero value is safe; set WarnOnly to opt out.
+	// Deprecated: use WarnOnly.
+	FailOnLint bool
 }
 
 // AssembleWithOpt assembles VAS source with the given optimization level.
-// Assembles VAS source with the given optimization configuration.
-// Lint errors are fatal by default; set cfg.FailOnLint=false to downgrade
-// them to warnings and continue assembly.
+// Lint errors are fatal by default; set cfg.WarnOnly to downgrade them to
+// warnings and continue assembly.
 func AssembleWithOpt(input string, cfg OptConfig) (string, error) {
 	return AssembleWithOptWithHook(input, cfg, nil, nil)
 }
@@ -31,7 +38,11 @@ func AssembleWithOptWithHook(input string, cfg OptConfig, preHook func(string) (
 	// Preprocessing: if the source contains any preprocessor directive,
 	// run the full preprocessor before anything else.
 	if hasPreprocessorDirectives(input) {
-		preprocessed, err := Preprocess(input, "")
+		var opts []PreprocessOption
+		if cfg.Target != "" {
+			opts = append(opts, WithTarget(cfg.Target))
+		}
+		preprocessed, err := Preprocess(input, cfg.BaseDir, opts...)
 		if err != nil {
 			return "", fmt.Errorf("preprocessing: %w", err)
 		}
@@ -58,21 +69,15 @@ func AssembleWithOptWithHook(input string, cfg OptConfig, preHook func(string) (
 			fmt.Fprintf(os.Stderr, "lint warning at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
 		}
 	}
-	if hasError && cfg.FailOnLint {
-		return "", fmt.Errorf("%w (use --warn-only or set FailOnLint=false to suppress)", ErrLintError)
-	}
-
-	// Set explain mode before optimization
-	if cfg.Explain {
-		opt.SetExplain(true)
-		defer opt.SetExplain(false)
+	if hasError && !cfg.WarnOnly {
+		return "", fmt.Errorf("%w (use --warn-only to suppress)", ErrLintError)
 	}
 
 	lines := strings.Split(input, "\n")
 	// Pre-expansion optimization: constant folding + full pipeline on []string
 	if cfg.Level >= 1 {
 		lines = opt.FoldConstants(lines)
-		lines = opt.OptimizeLines(lines, cfg.Level)
+		lines = opt.OptimizeLinesWithExplain(lines, cfg.Level, cfg.Explain)
 	}
 
 	var outLines []string
@@ -104,16 +109,11 @@ func AssembleWithOptWithHook(input string, cfg OptConfig, preHook func(string) (
 		outLines = append(outLines, result...)
 	}
 
-	// The peephole passes inside Optimize run on VAS source lines and
-	// use regexes that require tab-prefixed lowercase opcodes — they are
-	// effectively no-ops on VAS source. Run PeepholeOnly here on the fully
-	// expanded nasm output so passes like pushModPopElim can eliminate
-	// patterns such as  "push rbx; add rbx, r8; pop rbx".
-	// These aggressive peephole optimizations are gated at O2 and above
-	// to match the opt_showcase behavior where O2 output is strictly
-	// shorter than O1.
-	if cfg.Level >= 2 {
-		outLines = opt.PeepholeOnlyLines(outLines)
+	// Peephole runs on the fully expanded NASM output. Every rewrite that
+	// changes EFLAGS is gated by the optimizer's flag-liveness analysis, so it
+	// is safe to run this at both -O1 and -O2.
+	if cfg.Level >= 1 {
+		outLines = opt.PeepholeOnlyLinesWithExplain(outLines, cfg.Explain)
 	}
 	output := strings.Join(outLines, "\n")
 
@@ -151,37 +151,36 @@ func Assemble(input string) (string, error) {
 // hasPreprocessorDirectives checks whether src contains any preprocessor directive.
 func hasPreprocessorDirectives(src string) bool {
 	for _, line := range strings.Split(src, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, ".include") ||
-			strings.HasPrefix(trimmed, ".const") ||
-			strings.HasPrefix(trimmed, ".macro") ||
-			strings.HasPrefix(trimmed, ".ifdef") ||
-			strings.HasPrefix(trimmed, ".ifndef") ||
-			strings.HasPrefix(trimmed, ".once") ||
-			strings.HasPrefix(trimmed, ".rept") ||
-			strings.HasPrefix(trimmed, ".endm") ||
-			strings.HasPrefix(trimmed, ".endr") ||
-			strings.HasPrefix(trimmed, ".endif") ||
-			strings.HasPrefix(trimmed, ".else") ||
-			strings.HasPrefix(trimmed, ".include_bytes") {
+		trimmed := strings.TrimSpace(asm.StripComment(line))
+		switch {
+		case strings.HasPrefix(trimmed, ".include"),
+			strings.HasPrefix(trimmed, ".const"),
+			strings.HasPrefix(trimmed, ".macro"),
+			strings.HasPrefix(trimmed, ".ifdef"),
+			strings.HasPrefix(trimmed, ".ifndef"),
+			strings.HasPrefix(trimmed, ".once"),
+			strings.HasPrefix(trimmed, ".rept"),
+			strings.HasPrefix(trimmed, ".endm"),
+			strings.HasPrefix(trimmed, ".endr"),
+			strings.HasPrefix(trimmed, ".endif"),
+			strings.HasPrefix(trimmed, ".else"),
+			strings.HasPrefix(trimmed, ".author"),
+			strings.HasPrefix(trimmed, ".error"),
+			strings.HasPrefix(trimmed, ".test"),
+			strings.HasPrefix(trimmed, ".endtest"):
 			return true
 		}
 	}
 	return false
 }
 
+// StripComment removes an inline ; or # comment while preserving quoted text.
+// It is exported for CLI tooling that needs the same lexer as the assembler.
+func StripComment(line string) string { return asm.StripComment(line) }
+
 // stripComment removes trailing comments from line, respecting string literals.
 func stripComment(line string) string {
-	inQuote := false
-	for i, ch := range line {
-		if ch == '"' || ch == '\'' {
-			inQuote = !inQuote
-		}
-		if !inQuote && (ch == '#' || ch == ';') {
-			return strings.TrimSpace(line[:i])
-		}
-	}
-	return line
+	return asm.StripComment(line)
 }
 
 var nasmKeywords = map[string]bool{
@@ -294,33 +293,16 @@ func processInstruction(line string) ([]string, error) {
 }
 
 func splitTokens(line string) []string {
-	var tokens []string
-	var cur strings.Builder
-	inBracket := false
-
-	flush := func() {
-		if cur.Len() > 0 {
-			tokens = append(tokens, strings.TrimSpace(cur.String()))
-			cur.Reset()
-		}
+	code := strings.TrimSpace(line)
+	if code == "" {
+		return nil
 	}
-
-	for _, ch := range line {
-		switch {
-		case ch == '[':
-			inBracket = true
-			cur.WriteRune(ch)
-		case ch == ']':
-			inBracket = false
-			cur.WriteRune(ch)
-		case (ch == ',' || ch == '\t' || ch == ' ') && !inBracket:
-			flush()
-		default:
-			cur.WriteRune(ch)
-		}
+	i := 0
+	for i < len(code) && code[i] != ' ' && code[i] != '\t' {
+		i++
 	}
-	flush()
-	return tokens
+	tokens := []string{code[:i]}
+	return append(tokens, asm.SplitOperands(code[i:])...)
 }
 
 func expand2op(mnemonic string, args []string) ([]string, error) {
@@ -549,7 +531,16 @@ func AssembleStandaloneTarget(input, target string) (string, error) {
 // AssembleStandaloneTargetOpt assembles VAS with optimization level and wraps
 // with a platform-appropriate skeleton.
 func AssembleStandaloneTargetOpt(input, target string, optLevel int) (string, error) {
-	asm, err := AssembleWithOpt(input, OptConfig{Level: optLevel})
+	return AssembleStandaloneTargetOptConfig(input, target, OptConfig{Level: optLevel})
+}
+
+// AssembleStandaloneTargetOptConfig is AssembleStandaloneTargetOpt with the
+// full OptConfig (warn-only lint, target defines, include base directory).
+func AssembleStandaloneTargetOptConfig(input, target string, cfg OptConfig) (string, error) {
+	if target != "" {
+		cfg.Target = target
+	}
+	asm, err := AssembleWithOpt(input, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -564,141 +555,145 @@ func AssembleStandaloneTargetOpt(input, target string, optLevel int) (string, er
 	}
 }
 
-// hasBoilerplate checks if the assembled output already defines a .text section.
+// hasBoilerplate checks if the assembled output already defines a .text
+// section, including forms with attributes such as "section .text align=16".
 func hasBoilerplate(s string) bool {
 	for _, line := range strings.Split(s, "\n") {
-		trimmed := strings.TrimSpace(line)
+		trimmed := strings.TrimSpace(asm.StripComment(line))
 		if trimmed == "" {
 			continue
 		}
-		if idx := strings.IndexAny(trimmed, ";#"); idx >= 0 {
-			trimmed = strings.TrimSpace(trimmed[:idx])
-		}
-		if strings.ToLower(trimmed) == "section .text" {
+		fields := strings.Fields(strings.ToLower(trimmed))
+		if len(fields) >= 2 && fields[0] == "section" && strings.HasPrefix(fields[1], ".text") {
 			return true
 		}
 	}
 	return false
 }
 
-func wrapStandalone(vasInput, asmOutput string) string {
-	memRefs := collectMemRefs(vasInput)
+func hasLabel(asmOutput, name string) bool {
+	for _, line := range strings.Split(asmOutput, "\n") {
+		code := strings.TrimSpace(asm.StripComment(line))
+		if strings.HasPrefix(strings.ToLower(code), strings.ToLower(name)+":") {
+			return true
+		}
+	}
+	return false
+}
 
+func stripGlobalDirectives(asmOutput string) string {
 	lines := strings.Split(asmOutput, "\n")
-	var filtered []string
+	filtered := make([]string, 0, len(lines))
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "global ") {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "global ") {
 			continue
 		}
 		filtered = append(filtered, line)
 	}
-	asmOutput = strings.Join(filtered, "\n")
+	return strings.Join(filtered, "\n")
+}
 
-	hasStart := strings.Contains(asmOutput, "_start:")
-	hasMain := strings.Contains(asmOutput, "main:")
+func autoDataSection(asmOutput string) string {
+	refs := collectMemRefs(asmOutput)
+	var dataLines []string
+	for _, ref := range refs {
+		if !hasLabel(asmOutput, ref) {
+			dataLines = append(dataLines, fmt.Sprintf("%s:\tdq 0\n", ref))
+		}
+	}
+	if len(dataLines) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\n\tsection .data\n")
+	for _, line := range dataLines {
+		sb.WriteString(line)
+	}
+	return sb.String()
+}
+
+func wrapStandalone(vasInput, asmOutput string) string {
+	asmOutput = stripGlobalDirectives(asmOutput)
+	hasStart := hasLabel(asmOutput, "_start")
+	hasMain := hasLabel(asmOutput, "main")
+	autoData := autoDataSection(asmOutput)
 
 	var sb strings.Builder
 	sb.WriteString("\tdefault rel\n\n")
 	sb.WriteString("\tsection .text\n")
 
-	if !hasStart && !hasMain {
+	switch {
+	case hasStart:
+		// The user owns the entry point; do not synthesize another one.
+		sb.WriteString("\tglobal _start\n")
+		sb.WriteString(asmOutput)
+		sb.WriteString("\n")
+	case hasMain:
+		// entry for a user-provided main()
+		sb.WriteString("\tglobal _start\n")
+		sb.WriteString("_start:\n")
+		sb.WriteString("\tcall\tmain\n")
+		sb.WriteString("\tmov\trdi, rax\n")
+		sb.WriteString("\tmov\teax, 60\n")
+		sb.WriteString("\tsyscall\n\n")
+		sb.WriteString(asmOutput)
+		sb.WriteString("\n")
+	default:
 		sb.WriteString("\tglobal _start\n")
 		sb.WriteString("_start:\n")
 		sb.WriteString("\tcall\tvas_main\n")
-		sb.WriteString("\tmov\tedi, eax\n")
+		sb.WriteString("\tmov\trdi, rax\n")
 		sb.WriteString("\tmov\teax, 60\n")
-		sb.WriteString("\tsyscall\n")
-	} else if hasMain && !hasStart {
-		sb.WriteString("\tglobal main\n")
-	} else if hasStart {
-		sb.WriteString("\tglobal _start\n")
+		sb.WriteString("\tsyscall\n\n")
+		sb.WriteString("vas_main:\n")
+		sb.WriteString(asmOutput)
+		sb.WriteString("\n")
 	}
 
-	sb.WriteString("vas_main:\n")
-	sb.WriteString(asmOutput)
-	sb.WriteString("\n")
-
 	lastInst := lastInstructionLine(asmOutput)
-	if !strings.HasSuffix(lastInst, "ret") &&
-		!strings.HasPrefix(lastInst, "syscall") &&
-		!strings.HasPrefix(lastInst, "jmp") &&
-		!strings.HasPrefix(lastInst, "hlt") {
+	if lastInst == "" ||
+		(!strings.HasSuffix(lastInst, "ret") &&
+			!strings.HasPrefix(lastInst, "syscall") &&
+			!strings.HasPrefix(lastInst, "jmp") &&
+			!strings.HasPrefix(lastInst, "hlt")) {
 		sb.WriteString("\tret\n")
 	}
 
-	if len(memRefs) > 0 {
-		var dataLines []string
-		for _, ref := range memRefs {
-			if !strings.Contains(asmOutput, ref+":") {
-				dataLines = append(dataLines, fmt.Sprintf("%s:\tdq 0\n", ref))
-			}
-		}
-		if len(dataLines) > 0 {
-			sb.WriteString("\n\tsection .data\n")
-			for _, line := range dataLines {
-				sb.WriteString(line)
-			}
-		}
-	}
-
+	sb.WriteString(autoData)
 	return sb.String()
 }
 
 func wrapStandaloneWin64(vasInput, asmOutput string) string {
-	memRefs := collectMemRefs(vasInput)
-
-	lines := strings.Split(asmOutput, "\n")
-	var filtered []string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "global ") {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-	asmOutput = strings.Join(filtered, "\n")
-
-	hasStart := strings.Contains(asmOutput, "_start:")
-	hasMain := strings.Contains(asmOutput, "main:")
+	asmOutput = stripGlobalDirectives(asmOutput)
+	hasStart := hasLabel(asmOutput, "_start")
+	hasMain := hasLabel(asmOutput, "main")
+	autoData := autoDataSection(asmOutput)
 
 	var sb strings.Builder
 	sb.WriteString("\tdefault rel\n\n")
 	sb.WriteString("\tsection .text\n")
-
-	if !hasStart && !hasMain {
+	if hasStart && !hasMain {
 		sb.WriteString("\tglobal main\n")
 		sb.WriteString("main:\n")
-	} else if hasMain && !hasStart {
+		sb.WriteString("\tcall\t_start\n")
+		sb.WriteString("\txor\teax, eax\n")
+		sb.WriteString("\tret\n\n")
+	} else {
 		sb.WriteString("\tglobal main\n")
-	} else if hasStart {
-		sb.WriteString("\tglobal _start\n")
 	}
-
+	if !hasMain && !hasStart {
+		sb.WriteString("main:\n")
+	}
 	sb.WriteString(asmOutput)
 	sb.WriteString("\n")
 
 	lastInst := lastInstructionLine(asmOutput)
-	if !strings.HasSuffix(lastInst, "ret") {
+	if lastInst != "" && !strings.HasSuffix(lastInst, "ret") {
 		sb.WriteString("\txor\teax, eax\n")
 		sb.WriteString("\tret\n")
 	}
 
-	if len(memRefs) > 0 {
-		var dataLines []string
-		for _, ref := range memRefs {
-			if !strings.Contains(asmOutput, ref+":") {
-				dataLines = append(dataLines, fmt.Sprintf("%s:\tdq 0\n", ref))
-			}
-		}
-		if len(dataLines) > 0 {
-			sb.WriteString("\n\tsection .data\n")
-			for _, line := range dataLines {
-				sb.WriteString(line)
-			}
-		}
-	}
-
+	sb.WriteString(autoData)
 	return sb.String()
 }
 
@@ -706,8 +701,8 @@ func wrapStandaloneWin64(vasInput, asmOutput string) string {
 func lastInstructionLine(asmOutput string) string {
 	lines := strings.Split(asmOutput, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" || strings.HasPrefix(line, ";") {
+		line := strings.TrimSpace(asm.StripComment(lines[i]))
+		if line == "" {
 			continue
 		}
 		if strings.HasPrefix(line, "section ") || strings.HasPrefix(line, "global ") ||
@@ -731,68 +726,96 @@ func lastInstructionLine(asmOutput string) string {
 	return ""
 }
 
+// collectMemRefs returns static symbols referenced by bracketed memory
+// operands. It scans the expanded assembly, skips quoted text, register-only
+// addresses and NASM modifiers, and therefore works with macros and includes.
 func collectMemRefs(input string) []string {
 	var refs []string
 	seen := map[string]bool{}
 
-	var collectFrom func(text string)
-	collectFrom = func(text string) {
-	loop:
-		for {
-			start := strings.Index(text, "[")
-			if start == -1 {
-				break loop
+	for _, line := range strings.Split(input, "\n") {
+		code := asm.StripComment(line)
+		quote := byte(0)
+		for i := 0; i < len(code); i++ {
+			c := code[i]
+			if quote != 0 {
+				if c == '\\' {
+					i++
+				} else if c == quote {
+					quote = 0
+				}
+				continue
 			}
-			depth := 1
-			end := -1
-		scan:
-			for j := start + 1; j < len(text); j++ {
-				switch text[j] {
-				case '[':
-					depth++
-				case ']':
-					depth--
+			switch c {
+			case '\'', '"', '`':
+				quote = c
+			case '[':
+				depth := 1
+				j := i + 1
+				for ; j < len(code); j++ {
+					switch code[j] {
+					case '[':
+						depth++
+					case ']':
+						depth--
+					}
 					if depth == 0 {
-						end = j
-						break scan
+						break
 					}
 				}
+				if depth != 0 {
+					return refs
+				}
+				collectAddressSymbols(code[i+1:j], &refs, seen)
+				i = j
 			}
-			if end == -1 {
-				break loop
-			}
-			inner := strings.TrimSpace(text[start+1 : end])
-			text = text[end+1:]
-
-			collectFrom(inner)
-
-			sym := inner
-			if idx := strings.Index(sym, "+"); idx > 0 {
-				sym = strings.TrimSpace(sym[:idx])
-			} else if idx := strings.Index(sym, "-"); idx > 0 {
-				sym = strings.TrimSpace(sym[:idx])
-			} else if idx := strings.Index(sym, "*"); idx > 0 {
-				sym = strings.TrimSpace(sym[:idx])
-			}
-			if sym == "" || seen[sym] {
-				continue
-			}
-			if isRegister(sym) {
-				continue
-			}
-			seen[sym] = true
-			refs = append(refs, sym)
 		}
-	}
-
-	for _, line := range strings.Split(input, "\n") {
-		trimmed := strings.TrimSpace(stripComment(line))
-		if trimmed == "" {
-			continue
-		}
-		collectFrom(trimmed)
 	}
 	return refs
+}
+
+func collectAddressSymbols(inner string, refs *[]string, seen map[string]bool) {
+	// Replace address operators with spaces, then inspect every remaining
+	// token. Nested brackets are handled recursively by the caller's scanner.
+	var normalized strings.Builder
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		switch c {
+		case '+', '-', '*', '/', '?', '(', ')', ',', '[', ']':
+			normalized.WriteByte(' ')
+		default:
+			normalized.WriteByte(c)
+		}
+	}
+	for _, tok := range strings.Fields(normalized.String()) {
+		tok = strings.TrimSpace(tok)
+		if tok == "" || seen[tok] || strings.ContainsAny(tok, ":[]\"'`$%") {
+			continue
+		}
+		if isRegister(tok) || nasmKeywords[strings.ToLower(tok)] {
+			continue
+		}
+		if strings.HasPrefix(tok, ".") {
+			continue
+		}
+		if _, err := strconv.ParseInt(tok, 0, 64); err == nil {
+			continue
+		}
+		valid := true
+		for i := 0; i < len(tok); i++ {
+			c := tok[i]
+			if !(c == '_' || c == '.' || (c >= 'a' && c <= 'z') ||
+				(c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		seen[tok] = true
+		*refs = append(*refs, tok)
+	}
 }
 
 func isRegister(s string) bool { return isPhysReg(s) || IsValidVirtualReg(s) }

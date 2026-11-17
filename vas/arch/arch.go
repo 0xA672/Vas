@@ -7,6 +7,11 @@
 
 package arch
 
+import (
+	"sort"
+	"sync"
+)
+
 // Architecture defines the interface that each target backend must implement.
 type Architecture interface {
 	// Name returns the architecture name (e.g. "x86", "arm64", "riscv64").
@@ -34,25 +39,36 @@ type Architecture interface {
 	WrapStandalone(vasInput, asmOutput string) string
 }
 
-// Registry maps architecture names to their implementations.
-var registry = map[string]Architecture{}
+// Registry maps architecture names to their implementations. The mutex makes
+// plugin-style registration safe for concurrent readers.
+var (
+	registryMu sync.RWMutex
+	registry   = map[string]Architecture{}
+)
 
 // Register adds an architecture to the global registry.
 func Register(a Architecture) {
+	registryMu.Lock()
 	registry[a.Name()] = a
+	registryMu.Unlock()
 }
 
 // Get returns the architecture implementation for the given name.
 // Returns nil if not found.
 func Get(name string) Architecture {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	return registry[name]
 }
 
-// List returns all registered architecture names.
+// List returns all registered architecture names in deterministic order.
 func List() []string {
+	registryMu.RLock()
 	names := make([]string, 0, len(registry))
 	for n := range registry {
 		names = append(names, n)
 	}
+	registryMu.RUnlock()
+	sort.Strings(names)
 	return names
 }

@@ -3,7 +3,7 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"vas/vas"
-	"vas/vas/lint"
-	"vas/vas/opt"
 )
 
 // Version is set at build time via -ldflags "-X main.Version=v0.2.0".
@@ -64,6 +62,7 @@ func cmdAssemble(args []string) {
 	var inputFile, outFile, target string
 	optLevel := 0
 	explain := false
+	warnOnly := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -73,12 +72,16 @@ func cmdAssemble(args []string) {
 		case args[i] == "-target" && i+1 < len(args):
 			target = args[i+1]
 			i++
+		case args[i] == "-O0":
+			optLevel = 0
 		case args[i] == "-O1":
 			optLevel = 1
 		case args[i] == "-O2":
 			optLevel = 2
 		case args[i] == "--explain":
 			explain = true
+		case args[i] == "--warn-only":
+			warnOnly = true
 		case args[i] == "-h" || args[i] == "--help":
 			fmt.Print(helpText)
 			return
@@ -96,11 +99,8 @@ func cmdAssemble(args []string) {
 		target = "elf64"
 	}
 
-	if explain {
-		opt.SetExplain(true)
-	}
-
 	var input string
+	baseDir := ""
 
 	if inputFile != "" {
 		data, err := os.ReadFile(inputFile)
@@ -109,6 +109,7 @@ func cmdAssemble(args []string) {
 			os.Exit(1)
 		}
 		input = string(data)
+		baseDir = filepath.Dir(inputFile)
 	} else {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -122,7 +123,12 @@ func cmdAssemble(args []string) {
 		}
 	}
 
-	output, err := vas.AssembleStandaloneTargetOpt(input, target, optLevel)
+	output, err := vas.AssembleStandaloneTargetOptConfig(input, target, vas.OptConfig{
+		Level:    optLevel,
+		Explain:  explain,
+		WarnOnly: warnOnly,
+		BaseDir:  baseDir,
+	})
 	if err != nil {
 		// Try to show source context for line-numbered errors
 		errMsg := err.Error()
@@ -213,120 +219,179 @@ func findLinker(target string) (string, error) {
 // ── build subcommand ──────────────────────────────────────────────────────
 
 func cmdBuild(args []string) {
-	fs := flag.NewFlagSet("vas build", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { fmt.Print(buildHelpText) }
+	var (
+		inputFile string
+		outFile   string
+		target    = "elf64"
+		keepTemps bool
+		verbose   bool
+		explain   bool
+		warnOnly  bool
+		linkerArg string
+		optLvl    int
+	)
 
-	outFile := fs.String("o", "", "output filename")
-	target := fs.String("target", "elf64", "target platform (elf64 or win64)")
-	keepTemps := fs.Bool("keep-temps", false, "keep intermediate .asm and .o/.obj files")
-	verbose := fs.Bool("v", false, "print tool commands and progress")
-	explain := fs.Bool("explain", false, "annotate optimized output with [OPT] comments")
-	linkerArg := fs.String("linker-arg", "", "extra argument(s) passed to the linker")
-	_ = fs.Bool("warn-only", false, "treat dangerous instruction warnings as non-fatal")
-
-	// Parse flags (stop on first non-flag argument)
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return
+	needValue := func(i int, flagName string) string {
+		if i+1 >= len(args) {
+			fmt.Fprintf(os.Stderr, "error: %s requires a value\n", flagName)
+			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return args[i+1]
 	}
 
-	inputFile := ""
-	if fs.NArg() > 0 {
-		inputFile = fs.Arg(0)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-o" || a == "--output":
+			outFile = needValue(i, a)
+			i++
+		case strings.HasPrefix(a, "--output="):
+			outFile = strings.TrimPrefix(a, "--output=")
+		case a == "-target" || a == "--target":
+			target = needValue(i, a)
+			i++
+		case strings.HasPrefix(a, "--target="):
+			target = strings.TrimPrefix(a, "--target=")
+		case a == "-O0":
+			optLvl = 0
+		case a == "-O1":
+			optLvl = 1
+		case a == "-O2":
+			optLvl = 2
+		case a == "-O":
+			v := needValue(i, a)
+			i++
+			if len(v) != 1 || v[0] < '0' || v[0] > '2' {
+				fmt.Fprintf(os.Stderr, "error: unsupported optimization level -O%s\n", v)
+				os.Exit(1)
+			}
+			optLvl = int(v[0] - '0')
+		case a == "--explain":
+			explain = true
+		case a == "--keep-temps":
+			keepTemps = true
+		case a == "-v" || a == "--verbose":
+			verbose = true
+		case a == "--warn-only":
+			warnOnly = true
+		case a == "--linker-arg":
+			linkerArg += " " + needValue(i, a)
+			i++
+		case strings.HasPrefix(a, "--linker-arg="):
+			linkerArg += " " + strings.TrimPrefix(a, "--linker-arg=")
+		case a == "-h" || a == "--help":
+			fmt.Print(buildHelpText)
+			return
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(os.Stderr, "error: unknown flag: %s\n", a)
+			fmt.Print(buildHelpText)
+			os.Exit(1)
+		default:
+			if inputFile != "" {
+				fmt.Fprintf(os.Stderr, "error: multiple input files: %s and %s\n", inputFile, a)
+				os.Exit(1)
+			}
+			inputFile = a
+		}
 	}
+
 	if inputFile == "" {
 		fmt.Fprintln(os.Stderr, "error: no input file")
 		fmt.Print(buildHelpText)
 		os.Exit(1)
 	}
-
-	// Determine optimization level from -O flag (passed as -O0, -O1, -O2)
-	optLvl := 0
-	for _, arg := range args {
-		if arg == "-O1" {
-			optLvl = 1
-		} else if arg == "-O2" {
-			optLvl = 2
-		}
+	if target != "elf64" && target != "win64" {
+		fmt.Fprintf(os.Stderr, "error: unsupported target %q (expected elf64 or win64)\n", target)
+		os.Exit(1)
 	}
 
-	if *explain {
-		opt.SetExplain(true)
-	}
-
-	// Check tools
 	if _, err := exec.LookPath("nasm"); err != nil {
 		fmt.Fprintln(os.Stderr, "error: nasm not found — install it from https://nasm.us")
 		os.Exit(1)
 	}
-	linker, err := findLinker(*target)
+	linker, err := findLinker(target)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 
-	// Read input
 	data, err := os.ReadFile(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 	input := string(data)
-
-	// Resolve .include directives before assembling
 	baseDir := filepath.Dir(inputFile)
-	prepped, err := vas.Preprocess(input, baseDir)
+
+	prepped, err := vas.Preprocess(input, baseDir, vas.WithTarget(target))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "preprocess error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Assemble
-	asm, err := vas.AssembleStandaloneTargetOpt(prepped, *target, optLvl)
+	asm, err := vas.AssembleStandaloneTargetOptConfig(prepped, target, vas.OptConfig{
+		Level:    optLvl,
+		Explain:  explain,
+		WarnOnly: warnOnly,
+		BaseDir:  baseDir,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Default output name
 	inputBase := strings.TrimSuffix(filepath.Base(inputFile), filepath.Ext(inputFile))
-	if *outFile == "" {
-		*outFile = inputBase
-		if *target == "win64" {
-			*outFile += ".exe"
+	if inputBase == "" {
+		inputBase = "a.out"
+	}
+	if outFile == "" {
+		outFile = inputBase
+		if target == "win64" {
+			outFile += ".exe"
 		}
 	}
+	binFile, err := filepath.Abs(outFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	inputAbs, _ := filepath.Abs(inputFile)
+	if binFile == inputAbs {
+		fmt.Fprintf(os.Stderr, "error: refusing to overwrite input file %q; use -o\n", inputFile)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(filepath.Dir(binFile), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: create output directory: %v\n", err)
+		os.Exit(1)
+	}
 
-	// Temp dir or working directory for intermediates
-	workDir := filepath.Dir(inputFile)
+	workDir, err := os.MkdirTemp("", "vas-build-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: create temp directory: %v\n", err)
+		os.Exit(1)
+	}
+	if !keepTemps {
+		defer os.RemoveAll(workDir)
+	}
+
 	asmFile := filepath.Join(workDir, inputBase+".asm")
-	objFile := filepath.Join(workDir, inputBase+".o")
-	if *target == "win64" {
-		objFile = filepath.Join(workDir, inputBase+".obj")
+	objExt := ".o"
+	if target == "win64" {
+		objExt = ".obj"
 	}
-	binFile := *outFile
-	if !filepath.IsAbs(binFile) {
-		binFile = filepath.Join(workDir, binFile)
-	}
+	objFile := filepath.Join(workDir, inputBase+objExt)
 
-	// Write .asm
 	if err := os.WriteFile(asmFile, []byte(asm), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "write .asm: %v\n", err)
 		os.Exit(1)
 	}
 
-	// nasm
-	var nasmArgs []string
-	if *target == "win64" {
-		nasmArgs = []string{"-f", "win64", "-o", objFile, asmFile}
-	} else {
-		nasmArgs = []string{"-f", "elf64", "-o", objFile, asmFile}
+	nasmFormat := "elf64"
+	if target == "win64" {
+		nasmFormat = "win64"
 	}
-	if *verbose {
+	nasmArgs := []string{"-f", nasmFormat, "-o", objFile, asmFile}
+	if verbose {
 		fmt.Fprintf(os.Stderr, "+ nasm %s\n", strings.Join(nasmArgs, " "))
 	}
 	if out, err := exec.Command("nasm", nasmArgs...).CombinedOutput(); err != nil {
@@ -334,22 +399,24 @@ func cmdBuild(args []string) {
 		os.Exit(1)
 	}
 
-	// ld
+	base := strings.ToLower(filepath.Base(linker))
+	driver := strings.Contains(base, "gcc") || strings.Contains(base, "clang") || strings.Contains(base, "cc")
 	var ldArgs []string
-	if *target == "win64" {
-		if strings.Contains(linker, "gcc") {
-			ldArgs = []string{"-o", binFile, objFile, "-nostdlib"}
+	if target == "win64" {
+		if driver {
+			ldArgs = []string{"-nostdlib", "-o", binFile, objFile, "-Wl,-e,main"}
 		} else {
 			ldArgs = []string{"-e", "main", "-o", binFile, objFile}
 		}
 	} else {
-		ldArgs = []string{"-o", binFile, objFile}
+		if driver {
+			ldArgs = []string{"-nostdlib", "-no-pie", "-o", binFile, objFile, "-Wl,-e,_start"}
+		} else {
+			ldArgs = []string{"-o", binFile, objFile}
+		}
 	}
-	// Append extra linker args if provided
-	if *linkerArg != "" {
-		ldArgs = append(ldArgs, *linkerArg)
-	}
-	if *verbose {
+	ldArgs = append(ldArgs, splitShellArgs(linkerArg)...)
+	if verbose {
 		fmt.Fprintf(os.Stderr, "+ %s %s\n", filepath.Base(linker), strings.Join(ldArgs, " "))
 	}
 	if out, err := exec.Command(linker, ldArgs...).CombinedOutput(); err != nil {
@@ -357,15 +424,49 @@ func cmdBuild(args []string) {
 		os.Exit(1)
 	}
 
-	// Cleanup temp files
-	if !*keepTemps {
-		os.Remove(asmFile)
-		os.Remove(objFile)
-	}
-
-	if *verbose {
+	if verbose || keepTemps {
 		fmt.Fprintf(os.Stderr, "→ %s\n", binFile)
 	}
+	if keepTemps {
+		fmt.Fprintf(os.Stderr, "  intermediates kept in %s\n", workDir)
+	}
+}
+
+// splitShellArgs performs a small shell-like split for --linker-arg values.
+func splitShellArgs(s string) []string {
+	var args []string
+	var cur strings.Builder
+	quote := byte(0)
+	flush := func() {
+		if cur.Len() > 0 {
+			args = append(args, cur.String())
+			cur.Reset()
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				cur.WriteByte(s[i])
+			} else if c == quote {
+				quote = 0
+			} else {
+				cur.WriteByte(c)
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+		case ' ', '\t':
+			flush()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	flush()
+	return args
 }
 
 // ── prep subcommand ────────────────────────────────────────────────────────
@@ -523,16 +624,14 @@ func cmdDiff(args []string) {
 
 	source := string(data)
 
-	// When optimization level > 0, enable explanation and assemble with optimizations
-	if optLevel > 0 {
-		opt.SetExplain(true)
-	}
+	// Use the same standalone entry point at every level so the diff compares
+	// comparable programs. Explain is per-call, not process-global.
 	var output string
-	if optLevel > 0 {
-		output, err = vas.AssembleStandaloneTargetOpt(source, "elf64", optLevel)
-	} else {
-		output, err = vas.Assemble(source)
-	}
+	output, err = vas.AssembleStandaloneTargetOptConfig(source, "elf64", vas.OptConfig{
+		Level:   optLevel,
+		Explain: optLevel > 0,
+		BaseDir: filepath.Dir(inputFile),
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "assembly error: %v\n", err)
 		os.Exit(1)
@@ -589,26 +688,17 @@ func cmdCheck(args []string) {
 	}
 	input := string(data)
 
-	// Run lint checks first
-	violations := lint.Run(input)
-	hasError := false
-	for _, v := range violations {
-		if v.Severity == "error" {
-			hasError = true
-			fmt.Fprintf(os.Stderr, "lint error at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
-		} else {
-			fmt.Fprintf(os.Stderr, "lint warning at line %d: %s\n  Suggested fix: %s\n", v.Line, v.Message, v.Fix)
-		}
-	}
-
-	if strict && hasError {
-		fmt.Fprintln(os.Stderr, "strict mode: lint errors found")
-		os.Exit(1)
-	}
-
-	// Proceed with normal assembly check
-	_, err = vas.Assemble(input)
+	// One assembly pass runs lint and reports it once. In non-strict mode
+	// lint errors are downgraded to warnings; --strict keeps them fatal.
+	_, err = vas.AssembleWithOpt(input, vas.OptConfig{
+		Level:    0,
+		WarnOnly: !strict,
+		BaseDir:  filepath.Dir(inputFile),
+	})
 	if err != nil {
+		if strict {
+			fmt.Fprintln(os.Stderr, "strict mode: lint errors found")
+		}
 		fmt.Fprintf(os.Stderr, "check error: %v\n", err)
 		os.Exit(1)
 	}
@@ -674,7 +764,7 @@ func (s *vasStats) print() {
 		used = append(used, r)
 	}
 	sort.Strings(used)
-	fmt.Printf("  Virtual regs used: %d of 8: %s\n", len(used), strings.Join(used, ", "))
+	fmt.Printf("  Virtual regs used: %d of 13: %s\n", len(used), strings.Join(used, ", "))
 
 	if s.errCount > 0 {
 		fmt.Printf("\n  Warnings: %d\n", s.errCount)
@@ -692,21 +782,6 @@ var instrClass = map[string]string{
 	"PUSH": "stack", "POP": "stack",
 }
 
-// stripComment removes trailing ;...# comments (duplicated from vas package
-// so analyzeVAS can use it without an export).
-func stripComment(line string) string {
-	inQuote := false
-	for i, ch := range line {
-		if ch == '"' || ch == '\'' {
-			inQuote = !inQuote
-		}
-		if !inQuote && (ch == '#' || ch == ';') {
-			return strings.TrimSpace(line[:i])
-		}
-	}
-	return line
-}
-
 func analyzeVAS(input string) *vasStats {
 	s := &vasStats{regsUsed: map[string]bool{}}
 
@@ -714,7 +789,7 @@ func analyzeVAS(input string) *vasStats {
 	s.lines = len(lines)
 
 	for _, raw := range lines {
-		line := strings.TrimSpace(stripComment(raw))
+		line := strings.TrimSpace(vas.StripComment(raw))
 		if line == "" {
 			continue
 		}
@@ -754,12 +829,8 @@ func analyzeVAS(input string) *vasStats {
 		s.instrTotal++
 
 		// Count virtual register references in this line
-		parts := strings.Fields(line)
-		for _, p := range parts {
-			p = strings.TrimRight(p, ",")
-			if strings.HasPrefix(p, "v") && len(p) == 2 && p[1] >= '0' && p[1] <= '7' {
-				s.regsUsed[p] = true
-			}
+		for _, reg := range vas.VirtualRegisters(line) {
+			s.regsUsed[reg] = true
 		}
 	}
 
@@ -803,59 +874,77 @@ func cmdTest(args []string) {
 	failed := 0
 	for _, tc := range cases {
 		fmt.Printf("test: %s... ", tc.Name)
-		prog := fmt.Sprintf("section .text\nglobal _start\n_start:\n%s\n", tc.Code)
-		asm, err := vas.AssembleStandalone(prog)
-		if err != nil {
-			fmt.Printf("FAIL (assemble: %v)\n", err)
-			failed++
-			continue
-		}
+		func() {
+			prog := fmt.Sprintf("section .text\nglobal _start\n_start:\n%s\n", tc.Code)
+			asm, err := vas.AssembleStandalone(prog)
+			if err != nil {
+				fmt.Printf("FAIL (assemble: %v)\n", err)
+				failed++
+				return
+			}
 
-		dir, _ := os.MkdirTemp("", "vas_test")
-		defer os.RemoveAll(dir)
-		asmFile := filepath.Join(dir, "test.asm")
-		binFile := filepath.Join(dir, "test")
-		os.WriteFile(asmFile, []byte(asm), 0644)
+			dir, err := os.MkdirTemp("", "vas_test_*")
+			if err != nil {
+				fmt.Printf("FAIL (temp dir: %v)\n", err)
+				failed++
+				return
+			}
+			defer os.RemoveAll(dir)
+			asmFile := filepath.Join(dir, "test.asm")
+			binFile := filepath.Join(dir, "test")
+			if err := os.WriteFile(asmFile, []byte(asm), 0644); err != nil {
+				fmt.Printf("FAIL (write asm: %v)\n", err)
+				failed++
+				return
+			}
 
-		if out, err := exec.Command("nasm", "-f", "elf64", "-o", binFile+".o", asmFile).CombinedOutput(); err != nil {
-			fmt.Printf("FAIL (nasm: %v: %s)\n", err, out)
-			failed++
-			continue
-		}
-		if out, err := exec.Command("ld", "-o", binFile, binFile+".o").CombinedOutput(); err != nil {
-			fmt.Printf("FAIL (ld: %v: %s)\n", err, out)
-			failed++
-			continue
-		}
+			if out, err := exec.Command("nasm", "-f", "elf64", "-o", binFile+".o", asmFile).CombinedOutput(); err != nil {
+				fmt.Printf("FAIL (nasm: %v: %s)\n", err, out)
+				failed++
+				return
+			}
+			if out, err := exec.Command("ld", "-o", binFile, binFile+".o").CombinedOutput(); err != nil {
+				fmt.Printf("FAIL (ld: %v: %s)\n", err, out)
+				failed++
+				return
+			}
 
-		cmd := exec.Command(binFile)
-		var stdout strings.Builder
-		cmd.Stdout = &stdout
-		err = cmd.Run()
-		exitCode := 0
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else if err != nil {
-			fmt.Printf("FAIL (run: %v)\n", err)
-			failed++
-			continue
-		}
-		output := strings.TrimSpace(stdout.String())
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, binFile)
+			var stdout strings.Builder
+			cmd.Stdout = &stdout
+			err = cmd.Run()
+			if ctx.Err() == context.DeadlineExceeded {
+				fmt.Println("FAIL (timeout after 10s)")
+				failed++
+				return
+			}
+			exitCode := 0
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else if err != nil {
+				fmt.Printf("FAIL (run: %v)\n", err)
+				failed++
+				return
+			}
+			output := strings.TrimSpace(stdout.String())
 
-		match := true
-		if tc.ExpectExit != -1 && exitCode != tc.ExpectExit {
-			fmt.Printf("FAIL (exit code: %d expected %d)\n", exitCode, tc.ExpectExit)
-			match = false
-		}
-		if tc.ExpectStdout != "" && output != tc.ExpectStdout {
-			fmt.Printf("FAIL (stdout: %q expected %q)\n", output, tc.ExpectStdout)
-			match = false
-		}
-		if match {
-			fmt.Println("ok")
-		} else {
-			failed++
-		}
+			match := true
+			if tc.ExpectExit != -1 && exitCode != tc.ExpectExit {
+				fmt.Printf("FAIL (exit code: %d expected %d)\n", exitCode, tc.ExpectExit)
+				match = false
+			}
+			if tc.ExpectStdout != "" && output != tc.ExpectStdout {
+				fmt.Printf("FAIL (stdout: %q expected %q)\n", output, tc.ExpectStdout)
+				match = false
+			}
+			if match {
+				fmt.Println("ok")
+			} else {
+				failed++
+			}
+		}()
 	}
 
 	if failed > 0 {
