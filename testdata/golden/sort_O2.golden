@@ -49,7 +49,6 @@ inner:
 	jle	no_swap
 
 ; swap: STORE a[j+1] (v6) to a[j], a[j] (v7) to a[j+1]
-swap:
 	mov	rdi, rdx
 	shl	rdi, 3
 	lea	rax, [data]

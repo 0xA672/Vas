@@ -201,11 +201,13 @@ func runPipelineWithExplain(lines []string, level int, explain bool) []string {
 	lines = peephole(lines, explain)
 
 	if level >= 2 {
+		lines = cleanCFG(lines)
 		lines = cse(lines)
 		lines = licm(lines)
 		lines = redundantLoadElim(lines)
 		lines = pushPopElim(lines)
 		lines = tailCallOpt(lines)
+		lines = cleanCFG(lines)
 	}
 	return lines
 }
